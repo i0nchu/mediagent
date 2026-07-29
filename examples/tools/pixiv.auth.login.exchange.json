@@ -1,0 +1,5 @@
+{
+  "callback_url": "paste-full-callback-url-here",
+  "code_verifier": "paste-code-verifier-from-pixiv.auth.login-start",
+  "credential_output_path": "${MEDIAGENT_DATA_DIR}/credentials/pixiv-oauth.json"
+}

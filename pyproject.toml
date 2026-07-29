@@ -1,0 +1,14 @@
+[project]
+name = "mediagent"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "telethon>=1.36,<2",
+]
+
+[project.scripts]
+mediagent = "mediagent.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

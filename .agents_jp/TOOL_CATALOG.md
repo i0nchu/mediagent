@@ -1,0 +1,115 @@
+# Mediagent Tool Catalog
+
+現在登録されている tools を理解するためのカタログです。正確な schema は次で確認します。
+
+```bash
+uv run --locked mediagent tools inspect <tool-name> --json
+```
+
+tool を実行するには:
+
+```bash
+uv run --locked mediagent tools run <tool-name> --input examples/tools/<tool-name>.json --json
+```
+
+safe preview に対応する tool では `--dry-run` を付けます。
+
+## Auth Tools
+
+- `auth.session.status`: provider session が利用可能か確認します。secrets は出力しません。`provider: "x"` では X auth status に委譲します。
+- `auth.session.refresh`: platform adapter 経由で session を refresh します。X では `credential_output_path` または `X_CREDENTIALS_FILE` に書き込めます。
+- `auth.session.revoke`: 明示的な local credential revocation guidance を返します。remote session を自動 revoke せず、確認が必要です。
+
+## Core Tools
+
+- `core.env.check`: 必要な環境変数と設定パスを検証します。
+- `core.db.init`: SQLite を初期化し、runs、media items、media files、sync cursors、auth sessions、future workflows 用の tables を作ります。
+- `core.cleanup.media_state`: Conservative live-test media-state cleanup を plan または apply します。Planning mode は files や SQLite を変更しません。Apply mode は `confirm: true` を要求し、existing media files を quarantine に移動してから matching media file rows を削除し、matching media items を `discovered` に reset します。Credential paths は保護され、actionable cleanup files にはなりません。
+- `core.path.prepare`: 安全な file path を解決して検証し、allowed roots の外への書き込みを拒否します。
+- `core.run.record`: tool/workflow run summary を SQLite に保存します。保存前に secrets を redacts します。
+- `core.sync_cursor.get`: platform sync cursor を読み取ります。
+- `core.sync_cursor.set`: platform sync cursor を書き込みます。
+
+## Media Tools
+
+- `media.item.upsert`: `platform + remote_id` で discovered media item を upsert します。
+- `media.item.filter_new`: download 前に known、downloaded、failed、skipped、new items を分類します。
+- `media.item.set_status`: known media item の parent status を明示的に更新します。deterministic sync helpers は file downloads 完了後にこの path で `downloaded`、`partial`、`failed` を設定します。
+- `media.file.upsert`: local media file の remote URL、local path、library-relative path、storage layout、MIME type、byte size、checksum、health、status を記録します。
+
+対応 media types:
+
+- `photo`
+- `video`
+- `audio`
+
+## Storage And Library Tools
+
+- `storage.path.plan`: 一つの normalized media file に対して deterministic scanner-friendly library path を計画します。Default layout は `<platform>/<media_type>/<yyyy>/<mm>/<yyyymmdd>__<platform>__<remote_id>__<part>.<ext>` です。Library root は explicit `library_root`、`MEDIAGENT_<PLATFORM>_LIBRARY_DIR`、`MEDIAGENT_LIBRARY_DIR`、最後に `${MEDIAGENT_DATA_DIR}/library` の順で解決します。Platform-specific root はすでに一つの platform に scoped されているため、default では duplicate platform directory を追加しません。
+- `library.file.verify`: SQLite の known file records をもとに local existence、size、checksum を確認し、file health を `valid`、`missing`、`corrupt`、`unknown` に mark します。Files を削除せず、source platforms に接続しません。
+
+## Download And Metadata Tools
+
+- `download.http`: 一つの remote file を安全な path に download します。dry-run、bounded attempts、`.partial` finalization、checksum、MIME/content-length validation、custom request headers、rate-limit metadata に対応します。
+- `metadata.write`: normalized JSON metadata を downloaded files の横に書き込みます。保存前に secrets を redacts します。
+
+## Pixiv Tools
+
+- `pixiv.auth.login`: 明示的な local Pixiv OAuth/PKCE setup を開始または完了します。`code` または `callback_url` がない場合は login URL と code verifier を返し、`code` または `callback_url` に `code_verifier` を添えて渡すと tokens に交換して configured write roots 内の credential JSON に書けます。
+- `pixiv.auth.status`: Pixiv credentials が利用可能か確認します。secrets は出力しません。user ID 付きの usable access token を検証でき、refresh token しかない場合は refresh が成功するか確認しますが、credential file は書きません。
+- `pixiv.auth.refresh`: 明示的に提供された refresh token で Pixiv App API credentials を更新し、configured write roots 内の credential JSON に書けます。
+- `pixiv.bookmarks.collect`: configured account の Pixiv bookmarked illustrations/manga を収集し、single-page、multi-page、ugoira metadata を normalize し、cursor を SQLite に保存できます。
+- `pixiv.bookmarks.sync`: Pixiv bookmarks を collect し、media items を upsert/filter し、scanner-friendly storage paths を plan し、各 `metadata.files[]` file を `.partial` finalization 付きで download し、local media files を記録し、parent item status を `downloaded`、`partial`、`failed` に更新します。JSON sidecar metadata は `write_sidecar_metadata` で明示的に有効化します。`media_types` filtering を使う場合、sync cursor は `bookmarks:public:photo` のように filter scope ごとに保存され、unscoped bookmark cursor は変更しません。
+
+Pixiv collector は file を download しません。bookmark 全体の deterministic download には `pixiv.bookmarks.sync` を使います。単一 file を手動 download する場合は、戻り値の `metadata.files[].url` を `download.http` に渡します。Pixiv 画像 download には通常次が必要です。
+
+```json
+{"Referer":"https://www.pixiv.net/"}
+```
+
+## Telegram Tools
+
+Telegram は notification、forwarding、chat-management platform ではなく media source として扱います。実装は Telethon-compatible user MTProto session boundary を使います。Telegram session file は credential です。
+
+- `telegram.auth.login`: 明示的な local Telegram user-session login を開始または完了します。`start` は Telegram login code を要求し、第二 step に必要な `phone_code_hash` を返します。`complete` は login code と `phone_code_hash` を受け取り、`password_ref` による optional 2FA を support し、configured session file だけを allowed credential/data roots の下に書きます。
+- `telegram.auth.status`: configured Telegram user-session credentials を検証し、secrets は出力しません。`TELEGRAM_API_ID`、`TELEGRAM_API_HASH`、`TELEGRAM_SESSION_FILE` / `MEDIAGENT_DATA_DIR` を確認し、安全な session/account status だけを返します。
+- `telegram.dialogs.list`: configured user session から見える selectable dialogs を列挙します。safe chat identifiers、display titles、chat type、username、access hints を返し、message text や media bytes は返しません。
+- `telegram.messages.collect`: explicit chats または message links から media-bearing messages を収集し、photos、videos、audio、voice/audio documents、media documents を shared media items に normalize します。Per-source cursors を読んで保存できますが、media bytes は download しません。`extract_message_links: true` を指定すると、collected message text/captions 内の Telegram message links を scan し、linked original messages を解決して、その media も normalize します。Linked source cursors は進めません。
+- `telegram.media.download`: Telegram client boundary を通して一つの Telegram media object を安全な local path に download します。dry-run、`.partial` への direct streaming、checksum、MIME validation、finalization、timeout enforcement、path safety に対応します。
+- `telegram.messages.sync`: selected Telegram media messages を collect し、media items を upsert/filter し、scanner-friendly storage paths を plan し、`telegram.media.download` で media を download し、local media files を記録し、parent item status を更新します。Per-source scoped cursors は durable processing 成功後だけ進めます。
+
+Default source selection は explicit です。Saved Messages、private collection channel、allowlisted group/channel、explicit message links など trusted chat selector を使ってください。すべての dialogs を default で scan しません。
+
+Curated Telegram usage では、`chat` を user の private collection channel に向け、`extract_message_links: true` を設定します。Configured user session が各 linked original message に access できる必要があります。Mediagent は protected または inaccessible chats を bypass しません。
+
+Small curated media download、1 時間 linked video download、scanner-friendly layout placement、`library.file.verify`、rerun dedupe は 2026-07-24 UTC に live-verified 済みです。
+
+## Reddit Tools
+
+Reddit は authenticated user's saved listing を使う curated media source として扱います。First slice は OAuth identity/history data を読み、direct media candidates を collect するだけです。Posting、commenting、voting、save/unsave、moderation、chat、subreddit scanning、HTML scraping、third-party extractors は実装しません。
+
+- `reddit.auth.start`: Reddit OAuth authorization URL を生成します。Default scopes は `identity` と `history` です。
+- `reddit.auth.exchange`: Reddit OAuth callback code を tokens に交換し、credential JSON を configured write roots 内に書けます。Raw tokens、client secrets、authorization codes は出力しません。
+- `reddit.auth.refresh`: `REDDIT_CREDENTIALS_FILE` または `refresh_token_ref` から Reddit OAuth access credentials を refresh します。Reddit が新しい refresh token を返さない場合は既存 refresh token を保持します。
+- `reddit.auth.status`: configured Reddit access token を検証し、安全な account/status response を返します。
+- `reddit.saved.collect`: `username` または `me` の media-bearing saved items を collect し、`after` pagination と optional cursor storage に対応し、shared media items に normalize します。Files は download せず、media-file records も書きません。
+
+First-version parser は Reddit-hosted single images、Reddit gallery images、Reddit-hosted video fallback URLs、stable file extensions を持つ direct external image/video URLs に対応します。Unsupported embeds と direct media がない comments は skipped です。
+
+## X Tools
+
+- `x.auth.start`: X OAuth 2.0 PKCE authorization URL、state、code verifier、challenge を生成します。
+- `x.auth.exchange`: authorization code を token に交換します。戻り値は redacted session metadata のみです。raw tokens は `credential_output_path` または `X_CREDENTIALS_FILE` に書けます。
+- `x.auth.refresh`: X OAuth tokens を refresh します。X が新しい refresh token を返さない場合、既存の refresh token を保持します。
+- `x.auth.status`: `/2/users/me` で token、expiration、scopes、authenticated user ID を検証します。
+- `x.bookmarks.collect`: authenticated user の media-bearing bookmarks を取得し、media items に normalize し、rate-limit metadata を返し、pagination cursor を SQLite に保存できます。
+
+## Credential Notes
+
+- X credentials は `X_ACCESS_TOKEN` / `X_REFRESH_TOKEN`、または `X_CREDENTIALS_FILE` から読めます。
+- Pixiv credentials は `PIXIV_CREDENTIALS_FILE`、`PIXIV_REFRESH_TOKEN`、または `PIXIV_ACCESS_TOKEN` から読めます。初回 local setup では `pixiv.auth.login` を優先します。
+- Telegram credentials は `TELEGRAM_API_ID`、`TELEGRAM_API_HASH`、`TELEGRAM_SESSION_FILE` から読めます。Session file は credential であり、`${MEDIAGENT_DATA_DIR}/credentials/` の下に置くべきです。初回 local setup では `telegram.auth.login` を優先します。
+- Reddit credentials は `REDDIT_CREDENTIALS_FILE` または token environment variables から読めます。初回 setup では `reddit.auth.start` + `reddit.auth.exchange` を優先し、必ず unique descriptive `REDDIT_USER_AGENT` を使います。
+- `X_CREDENTIALS_FILE`、`PIXIV_CREDENTIALS_FILE`、`TELEGRAM_SESSION_FILE`、`REDDIT_CREDENTIALS_FILE` はユーザーが明示的に管理する file を指すべきです。
+- token exchange と refresh の出力に raw tokens は含めません。
+- SQLite run records に raw access tokens、refresh tokens、cookies、sessions、bot tokens を保存してはいけません。

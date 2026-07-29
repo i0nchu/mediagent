@@ -1,0 +1,44 @@
+[
+  {
+    "platform": "fixture",
+    "remote_id": "photo-1",
+    "media_type": "photo",
+    "source_url": "https://example.invalid/photo-1",
+    "metadata": {
+      "files": [
+        {
+          "url": "https://example.invalid/photo-1.jpg",
+          "mime_type": "image/jpeg"
+        }
+      ]
+    }
+  },
+  {
+    "platform": "fixture",
+    "remote_id": "video-1",
+    "media_type": "video",
+    "source_url": "https://example.invalid/video-1",
+    "metadata": {
+      "files": [
+        {
+          "url": "https://example.invalid/video-1.mp4",
+          "mime_type": "video/mp4"
+        }
+      ]
+    }
+  },
+  {
+    "platform": "fixture",
+    "remote_id": "audio-1",
+    "media_type": "audio",
+    "source_url": "https://example.invalid/audio-1",
+    "metadata": {
+      "files": [
+        {
+          "url": "https://example.invalid/audio-1.mp3",
+          "mime_type": "audio/mpeg"
+        }
+      ]
+    }
+  }
+]

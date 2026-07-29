@@ -1,0 +1,459 @@
+# Mediagent Tool Catalog
+
+Use this catalog to understand the currently registered tools. Inspect exact schemas with:
+
+```bash
+uv run --locked mediagent tools inspect <tool-name> --json
+```
+
+Run a tool with:
+
+```bash
+uv run --locked mediagent tools run <tool-name> --input examples/tools/<tool-name>.json --json
+```
+
+Add `--dry-run` when the tool supports safe preview.
+
+## Auth Tools
+
+### `auth.session.status`
+
+Reports whether a configured provider session is usable without exposing secrets. For `provider: "x"`, this delegates to X auth status.
+
+Permissions:
+
+- `network`
+- `read_credentials`
+
+### `auth.session.refresh`
+
+Refreshes a provider auth session through the platform adapter. For X, refreshed tokens can be written to `credential_output_path` or `X_CREDENTIALS_FILE`.
+
+Permissions:
+
+- `network`
+- `read_credentials`
+- `write_credentials`
+
+### `auth.session.revoke`
+
+Returns explicit local credential revocation guidance. It does not revoke remote sessions automatically and requires confirmation.
+
+Permissions:
+
+- `read_credentials`
+- `write_credentials`
+
+## Core Tools
+
+### `core.env.check`
+
+Validates required environment variables and configured paths.
+
+Permissions:
+
+- `read_env`
+
+### `core.db.init`
+
+Initializes the local SQLite database and creates tables for runs, media items, media files, sync cursors, auth sessions, and future workflows.
+
+Permissions:
+
+- `read_files`
+- `write_db`
+
+### `core.cleanup.media_state`
+
+Plans or applies conservative live-test media-state cleanup. Planning mode does not mutate files or SQLite. Apply mode requires `confirm: true`, moves existing media files into quarantine first, then removes matching media file rows and resets matching media items to `discovered`. Credential paths are protected and are not actionable cleanup files.
+
+Permissions:
+
+- `read_env`
+- `read_db`
+- `write_db`
+- `read_files`
+- `write_files`
+
+### `core.path.prepare`
+
+Resolves and validates a filesystem target path. It rejects unsafe paths outside configured write roots.
+
+Permissions:
+
+- `read_env`
+- `read_files`
+- `write_files`
+
+### `core.run.record`
+
+Records a tool or workflow run summary in SQLite. Secrets are redacted before storage.
+
+Permissions:
+
+- `write_db`
+
+### `core.sync_cursor.get`
+
+Reads a persistent platform sync cursor such as an X bookmark pagination token.
+
+Permissions:
+
+- `read_db`
+
+### `core.sync_cursor.set`
+
+Writes a persistent platform sync cursor. Metadata is redacted before storage.
+
+Permissions:
+
+- `write_db`
+
+## Media Tools
+
+### `media.item.upsert`
+
+Upserts discovered media items by `platform + remote_id`.
+
+Permissions:
+
+- `write_db`
+
+Required item fields:
+
+- `platform`
+- `remote_id`
+- `media_type`
+
+Supported media types:
+
+- `photo`
+- `video`
+- `audio`
+
+### `media.item.filter_new`
+
+Filters discovered media items before download. Downloaded, skipped, failed, known, and new items are summarized separately.
+
+Permissions:
+
+- `read_db`
+
+### `media.item.set_status`
+
+Updates a known media item status intentionally. This is the explicit parent-item status path used by deterministic sync helpers after file downloads finish.
+
+Permissions:
+
+- `write_db`
+
+### `media.file.upsert`
+
+Upserts a local media-file record for a known media item. It records remote URL, local path, library-relative path, storage layout, MIME type, byte size, checksum, health, and status.
+
+Permissions:
+
+- `write_db`
+
+## Storage And Library Tools
+
+### `storage.path.plan`
+
+Plans a deterministic scanner-friendly library path for one normalized media file.
+
+Default layout:
+
+```text
+<platform>/<media_type>/<yyyy>/<mm>/<yyyymmdd>__<platform>__<remote_id>__<part>.<ext>
+```
+
+Library root resolution uses explicit `library_root`, then `MEDIAGENT_<PLATFORM>_LIBRARY_DIR`, then `MEDIAGENT_LIBRARY_DIR`, then `${MEDIAGENT_DATA_DIR}/library`. A platform-specific root is already scoped to one platform, so it does not add a duplicate platform directory by default.
+
+Permissions:
+
+- `read_env`
+- `read_files`
+- `write_files`
+
+### `library.file.verify`
+
+Verifies known local media files from SQLite by checking local existence, size, and checksum. It marks file health as `valid`, `missing`, `corrupt`, or `unknown`. It never deletes files and never contacts source platforms.
+
+Permissions:
+
+- `read_db`
+- `write_db`
+- `read_files`
+
+## Download And Metadata Tools
+
+### `download.http`
+
+Downloads one remote file to a safe local path. Supports dry-run, bounded attempts, `.partial` finalization, checksum output, MIME validation, content-length validation, custom request headers, and rate-limit metadata.
+
+Permissions:
+
+- `network`
+- `read_files`
+- `write_files`
+
+### `metadata.write`
+
+Writes normalized JSON metadata next to downloaded files. Secrets are redacted before writing.
+
+Permissions:
+
+- `write_files`
+
+## Pixiv Tools
+
+### `pixiv.auth.login`
+
+Starts or completes explicit local Pixiv OAuth/PKCE setup. Without `code` or `callback_url`, it returns a login URL and code verifier. With `code` or `callback_url` plus `code_verifier`, it exchanges the short-lived callback code for tokens and can write a credential JSON file under configured write roots.
+
+Permissions:
+
+- `network`
+- `read_credentials`
+- `write_credentials`
+
+### `pixiv.auth.status`
+
+Validates configured Pixiv credentials without exposing secrets. It can verify a usable access token with user ID, or check whether token refresh succeeds without writing credentials.
+
+Permissions:
+
+- `network`
+- `read_credentials`
+
+### `pixiv.auth.refresh`
+
+Refreshes Pixiv App API credentials from an explicit refresh token and can write a credential JSON file under configured write roots.
+
+Permissions:
+
+- `network`
+- `read_credentials`
+- `write_credentials`
+
+### `pixiv.bookmarks.collect`
+
+Collects bookmarked Pixiv illustrations and manga for the configured account. It normalizes single-page works, multi-page works, and ugoira metadata into shared media items and can store a per-restrict cursor in SQLite.
+
+Permissions:
+
+- `network`
+- `read_credentials`
+- `write_credentials`
+- `write_db`
+
+Pixiv collection does not download files by itself. For a full deterministic bookmark download, use `pixiv.bookmarks.sync`. For manual one-file downloads, use the returned `metadata.files[].url` values with `download.http`; Pixiv image downloads usually need:
+
+```json
+{"Referer":"https://www.pixiv.net/"}
+```
+
+### `pixiv.bookmarks.sync`
+
+Collects Pixiv bookmarks, upserts and filters media items, plans scanner-friendly storage paths, downloads each selected `metadata.files[]` entry with `.partial` finalization, records local media files, and updates parent item status to `downloaded`, `partial`, or `failed`. JSON sidecar metadata is opt-in through `write_sidecar_metadata`.
+
+When `media_types` filtering is used, sync cursors are scoped by filter, such as `bookmarks:public:photo`, so filtered syncs do not mutate the unscoped bookmark cursor.
+
+Permissions:
+
+- `network`
+- `read_credentials`
+- `write_credentials`
+- `read_db`
+- `write_db`
+- `read_files`
+- `write_files`
+
+## Telegram Tools
+
+Telegram is treated as a media source, not a notification, forwarding, or chat-management platform. The implementation uses a user MTProto session through Telethon-compatible boundaries. Telegram session files are credentials.
+
+### `telegram.auth.login`
+
+Starts or completes explicit local Telegram user-session login. `start` requests a Telegram login code and returns the `phone_code_hash` needed for the second step. `complete` accepts the login code plus `phone_code_hash`, supports optional 2FA through `password_ref`, and writes only the configured session file under allowed credential/data roots.
+
+Permissions:
+
+- `network`
+- `read_credentials`
+- `write_credentials`
+
+### `telegram.auth.status`
+
+Validates configured Telegram user-session credentials without exposing secrets. It checks `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`, and `TELEGRAM_SESSION_FILE` / `MEDIAGENT_DATA_DIR`, then reports safe session/account status only.
+
+Permissions:
+
+- `network`
+- `read_credentials`
+
+### `telegram.dialogs.list`
+
+Lists selectable dialogs visible to the configured user session. It returns safe chat identifiers, display titles, chat type, username when available, and access hints. It does not return message text or media bytes.
+
+Permissions:
+
+- `network`
+- `read_credentials`
+
+### `telegram.messages.collect`
+
+Collects media-bearing messages from explicit chats or message links and normalizes photos, videos, audio, voice/audio documents, and media documents into shared media items. It can read and store per-source cursors, but does not download media bytes.
+
+When `extract_message_links: true` is set, this tool scans collected message text/captions for Telegram message links, resolves those linked original messages, and normalizes their media too. This supports a curated link-inbox channel where the user posts links to media worth downloading. Linked source cursors are not advanced.
+
+Permissions:
+
+- `network`
+- `read_credentials`
+- `read_db`
+- `write_db`
+
+### `telegram.media.download`
+
+Downloads one Telegram media object through the Telegram client boundary to a safe local path. It supports dry-run, direct streaming to `.partial`, checksum output, MIME validation, finalization, timeout enforcement, and path safety.
+
+Permissions:
+
+- `network`
+- `read_credentials`
+- `read_files`
+- `write_files`
+
+### `telegram.messages.sync`
+
+Collects selected Telegram media messages, upserts and filters media items, plans scanner-friendly storage paths, downloads media through `telegram.media.download`, records local media files, updates parent item status, and advances per-source scoped cursors only after successful durable processing.
+
+Default source selection is explicit. Use a trusted chat selector such as Saved Messages, a private collection channel, an allowlisted group/channel, or explicit message links. Do not scan all dialogs by default.
+
+For curated Telegram usage, point `chat` at the user's private collection channel and set `extract_message_links: true`. The configured user session must be able to access each linked original message; Mediagent does not bypass protected or inaccessible chats.
+
+Small curated media download, one-hour linked video download, scanner-friendly layout placement, `library.file.verify`, and rerun dedupe were live-verified on 2026-07-24 UTC.
+
+Permissions:
+
+- `network`
+- `read_credentials`
+- `read_db`
+- `write_db`
+- `read_files`
+- `write_files`
+
+## Reddit Tools
+
+Reddit is treated as a curated media source through the authenticated user's saved listing. The first slice only reads OAuth identity/history data and collects direct media candidates. It does not post, comment, vote, save/unsave, moderate, chat, scan subreddits, scrape HTML pages, or run third-party extractors.
+
+### `reddit.auth.start`
+
+Generates a Reddit OAuth authorization URL for `identity` + `history` saved-media access.
+
+Permissions:
+
+- `read_env`
+
+### `reddit.auth.exchange`
+
+Exchanges a Reddit OAuth callback code for tokens and can write the credential JSON file under configured write roots. Raw tokens, client secrets, and authorization codes are not returned.
+
+Permissions:
+
+- `read_env`
+- `network`
+- `write_credentials`
+
+### `reddit.auth.refresh`
+
+Refreshes Reddit OAuth access credentials from `REDDIT_CREDENTIALS_FILE` or `refresh_token_ref`, preserving the refresh token when Reddit does not return a replacement.
+
+Permissions:
+
+- `read_env`
+- `network`
+- `read_credentials`
+- `write_credentials`
+
+### `reddit.auth.status`
+
+Validates the configured Reddit access token with a safe account/status response.
+
+Permissions:
+
+- `read_env`
+- `network`
+- `read_credentials`
+
+### `reddit.saved.collect`
+
+Collects media-bearing Reddit saved items for `username` or `me`, supports `after` pagination and optional cursor storage, and normalizes supported submissions/comments into shared media items. It does not download files or write media-file records.
+
+First-version parser support includes Reddit-hosted single images, Reddit gallery images, Reddit-hosted video fallback URLs, and direct external image/video URLs with stable file extensions. Unsupported embeds and comments without direct media are skipped.
+
+Permissions:
+
+- `read_env`
+- `network`
+- `read_credentials`
+- `write_db`
+
+## X Tools
+
+### `x.auth.start`
+
+Generates an X OAuth 2.0 Authorization Code with PKCE URL, state, code verifier, and code challenge.
+
+Permissions:
+
+- none
+
+### `x.auth.exchange`
+
+Exchanges an X OAuth authorization code for tokens. It returns only redacted session metadata. Raw tokens can be written to `credential_output_path` or `X_CREDENTIALS_FILE`.
+
+Permissions:
+
+- `network`
+- `write_credentials`
+
+### `x.auth.refresh`
+
+Refreshes X OAuth tokens using an explicit refresh token, `refresh_token_ref`, or configured credential file. It preserves an existing refresh token when X does not return a replacement.
+
+Permissions:
+
+- `network`
+- `read_credentials`
+- `write_credentials`
+
+### `x.auth.status`
+
+Validates X token presence, expiration, required scopes, and authenticated user ID through `/2/users/me`.
+
+Permissions:
+
+- `network`
+- `read_credentials`
+
+### `x.bookmarks.collect`
+
+Fetches media-bearing X bookmarks for the authenticated user, normalizes them into media items, returns rate-limit metadata, and can store the bookmark pagination cursor in SQLite.
+
+Permissions:
+
+- `network`
+- `read_credentials`
+- `write_db`
+
+## Credential Notes
+
+- X credentials may come from `X_ACCESS_TOKEN` / `X_REFRESH_TOKEN` or from `X_CREDENTIALS_FILE`.
+- Pixiv credentials may come from `PIXIV_CREDENTIALS_FILE`, `PIXIV_REFRESH_TOKEN`, or `PIXIV_ACCESS_TOKEN`. Prefer `pixiv.auth.login` for first-time local setup.
+- Telegram credentials come from `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`, and `TELEGRAM_SESSION_FILE`; the session file is a credential and should live under `${MEDIAGENT_DATA_DIR}/credentials/`. Prefer `telegram.auth.login` for first-time local setup.
+- Reddit credentials may come from `REDDIT_CREDENTIALS_FILE` or token environment variables. Prefer `reddit.auth.start` + `reddit.auth.exchange` for first-time setup, and always use a unique descriptive `REDDIT_USER_AGENT`.
+- `X_CREDENTIALS_FILE`, `PIXIV_CREDENTIALS_FILE`, `TELEGRAM_SESSION_FILE`, and `REDDIT_CREDENTIALS_FILE` should point to explicit files controlled by the user.
+- Token exchange and refresh outputs do not include raw tokens.
+- SQLite run records must never store raw access tokens, refresh tokens, cookies, sessions, or bot tokens.

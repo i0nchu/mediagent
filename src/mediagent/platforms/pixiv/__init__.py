@@ -1,0 +1,1 @@
+"""Pixiv platform adapter."""

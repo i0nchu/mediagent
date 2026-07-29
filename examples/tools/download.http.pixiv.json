@@ -1,0 +1,9 @@
+{
+  "url": "https://i.pximg.net/img-original/path/from/pixiv.collect.png",
+  "target_path": "${MEDIAGENT_DATA_DIR}/pixiv/example/example.png",
+  "expected_mime_prefix": "image/",
+  "overwrite": false,
+  "headers": {
+    "Referer": "https://www.pixiv.net/"
+  }
+}

@@ -1,0 +1,107 @@
+{
+  "illusts": [
+    {
+      "id": 1001,
+      "title": "Single image",
+      "type": "illust",
+      "caption": "sample",
+      "create_date": "2026-01-01T00:00:00+09:00",
+      "page_count": 1,
+      "width": 1000,
+      "height": 1200,
+      "sanity_level": 2,
+      "x_restrict": 0,
+      "total_bookmarks": 10,
+      "total_view": 100,
+      "visible": true,
+      "is_muted": false,
+      "tools": [],
+      "tags": [
+        {
+          "name": "original",
+          "translated_name": "Original"
+        }
+      ],
+      "user": {
+        "id": 42,
+        "name": "Pixiv Artist",
+        "account": "artist"
+      },
+      "image_urls": {
+        "large": "https://i.pximg.net/img-master/img/2026/01/01/00/00/00/1001_p0_master1200.jpg"
+      },
+      "meta_single_page": {
+        "original_image_url": "https://i.pximg.net/img-original/img/2026/01/01/00/00/00/1001_p0.png"
+      },
+      "meta_pages": []
+    },
+    {
+      "id": 1002,
+      "title": "Multi page",
+      "type": "manga",
+      "caption": "",
+      "create_date": "2026-01-02T00:00:00+09:00",
+      "page_count": 2,
+      "width": 900,
+      "height": 1100,
+      "sanity_level": 2,
+      "x_restrict": 0,
+      "total_bookmarks": 20,
+      "total_view": 200,
+      "visible": true,
+      "is_muted": false,
+      "tools": [],
+      "tags": [],
+      "user": {
+        "id": 42,
+        "name": "Pixiv Artist",
+        "account": "artist"
+      },
+      "image_urls": {
+        "large": "https://i.pximg.net/img-master/img/2026/01/02/00/00/00/1002_p0_master1200.jpg"
+      },
+      "meta_single_page": {},
+      "meta_pages": [
+        {
+          "image_urls": {
+            "original": "https://i.pximg.net/img-original/img/2026/01/02/00/00/00/1002_p0.png"
+          }
+        },
+        {
+          "image_urls": {
+            "original": "https://i.pximg.net/img-original/img/2026/01/02/00/00/00/1002_p1.png"
+          }
+        }
+      ]
+    },
+    {
+      "id": 1003,
+      "title": "Ugoira",
+      "type": "ugoira",
+      "caption": "",
+      "create_date": "2026-01-03T00:00:00+09:00",
+      "page_count": 1,
+      "width": 800,
+      "height": 800,
+      "sanity_level": 2,
+      "x_restrict": 0,
+      "total_bookmarks": 30,
+      "total_view": 300,
+      "visible": true,
+      "is_muted": false,
+      "tools": [],
+      "tags": [],
+      "user": {
+        "id": 42,
+        "name": "Pixiv Artist",
+        "account": "artist"
+      },
+      "image_urls": {
+        "large": "https://i.pximg.net/img-master/img/2026/01/03/00/00/00/1003_p0_master1200.jpg"
+      },
+      "meta_single_page": {},
+      "meta_pages": []
+    }
+  ],
+  "next_url": "https://app-api.pixiv.net/v1/user/bookmarks/illust?user_id=99&restrict=public&max_bookmark_id=555"
+}

@@ -1,0 +1,17 @@
+{
+  "ugoira_metadata": {
+    "zip_urls": {
+      "medium": "https://i.pximg.net/img-zip-ugoira/img/2026/01/03/00/00/00/1003_ugoira600x600.zip"
+    },
+    "frames": [
+      {
+        "file": "000000.jpg",
+        "delay": 80
+      },
+      {
+        "file": "000001.jpg",
+        "delay": 80
+      }
+    ]
+  }
+}

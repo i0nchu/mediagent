@@ -1,0 +1,7 @@
+{
+  "client_id": "example-client-id",
+  "redirect_uri": "http://127.0.0.1:8765/callback",
+  "code": "paste-oauth-code-here",
+  "code_verifier": "paste-code-verifier-from-x.auth.start",
+  "credential_output_path": "${MEDIAGENT_DATA_DIR}/credentials/x-oauth.json"
+}

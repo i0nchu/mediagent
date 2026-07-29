@@ -1,0 +1,5 @@
+{
+  "restrict": "public",
+  "store_cursor": true,
+  "include_ugoira_metadata": true
+}

@@ -1,0 +1,3 @@
+{
+  "credential_output_path": "${MEDIAGENT_DATA_DIR}/credentials/x-oauth.json"
+}

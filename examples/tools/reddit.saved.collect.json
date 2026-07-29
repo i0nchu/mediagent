@@ -1,0 +1,6 @@
+{
+  "username": "me",
+  "limit": 100,
+  "store_cursor": true,
+  "media_types": ["photo", "video"]
+}

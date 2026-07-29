@@ -1,0 +1,12 @@
+{
+  "access_token": "secret-access",
+  "expires_in": 3600,
+  "token_type": "bearer",
+  "refresh_token": "secret-refresh",
+  "scope": "read",
+  "user": {
+    "id": 99,
+    "account": "pixiv_user",
+    "name": "Pixiv User"
+  }
+}

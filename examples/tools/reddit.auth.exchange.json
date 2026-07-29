@@ -1,0 +1,4 @@
+{
+  "code": "paste-callback-code-here",
+  "credential_output_path": "${MEDIAGENT_DATA_DIR}/credentials/reddit-oauth.json"
+}

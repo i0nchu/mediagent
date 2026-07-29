@@ -1,0 +1,11 @@
+{
+  "restrict": "public",
+  "library_root": "${MEDIAGENT_DATA_DIR}/library",
+  "limit": 10,
+  "overwrite": false,
+  "retry_failed": false,
+  "attempts": 3,
+  "timeout_seconds": 30,
+  "include_ugoira_metadata": true,
+  "store_cursor": true
+}

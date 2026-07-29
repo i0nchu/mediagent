@@ -1,0 +1,5 @@
+{
+  "path": "${MEDIAGENT_DATA_DIR}/manual",
+  "kind": "directory",
+  "create": true
+}

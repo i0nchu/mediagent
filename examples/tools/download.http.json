@@ -1,0 +1,7 @@
+{
+  "url": "https://example.com/",
+  "target_path": "${MEDIAGENT_DATA_DIR}/example.html",
+  "expected_mime_prefix": "text/html",
+  "overwrite": true,
+  "headers": {}
+}

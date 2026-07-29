@@ -1,0 +1,10 @@
+{
+  "platform": "example",
+  "remote_id": "photo-1",
+  "remote_url": "https://example.invalid/photo-1.jpg",
+  "local_path": "/tmp/mediagent-data/example/photo-1.jpg",
+  "mime_type": "image/jpeg",
+  "size_bytes": 4,
+  "checksum": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "status": "downloaded"
+}

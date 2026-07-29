@@ -1,0 +1,8 @@
+{
+  "target_path": "${MEDIAGENT_DATA_DIR}/metadata.json",
+  "metadata": {
+    "title": "Example",
+    "token": "must-be-redacted"
+  },
+  "overwrite": true
+}

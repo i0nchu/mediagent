@@ -1,0 +1,61 @@
+{
+  "data": [
+    {
+      "id": "111",
+      "author_id": "42",
+      "created_at": "2026-01-01T00:00:00.000Z",
+      "attachments": {
+        "media_keys": [
+          "3_aaa",
+          "7_bbb"
+        ]
+      }
+    }
+  ],
+  "includes": {
+    "users": [
+      {
+        "id": "42",
+        "name": "Example User",
+        "username": "example"
+      }
+    ],
+    "media": [
+      {
+        "media_key": "3_aaa",
+        "type": "photo",
+        "url": "https://pbs.twimg.com/media/photo.jpg",
+        "width": 1200,
+        "height": 800
+      },
+      {
+        "media_key": "7_bbb",
+        "type": "video",
+        "width": 1280,
+        "height": 720,
+        "duration_ms": 3000,
+        "variants": [
+          {
+            "content_type": "application/x-mpegURL",
+            "url": "https://video.twimg.com/video.m3u8"
+          },
+          {
+            "bit_rate": 832000,
+            "content_type": "video/mp4",
+            "url": "https://video.twimg.com/video-low.mp4"
+          },
+          {
+            "bit_rate": 2176000,
+            "content_type": "video/mp4",
+            "url": "https://video.twimg.com/video-high.mp4"
+          }
+        ]
+      }
+    ]
+  },
+  "meta": {
+    "result_count": 1,
+    "newest_id": "111",
+    "next_token": "next-page"
+  }
+}

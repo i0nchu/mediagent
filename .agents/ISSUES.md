@@ -1,0 +1,81 @@
+# Implementation Issues
+
+This file tracks known caveats that matter for the next handoff. Resolved historical issues should not stay here unless they still affect implementation decisions.
+
+## Open
+
+### 1. X OAuth is implemented but not live-verified
+
+- **Status:** Open external verification.
+- **Observed in:** `src/mediagent/platforms/x/`, `src/mediagent/tools/x_tools.py`
+- **Current behavior:** X OAuth PKCE, exchange, refresh, status, and bookmark collection are implemented and covered by fake HTTP / fixture tests. No real X OAuth client or user credentials are stored in the repository, so live authentication has not been verified.
+- **Expected next step:** With user-provided X app credentials, run `x.auth.start`, complete the browser authorization flow, run `x.auth.exchange`, then validate with `x.auth.status` and `x.bookmarks.collect`.
+
+### 2. Download orchestration is still manual for platforms without sync helpers
+
+- **Status:** Open by design.
+- **Observed in:** `src/mediagent/tools/download_tools.py`, `src/mediagent/tools/metadata_tools.py`, `src/mediagent/workflows/`
+- **Current behavior:** Pixiv and Telegram now have deterministic sync helpers. Reddit explicit links can be synced through the experimental Telegram inbox resolver, but Reddit saved items and X remain collect-only. Workflow V1 does not exist yet.
+- **Expected next step:** Harden explicit-link resolver behavior, add the next platform sync helper, discuss additional Pixiv/Telegram source tools, or start Workflow V1 only after the sync contract remains stable.
+
+### 3. Workflow V1 is intentionally deferred
+
+- **Status:** Open by design.
+- **Observed in:** `src/mediagent/workflows/`
+- **Current behavior:** Tools can be called from Python and CLI, but YAML workflow validation/execution does not exist yet.
+- **Expected next step:** Keep Workflow V1 deferred until deterministic sync behavior has stayed stable through cleanup/recovery tooling and the bottom/platform tool contracts remain stable.
+
+## Recently Resolved
+
+- Telegram numeric dialog selectors can now be reused directly. `telegram.dialogs.list` may return selectors such as `"3779502941"`; the real Telegram entity selector now converts numeric strings to integers before Telethon lookup, and regression coverage confirms string IDs, negative channel IDs, saved messages, and username selectors.
+- Phase 18 Reddit video-only explicit-link support is implemented. `reddit_media_link` now resolves direct `v.redd.it` MP4 URLs before generic direct-media fallback, extracts explicit `v.redd.it/...DASH_*.mp4` candidates from Reddit post/legacy pages, maps them to `video` / `v0` / `library/reddit/video/...`, and marks `audio_status: "not_merged"` with `mux_required: true`. Direct `v.redd.it/<id>` manifest links still skip as `unsupported_media_type` with `reason: video_manifest_unsupported`; audio muxing and full DASH/HLS handling remain deferred.
+- Phase 17 Reddit explicit-link resolver foundation is implemented. `reddit_media_link` handles direct `i.redd.it` images, Reddit post/share links, bounded anonymous HTML, and `old.reddit.com` fallback with static `over18=1`. Fake-client tests cover direct image resolution, modern markup extraction, JS verification fallback, gallery skip behavior, single-MP4 Reddit video resolution, highest DASH candidate selection, and Telegram inbox sync into the Reddit layout. Live Telegram inbox verification on 2026-07-29 UTC resolved and downloaded one Reddit JPEG to `/home/ion/projects/mediagent/mediagent-data/live-test-phase17/library/reddit/photo/2026/07/20260728__reddit__t3_1v8yi6w__p0.jpg`; second-run dedupe queued 0 downloads, and `library.file.verify` reported 4 valid live-test files.
+- Phase 16 generic HTML resolver candidate selection now prefers a clearly marked original/full media URL over preview or thumbnail candidates while preserving ambiguous skips when there is no single winner. Live Telegram inbox verification downloaded a valid Danbooru original PNG and deduped a previously downloaded nhentai page; a Reddit short-link page remained skipped because the returned HTML exposed no static media candidates.
+- Phase 16 generic HTML media discovery is implemented without a domain allowlist. It handles single clear public HTML media targets, HEAD-forbidden HTML pages, and X age/login walls without downloading default preview images. Live Telegram inbox verification downloaded one valid PNG from the public HTML test link and skipped the X link as `requires_auth`.
+- Phase 16 undocumented Telegram inbox link resolver is implemented behind experimental boundaries with `link.resolve.preview`, `link.resolve.to_media_item`, `telegram.inbox.collect_links`, `telegram.inbox.sync_links`, hidden experimental CLI routing, `link_queue` schema v6, origin-source storage metadata, and link-safe GET downloads.
+- Phase 16 URL safety now rejects userinfo before normalization and treats malformed URLs as structured unsafe skips. Regression tests cover username-only URLs, username/password URLs, invalid ports, extraction skip behavior, and resolver preview skip behavior.
+- Phase 16 experimental tool boundaries are enforced. Normal `tools list` hides experimental tools, normal inspect/run rejects them, and top-level help does not expose the hidden experimental command path.
+- Phase 16 link sync uses a link-safe GET path that revalidates redirects, enforces byte limits, rejects oversized bodies, validates MIME at GET time, and applies MOV fallback only when the GET final URL itself has a `.mov` suffix.
+- Reddit Phase 14 foundation is implemented with `reddit.auth.start`, `reddit.auth.exchange`, `reddit.auth.refresh`, `reddit.auth.status`, and `reddit.saved.collect`; fake-client tests cover auth flows, redaction, generic user-agent rejection, unsafe credential paths, saved-listing normalization, cursor storage, dry-run behavior, media-type filtering, saved comment skip, and unsupported embed skip.
+- Phase 14 Reddit unsafe DB path handling is fixed. `reddit.saved.collect` validates input `db_path` against `context.allowed_write_roots()` before network work or cursor writes, returns `unsafe_db_path` for out-of-root paths, and has regression coverage proving the outside SQLite file is not created.
+- Phase 14 Reddit auth failure redaction is fixed. `reddit.auth.exchange` / refresh failure payloads pass through Reddit-specific auth sanitization so `code`, `authorization_code`, `access_token`, `refresh_token`, and `client_secret` are redacted; regression coverage proves `SECRET_AUTH_CODE` is absent from `ToolResult.to_dict()`.
+- Phase 13E cleanup/recovery foundation is implemented through `core.cleanup.media_state`. It supports dry-run planning, explicit apply confirmation, quarantine-before-DB-reset behavior, credential path protection, selector validation, and path-safety tests.
+- Direct Telegram `download_ref` validation is complete. `telegram.media.download` now validates direct and nested refs before dry-run or network work, requires a chat selector plus `message_id` and `media_id`, and has regression coverage for empty, partially populated, and missing nested refs.
+- Telegram sync cancellation recovery is implemented at the item boundary. If a streamed media download is cancelled after `.partial` creation, sync records a failed file, marks the item failed/retryable, inserts a failed run record, removes the partial file, and stops the current run without continuing additional downloads.
+- Telegram stream-safe real downloads are implemented. The real Telethon adapter writes directly to `.partial`, `timeout_seconds` is enforced around the download call, checksums are computed in chunks, and a one-hour Telegram video was downloaded successfully on 2026-07-24 UTC.
+- Telegram real live verification is complete for the current phase. `telegram.auth.login`, `telegram.auth.status`, curated link-inbox collection, two small media downloads, one long video download, scanner-friendly layout placement, `library.file.verify`, and second-run dedupe were verified with a real user session on 2026-07-24 UTC.
+- The real Telethon client no longer enters Telethon's interactive prompt during `telegram.auth.login start`; the adapter now uses explicit connect/disconnect boundaries.
+- Private Telegram `t.me/c/...` download links now resolve numeric `-100...` chat IDs correctly when downloading linked media.
+- Telegram inline 2FA password input is no longer supported. `telegram.auth.login` public schema exposes only `password_ref`, the handler rejects raw `password` input before contacting Telegram, and regression coverage verifies the raw value is not leaked.
+- Localized runbooks now include the same `/tmp`-scoped real-download smoke test and cleanup guidance as the English runbook.
+- `telegram.auth.login` is implemented as a two-step local login helper for Telegram user sessions. Tests cover start, complete with `password_ref`, dry-run without config, missing code/hash validation, and secret redaction.
+- Telegram curated link-inbox support is implemented through `extract_message_links` on `telegram.messages.collect` and `telegram.messages.sync`. Tests cover extracting a message link from a user-controlled inbox channel, resolving linked media, and advancing only the inbox cursor.
+- The Telegram malformed media download validation gap is fixed. `telegram.media.download` now returns `telegram_download_missing_ref` as a structured validation failure when required `download_ref` fields are missing.
+- Telegram Phase 12 media-source foundation is implemented with Telethon-backed user-session boundaries, `telegram.auth.login`, `telegram.auth.status`, `telegram.dialogs.list`, `telegram.messages.collect`, `telegram.media.download`, and `telegram.messages.sync`. Tests cover fake auth/session status, dialog filtering, protected-content exclusion, album/grouped media normalization, link-inbox extraction, dry-run no writes, Telegram-specific download finalization, deterministic sync, dedupe, partial failure, and scoped cursor storage.
+- Photo-only Pixiv sync cursor semantics are fixed. `pixiv.bookmarks.sync` now computes limit truncation against the media-type-filtered item set and stores scoped cursors such as `bookmarks:public:photo`. Regression tests cover non-dry-run photo-only cursor storage and ensure the unscoped cursor is not mutated by a filtered sync.
+- Platform-specific library roots are supported for scanner-friendly downloads. Tools now honor explicit `library_root` / `target_dir`, then `MEDIAGENT_<PLATFORM>_LIBRARY_DIR`, then `MEDIAGENT_LIBRARY_DIR`, then `${MEDIAGENT_DATA_DIR}/library`; `storage.path.plan` has regression coverage for the platform-specific root path.
+- The formal Pixiv full-bookmark automation gap is closed. `pixiv.bookmarks.sync` now supports committed `max_pages` pagination and `media_types` filtering, with tests for multi-page photo-only dry-run. Live post-download dry-run and non-dry runs with `{"max_pages":20,"media_types":["photo"]}` scanned 11 pages, collected 309 raw items, filtered 306 photo items, and correctly skipped all 306 already-downloaded items with 0 queued downloads; the non-dry run recorded one successful SQLite tool run.
+- The Pixiv sync cursor advancement bug is fixed. `pixiv.bookmarks.sync` now prevents the raw collector from storing cursors, stores cursors only from the sync boundary after a fully successful untruncated page, and leaves the cursor unchanged when `limit` truncates the collected page or the run is partial/failed. Regression tests cover both `limit < collected` no-advance behavior and full-success cursor storage.
+- Phase 9 deterministic sync status ownership now exists through `media.item.set_status`, `db.update_media_item_status`, `media_items.downloaded_at`, and `src/mediagent/core/sync.py`; `pixiv.bookmarks.sync` updates parent item status to `downloaded`, `partial`, or `failed` after file processing.
+- The old-database `downloaded_at` compatibility bug was fixed with `_ensure_media_items_schema()`, `SCHEMA_VERSION = "4"`, and an old-v3 regression test for `media.item.set_status`.
+- The initial `pixiv.bookmarks.sync` missing-helper runtime crash was fixed by defining the sync helpers, adding `examples/tools/pixiv.bookmarks.sync.json`, and covering dry-run, already-downloaded skip, successful multi-file download, partial failure, path safety, Pixiv `Referer`, metadata writing, file records, and status transitions.
+- Phase 5 bottom tool hardening now has examples, CLI smoke tests, structured error categories, rate-limit metadata, sync cursor helpers, media file helpers, and platform-agnostic fixtures.
+- Credential tools now use `read_credentials` / `write_credentials`, redact token-bearing outputs, support explicit credential files, and keep credential writes inside configured write roots.
+- `media.file.upsert` is idempotent when `remote_url` or `local_path` is missing by using a non-null `file_key`.
+- X generic auth status can honor credential refs with semantic keys such as `access_token`, `refresh_token`, `scope`, and `expires_at`.
+- `AuthSession.to_dict()` preserves safe status fields such as `refresh_available` while still redacting metadata secrets.
+- Public auth/X schemas no longer expose raw `access_token` or raw `refresh_token` input fields for the checked tools; `x.bookmarks.collect` uses configured credentials and `auth.session.refresh` uses `refresh_token_ref` / credential files.
+- Pixiv Phase 8 first slice exists with refresh-token auth, bookmark collection, multi-page normalization, ugoira metadata preservation, credential-file safety checks, and fixture tests.
+- `download.http` supports custom request headers so Pixiv media downloads can include `Referer: https://www.pixiv.net/`.
+- Generic `auth.session.status` and `auth.session.refresh` now route Pixiv sessions, with focused tests.
+- Generic `auth.session.status` now honors Pixiv `credential_refs` with semantic keys such as `refresh_token`, matching the X credential-ref path.
+- Generic `auth.session.status` now accepts usable Pixiv access-token sessions from both environment variables and `credential_refs`, matching `pixiv.auth.status`.
+- `pixiv.auth.login` is implemented as a two-step local OAuth/PKCE helper: start prints a login URL and code verifier; exchange accepts a short-lived callback URL or raw callback code, writes the credential file, and never stores the Pixiv password.
+- `.env` and `.env.example` now present `PIXIV_CREDENTIALS_FILE` as the normal output path for `pixiv.auth.login`, label `PIXIV_REFRESH_TOKEN` as an optional fallback, and do not add real token values.
+- Pixiv login exchange failure payloads redact submitted authorization codes and upstream `"code"` fields before returning structured errors.
+- `pixiv.auth.login` has fixture/fake-client coverage for PKCE start, exchange success, dry-run, unsafe credential paths, failed exchange redaction, and credential writing.
+- Pixiv live verification completed on 2026-07-21 UTC with user-provided login: `pixiv.auth.status` returned a usable session, `pixiv.bookmarks.collect` returned 30 public bookmark items, and `download.http` downloaded one JPEG bookmark image to `/home/ion/projects/mediagent/mediagent-data/pixiv/live-test/143734851_p0.jpg` with checksum `sha256:72c9988b5d32786423966ff7aae99166041b532571a83f7e4bda1adcd442e2fe`.
+- Localized issue handoffs have been synced with the current English issue state.
+- Localized TODO handoffs now include the Pixiv `pixiv.auth.login` / OAuth PKCE planning update, including authorization-code exchange, credential-file writing, redaction tests, and skipped-by-default live browser tests.
+- English, Traditional Chinese, and Japanese handoff docs have been synced to the Pixiv first-slice status.
+- The default test suite is green: `uv run --locked python -m unittest discover -s tests` runs 160 tests successfully.

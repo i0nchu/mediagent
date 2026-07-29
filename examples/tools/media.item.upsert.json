@@ -1,0 +1,13 @@
+{
+  "items": [
+    {
+      "platform": "example",
+      "remote_id": "photo-1",
+      "media_type": "photo",
+      "source_url": "https://example.invalid/photo-1",
+      "metadata": {
+        "title": "Example photo"
+      }
+    }
+  ]
+}

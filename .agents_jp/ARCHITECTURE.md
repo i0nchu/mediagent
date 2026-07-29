@@ -1,0 +1,134 @@
+# Mediagent Architecture
+
+## Product Boundary
+
+Mediagent は media の収集と download だけを担当します。media library management、media browsing、repost、sharing、gallery UI は提供しません。
+
+## Package Layout
+
+```text
+src/mediagent/
+  cli.py
+  core/
+  tools/
+  platforms/
+  workflows/
+```
+
+## Core Layer
+
+`src/mediagent/core/` は共有 primitives を置きます。
+
+- `tooling.py`: `ToolSpec`、`ToolContext`、`ToolResult`、permissions、registry errors、`ToolRegistry`
+- `db.py`: SQLite schema と persistence helpers
+- `filesystem.py`: path placeholder expansion、normalization、write-boundary checks
+- `auth.py`: credential refs、credential JSON helpers、redacted auth session model
+- `http.py`: testable HTTP client abstraction
+- `rate_limit.py`: shared rate-limit metadata extraction
+- `redaction.py`: secret redaction helpers
+- `schema.py`: lightweight JSON-schema-compatible input validation
+
+Core code に platform-specific API behavior を入れてはいけません。
+
+## Tool Layer
+
+`src/mediagent/tools/` は agent-callable tools を置きます。
+
+各 tool は必ず:
+
+- 安定した `ToolSpec` を宣言する
+- permissions を宣言する
+- dry-run support を宣言する
+- JSON-compatible input/output schemas を提供する
+- `ToolResult` を返す
+- secrets を漏らさない
+
+CLI、future workflows、future Agent Core は同じ registry から tools を呼びます。
+
+## Platform Layer
+
+`src/mediagent/platforms/` は platform-specific client、auth、parser を置きます。
+
+現在:
+
+- `platforms/x/` 実装済み
+- `platforms/pixiv/`
+- `platforms/telegram/`
+- `platforms/reddit/`
+
+`platforms/x/` には次があります。
+
+- `auth.py`: OAuth 2.0 PKCE、token refresh、credential file support、auth status checks
+- `client.py`: X API `/2/users/me` と authenticated-user bookmarks
+- `parser.py`: X tweet/media expansions を normalized media items に変換
+
+`platforms/pixiv/` には次があります。
+
+- `auth.py`: local OAuth/PKCE setup、explicit refresh-token auth、token refresh、credential file support、auth session model
+- `client.py`: Pixiv App API user detail、bookmarked illustrations、ugoira metadata calls
+- `parser.py`: Pixiv works を normalized media items に変換し、multi-page works と ugoira metadata を扱う
+
+`platforms/telegram/` には次があります。
+
+- `auth.py`: Telethon-compatible user-session configuration、session-path safety、safe auth-session modeling
+- `client.py`: fake-client hooks と lazy Telethon usage を持つ Telegram client boundary
+- `parser.py`: Telegram message/media shapes を normalized media items に変換し、grouped media/albums を扱う
+
+`platforms/reddit/` には次があります。
+
+- `auth.py`: Reddit OAuth config、token exchange/refresh/status、credential file helpers、Reddit rate-limit metadata parsing
+- `client.py`: Reddit OAuth API `/api/v1/me` と authenticated-user saved listings calls
+- `parser.py`: saved listing entries を first-version image/gallery/video/direct-media shapes の normalized media items に変換
+
+## CLI Flow
+
+```text
+CLI args
+-> read JSON input
+-> create ToolContext
+-> find tool in ToolRegistry
+-> validate input
+-> run tool
+-> print JSON or human-readable output
+-> return stable exit code
+```
+
+Exit codes:
+
+- `0`: success
+- `1`: runtime/network/rate-limit failure
+- `2`: validation、auth、permission、filesystem、database、user input error
+
+## 現在の Tool Execution Flow
+
+```text
+platform collector output
+-> media.item.upsert
+-> status filtering
+-> download.http
+-> metadata.write
+-> media.file.upsert
+-> media.item.set_status
+-> core.run.record
+```
+
+`x.bookmarks.collect`、`pixiv.bookmarks.collect`、`telegram.messages.collect`、`reddit.saved.collect` は collection と normalization を担当します。Pixiv と Telegram には full collect-to-download path の deterministic wrappers として `pixiv.bookmarks.sync` と `telegram.messages.sync` があります。X と Reddit は独自 sync helpers または Workflow V1 ができるまで manual CLI/tool composition を使います。
+
+## Future Policy Layer
+
+RuleSpec は planned policy layer であり、implemented runtime feature ではありません。
+
+将来の想定形:
+
+```text
+platform collector
+-> candidate media items
+-> deterministic RuleSpec policy
+-> sync/download pipeline
+```
+
+LLM または Agent Core integrations は natural-language intent を RuleSpec files に変換する補助に使えます。ただし daemon / cron execution は stored deterministic rules を実行するべきです。Platform adapters に quality scoring や content-preference logic を入れてはいけません。
+
+## Deferred Workflow Layer
+
+`src/mediagent/workflows/` は placeholder です。ユーザーが明示的に選ぶか、次の platform foundation により shared sync contract が十分安定したと判断できるまで、Workflow V1 は実装しないでください。

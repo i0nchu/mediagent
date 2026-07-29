@@ -1,0 +1,14 @@
+{
+  "file": {
+    "page": 0,
+    "url": "https://example.invalid/media/1001_p0.jpg"
+  },
+  "item": {
+    "media_type": "photo",
+    "metadata": {
+      "create_date": "2026-01-01T00:00:00+00:00"
+    },
+    "platform": "pixiv",
+    "remote_id": "1001"
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "chat": "saved_messages",
+  "extract_message_links": false,
+  "max_messages": 100,
+  "media_types": ["photo", "video"],
+  "store_cursor": true
+}

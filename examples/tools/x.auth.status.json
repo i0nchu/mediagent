@@ -1,0 +1,7 @@
+{
+  "required_scopes": [
+    "tweet.read",
+    "users.read",
+    "bookmark.read"
+  ]
+}

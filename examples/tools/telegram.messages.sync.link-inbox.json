@@ -1,0 +1,10 @@
+{
+  "chat": {
+    "alias": "mediagent_inbox",
+    "username": "your_private_collection_channel"
+  },
+  "extract_message_links": true,
+  "max_messages": 100,
+  "media_types": ["photo", "video"],
+  "store_cursor": true
+}

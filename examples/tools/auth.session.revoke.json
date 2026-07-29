@@ -1,0 +1,11 @@
+{
+  "provider": "x",
+  "confirm": false,
+  "credential_refs": [
+    {
+      "source": "file",
+      "name": "${MEDIAGENT_DATA_DIR}/credentials/x-oauth.json",
+      "key": "access_token"
+    }
+  ]
+}

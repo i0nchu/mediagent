@@ -1,0 +1,8 @@
+{
+  "run_type": "tool",
+  "name": "example",
+  "status": "success",
+  "summary": {
+    "example": true
+  }
+}

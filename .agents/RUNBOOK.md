@@ -1,0 +1,482 @@
+# Mediagent Runbook
+
+## Environment
+
+Use Python 3.12+.
+
+Preferred command runner:
+
+```bash
+uv run --locked ...
+```
+
+Fallback during local development:
+
+```bash
+PYTHONPATH=src python3 -m mediagent ...
+```
+
+## Run Tests
+
+```bash
+PYTHONPATH=src python3 -m unittest discover -s tests -v
+```
+
+## Check Lockfile
+
+```bash
+uv lock --check
+```
+
+If it fails after packaging changes, run:
+
+```bash
+uv lock
+```
+
+## CLI Smoke Checks
+
+```bash
+uv run --locked mediagent tools list --json
+uv run --locked mediagent tools inspect core.env.check --json
+uv run --locked mediagent tools inspect x.bookmarks.collect --json
+uv run --locked mediagent tools run x.auth.start --input examples/tools/x.auth.start.json --json
+```
+
+## Initialize a Temporary Database
+
+```bash
+MEDIAGENT_DB_PATH=/tmp/mediagent.sqlite3 \
+  uv run --locked mediagent tools run core.db.init --json
+```
+
+## Preview Cleanup / Recovery
+
+Always preview cleanup before applying it. Planning mode does not mutate files or SQLite:
+
+```bash
+uv run --locked mediagent tools run core.cleanup.media_state \
+  --input examples/tools/core.cleanup.media_state.json --json
+```
+
+Apply mode requires `confirm: true` and quarantines files before resetting matching media state:
+
+```bash
+printf '{"mode":"apply","platform":"pixiv","status":"downloaded","confirm":true}' \
+  | uv run --locked mediagent tools run core.cleanup.media_state --input - --json
+```
+
+## Dry-Run a Filesystem Operation
+
+```bash
+printf '{"path":"${MEDIAGENT_DATA_DIR}/pixiv","kind":"directory","create":true}' \
+  | MEDIAGENT_DATA_DIR=/tmp/mediagent-data uv run --locked mediagent tools run core.path.prepare --input - --dry-run --json
+```
+
+## Real Download Smoke Test
+
+Only write to `/tmp` for smoke tests.
+
+```bash
+printf '{"url":"https://example.com/","target_path":"/tmp/mediagent-download-test/example.html","expected_mime_prefix":"text/html","overwrite":true}' \
+  | MEDIAGENT_DATA_DIR=/tmp/mediagent-download-test uv run --locked mediagent tools run download.http --input - --json
+```
+
+Clean up:
+
+```bash
+rm -rf /tmp/mediagent-download-test /tmp/mediagent.sqlite3
+```
+
+## X OAuth Setup Shape
+
+Do not commit OAuth credentials. For local testing, keep credential files under `MEDIAGENT_DATA_DIR`:
+
+```bash
+export MEDIAGENT_DATA_DIR=/tmp/mediagent-data
+export X_CREDENTIALS_FILE="$MEDIAGENT_DATA_DIR/credentials/x-oauth.json"
+```
+
+Or load the local `.env` file:
+
+```bash
+set -a
+source .env
+set +a
+mkdir -p "$MEDIAGENT_DATA_DIR/credentials"
+```
+
+Generate an authorization URL:
+
+```bash
+uv run --locked mediagent tools run x.auth.start --json
+```
+
+After the browser callback provides a code, create an input JSON based on `examples/tools/x.auth.exchange.json`, then run:
+
+```bash
+uv run --locked mediagent tools run x.auth.exchange --input examples/tools/x.auth.exchange.json --json
+```
+
+Check the configured session:
+
+```bash
+uv run --locked mediagent tools run x.auth.status --input examples/tools/x.auth.status.json --json
+```
+
+Collect bookmarks:
+
+```bash
+MEDIAGENT_DB_PATH=/tmp/mediagent.sqlite3 \
+  uv run --locked mediagent tools run x.bookmarks.collect --input examples/tools/x.bookmarks.collect.json --json
+```
+
+## Pixiv Local Login And Live Test Shape
+
+Pixiv V1 supports an explicit local OAuth/PKCE helper. It does not scrape browser profiles, store passwords, or require the user to manually locate a refresh token.
+
+Load `.env`:
+
+```bash
+set -a
+source .env
+set +a
+mkdir -p "$MEDIAGENT_DATA_DIR/credentials"
+```
+
+Generate a Pixiv login URL and PKCE verifier:
+
+```bash
+uv run --locked mediagent tools run pixiv.auth.login --input examples/tools/pixiv.auth.login.start.json --json > /tmp/pixiv-login-start.json
+```
+
+Open the returned `data.authorization_url` in a browser. After Pixiv login finishes, copy the full callback URL, or copy only the `code` query parameter from it. The callback URL shape is:
+
+```text
+https://app-api.pixiv.net/web/v1/users/auth/pixiv/callback?...&code=...
+```
+
+Create an exchange input by copying `examples/tools/pixiv.auth.login.exchange.json`, replacing:
+
+- `callback_url` with the full callback URL, or use `code` with only the short-lived callback code.
+- `code_verifier` with `data.code_verifier` from `/tmp/pixiv-login-start.json`.
+- `credential_output_path` with a path under `MEDIAGENT_DATA_DIR`.
+
+Exchange the callback URL/code and write the local credential file:
+
+```bash
+uv run --locked mediagent tools run pixiv.auth.login --input /tmp/pixiv-login-exchange.json --json
+```
+
+The credential file should be:
+
+```text
+$MEDIAGENT_DATA_DIR/credentials/pixiv-oauth.json
+```
+
+If you already have a refresh token, the older refresh-token path still works. Put the refresh token in `.env`:
+
+```bash
+PIXIV_REFRESH_TOKEN=...
+PIXIV_CREDENTIALS_FILE=${MEDIAGENT_DATA_DIR}/credentials/pixiv-oauth.json
+```
+
+Create or update the local credential file:
+
+```bash
+uv run --locked mediagent tools run pixiv.auth.refresh --input examples/tools/pixiv.auth.refresh.json --json
+```
+
+Check the configured session:
+
+```bash
+uv run --locked mediagent tools run pixiv.auth.status --input examples/tools/pixiv.auth.status.json --json
+```
+
+Collect bookmarked works:
+
+```bash
+uv run --locked mediagent tools run pixiv.bookmarks.collect --input examples/tools/pixiv.bookmarks.collect.json --json
+```
+
+The collector returns normalized media items; it does not download files by itself. For normal bookmark downloading, run the deterministic sync helper:
+
+```bash
+uv run --locked mediagent tools run pixiv.bookmarks.sync --input examples/tools/pixiv.bookmarks.sync.json --json
+```
+
+Preview the planned downloads without writing files or DB rows:
+
+```bash
+uv run --locked mediagent tools run pixiv.bookmarks.sync --input examples/tools/pixiv.bookmarks.sync.json --dry-run --json
+```
+
+By default, the example writes downloaded files under the scanner-friendly library root:
+
+```text
+$MEDIAGENT_LIBRARY_DIR/<platform>/<media_type>/<yyyy>/<mm>/<yyyymmdd>__<platform>__<remote_id>__<part>.<ext>
+```
+
+Library root resolution order:
+
+1. Explicit tool input: `library_root` or legacy `target_dir`.
+2. Platform-specific environment variable: `MEDIAGENT_<PLATFORM>_LIBRARY_DIR`, such as `MEDIAGENT_PIXIV_LIBRARY_DIR`.
+3. Global environment variable: `MEDIAGENT_LIBRARY_DIR`.
+4. Fallback: `${MEDIAGENT_DATA_DIR}/library`.
+
+To keep Pixiv in its own top-level directory, set:
+
+```bash
+MEDIAGENT_PIXIV_LIBRARY_DIR=${MEDIAGENT_DATA_DIR}/pixiv
+```
+
+Because this root is already Pixiv-specific, it uses the media/date layout below that root instead of adding `pixiv/pixiv`.
+
+Pixiv image examples:
+
+```text
+$MEDIAGENT_DATA_DIR/pixiv/photo/2026/07/20260722__pixiv__143734851__p0.jpg
+$MEDIAGENT_DATA_DIR/pixiv/photo/2026/07/20260722__pixiv__143734851__p1.jpg
+```
+
+Without `MEDIAGENT_PIXIV_LIBRARY_DIR`, the shared-root examples are:
+
+```text
+$MEDIAGENT_DATA_DIR/library/pixiv/photo/2026/07/20260722__pixiv__143734851__p0.jpg
+$MEDIAGENT_DATA_DIR/library/pixiv/photo/2026/07/20260722__pixiv__143734851__p1.jpg
+```
+
+The SQLite database is read from `MEDIAGENT_DB_PATH`; each completed file is recorded in `media_files` with a library-relative path, storage layout version, checksum, size, MIME type, and file health. The parent item is marked `downloaded`, `partial`, or `failed` in `media_items`.
+
+Public library paths do not receive JSON sidecar metadata by default. Source metadata stays in SQLite/internal records. Use `write_sidecar_metadata: true` only for explicit debugging.
+
+Verify known library files without contacting Pixiv:
+
+```bash
+uv run --locked mediagent tools run library.file.verify --json
+```
+
+For manual one-file debugging, download selected Pixiv image URLs with `download.http` and a Pixiv referer header:
+
+```bash
+uv run --locked mediagent tools run download.http --input examples/tools/download.http.pixiv.json --json
+```
+
+Downloaded files go wherever the `download.http` input says. The examples place files under:
+
+```text
+$MEDIAGENT_DATA_DIR/pixiv/...
+```
+
+Metadata JSON can still be written manually with `metadata.write` when debugging, but it is not the default public-library metadata format. Until Workflow V1 exists, platforms without deterministic sync helpers still require manual CLI/tool composition or an external script.
+
+## Telegram Local Session And Live Test Shape
+
+Telegram V1 foundation is implemented and live-verified for the current phase. Real login/status, curated link-inbox collection, two small media downloads, one one-hour video download, scanner-friendly layout placement, `library.file.verify`, and second-run dedupe were verified on 2026-07-24 UTC. Real Telegram downloads stream directly to `.partial` files and are finalized only after validation and chunked checksum calculation.
+
+It uses a user MTProto session through Telethon-compatible tooling. Do not use it for sending, forwarding, deleting, or chat management.
+
+Add local-only values to `.env`:
+
+```bash
+TELEGRAM_API_ID=...
+TELEGRAM_API_HASH=...
+TELEGRAM_PHONE_NUMBER=...
+TELEGRAM_SESSION_FILE=${MEDIAGENT_DATA_DIR}/credentials/telegram.session
+```
+
+The API ID/hash come from the user's Telegram developer app. The session file is a credential. Keep it under `MEDIAGENT_DATA_DIR`, do not commit it, and do not copy it into the public media library.
+
+Load `.env`:
+
+```bash
+set -a
+source .env
+set +a
+mkdir -p "$MEDIAGENT_DATA_DIR/credentials"
+```
+
+First-time Telegram login is a two-step local flow.
+
+Request a login code:
+
+```bash
+uv run --locked mediagent tools run telegram.auth.login --input examples/tools/telegram.auth.login.json --json
+```
+
+Use the returned `phone_code_hash` with the code Telegram sends you:
+
+```json
+{
+  "mode": "complete",
+  "code": "12345",
+  "phone_code_hash": "value-from-start-output"
+}
+```
+
+Then run:
+
+```bash
+uv run --locked mediagent tools run telegram.auth.login --input /path/to/local-telegram-login-complete.json --json
+```
+
+If Telegram asks for a 2FA password, use `password_ref`. Inline 2FA passwords are rejected:
+
+```json
+{
+  "mode": "complete",
+  "code": "12345",
+  "phone_code_hash": "value-from-start-output",
+  "password_ref": {
+    "source": "env",
+    "name": "TELEGRAM_2FA_PASSWORD"
+  }
+}
+```
+
+Verify the configured session:
+
+```bash
+uv run --locked mediagent tools run telegram.auth.status --input examples/tools/telegram.auth.status.json --json
+```
+
+List selectable dialogs without downloading media:
+
+```bash
+uv run --locked mediagent tools run telegram.dialogs.list --input examples/tools/telegram.dialogs.list.json --json
+```
+
+Collect media-bearing messages from an explicit trusted source:
+
+```bash
+uv run --locked mediagent tools run telegram.messages.collect --input examples/tools/telegram.messages.collect.json --json
+```
+
+Preview a deterministic Telegram sync without writing files or DB rows:
+
+```bash
+uv run --locked mediagent tools run telegram.messages.sync --input examples/tools/telegram.messages.sync.json --dry-run --json
+```
+
+Run a bounded sync only after checking the source selector and limits:
+
+```bash
+uv run --locked mediagent tools run telegram.messages.sync --input examples/tools/telegram.messages.sync.json --json
+```
+
+For curated Telegram media, create a private collection channel and paste message links for media you want to download. Then set the channel selector in `examples/tools/telegram.messages.sync.link-inbox.json` and run:
+
+```bash
+uv run --locked mediagent tools run telegram.messages.sync --input examples/tools/telegram.messages.sync.link-inbox.json --dry-run --json
+uv run --locked mediagent tools run telegram.messages.sync --input examples/tools/telegram.messages.sync.link-inbox.json --json
+```
+
+The configured user session must be able to access each linked original message. Mediagent does not send, forward, delete, or manage Telegram chats for this flow.
+
+The latest small-media live run wrote:
+
+```text
+$MEDIAGENT_DATA_DIR/library/telegram/video/2026/07/20260720__telegram__1004315643983-26-6264845769908428204__v0.mov
+$MEDIAGENT_DATA_DIR/library/telegram/photo/2026/07/20260710__telegram__1004315643983-15-6233357569825116111__p0.jpg
+```
+
+The long-video live run wrote:
+
+```text
+$MEDIAGENT_DATA_DIR/library/telegram/video/2025/08/20250806__telegram__1002602480644-4097-6098041214500608152__v0.mp4
+```
+
+Re-running the same direct-link sync skipped the completed items.
+
+Shared-root Telegram files use:
+
+```text
+$MEDIAGENT_DATA_DIR/library/telegram/photo/2026/07/20260722__telegram__saved_messages-12345-photo-0__p0.jpg
+$MEDIAGENT_DATA_DIR/library/telegram/video/2026/07/20260722__telegram__trusted-12345-video-0__v0.mp4
+```
+
+To keep Telegram in its own top-level directory, set:
+
+```bash
+MEDIAGENT_TELEGRAM_LIBRARY_DIR=${MEDIAGENT_DATA_DIR}/telegram
+```
+
+Then files go under:
+
+```text
+$MEDIAGENT_DATA_DIR/telegram/photo/2026/07/20260722__telegram__saved_messages-12345-photo-0__p0.jpg
+$MEDIAGENT_DATA_DIR/telegram/video/2026/07/20260722__telegram__trusted-12345-video-0__v0.mp4
+```
+
+Telegram cursors are stored per source and media-type scope, for example `messages:saved_messages:photo-video`. They advance only after successful durable sync processing.
+
+## Reddit OAuth And Saved Collection Shape
+
+Reddit V1 foundation is implemented with fake-client coverage, but real live verification is skipped until the user provides Reddit app credentials. It treats saved posts as the first curated source and does not post, comment, vote, save/unsave, moderate, chat, scan subreddits, scrape HTML pages, or run third-party extractors.
+
+Add local-only values to `.env`:
+
+```bash
+REDDIT_CLIENT_ID=...
+REDDIT_CLIENT_SECRET=...
+REDDIT_REDIRECT_URI=http://127.0.0.1:8765/reddit/callback
+REDDIT_USER_AGENT='linux:mediagent:0.1 (by /u/your_username)'
+REDDIT_CREDENTIALS_FILE=${MEDIAGENT_DATA_DIR}/credentials/reddit-oauth.json
+```
+
+Load `.env`:
+
+```bash
+set -a
+source .env
+set +a
+mkdir -p "$MEDIAGENT_DATA_DIR/credentials"
+```
+
+Generate an authorization URL:
+
+```bash
+uv run --locked mediagent tools run reddit.auth.start --input examples/tools/reddit.auth.start.json --json
+```
+
+Open the returned `data.authorization_url` in a browser. After the redirect, copy the `code` query parameter into a local exchange input based on `examples/tools/reddit.auth.exchange.json`, then run:
+
+```bash
+uv run --locked mediagent tools run reddit.auth.exchange --input /path/to/local-reddit-auth-exchange.json --json
+```
+
+Check the configured session:
+
+```bash
+uv run --locked mediagent tools run reddit.auth.status --input examples/tools/reddit.auth.status.json --json
+```
+
+Collect saved media candidates without downloading:
+
+```bash
+uv run --locked mediagent tools run reddit.saved.collect --input examples/tools/reddit.saved.collect.json --json
+```
+
+Preview the collector without credentials, DB writes, or network:
+
+```bash
+uv run --locked mediagent tools run reddit.saved.collect --input examples/tools/reddit.saved.collect.json --dry-run --json
+```
+
+`reddit.saved.collect` returns normalized media items and optional cursor state only. Download orchestration remains deferred until `reddit.saved.sync` is intentionally added.
+
+## Common Troubleshooting
+
+- `ModuleNotFoundError: mediagent`: use `uv run --locked ...` or set `PYTHONPATH=src`.
+- exit code `2`: input, config, auth, permission, filesystem, or database validation problem.
+- exit code `1`: runtime, network, or rate-limit failure.
+- unsafe path error: set `MEDIAGENT_DATA_DIR` and write under that directory.
+- X auth failure: check token expiration, required scopes, and whether `X_CREDENTIALS_FILE` is inside an allowed write root.
+- Pixiv auth failure: check `PIXIV_CREDENTIALS_FILE`, token expiration, callback URL/code freshness, and whether the credential file is under `MEDIAGENT_DATA_DIR`. If using the older refresh-token path, also check `PIXIV_REFRESH_TOKEN`.
+- Pixiv download returns 403: include `{"Referer":"https://www.pixiv.net/"}` in the `download.http` headers.
+- Telegram auth failure: check `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`, `TELEGRAM_SESSION_FILE`, and whether the session file is under `MEDIAGENT_DATA_DIR`.
+- Reddit auth failure: check `REDDIT_CLIENT_ID`, `REDDIT_REDIRECT_URI`, `REDDIT_USER_AGENT`, `REDDIT_CREDENTIALS_FILE`, callback-code freshness, and whether the credential file is under `MEDIAGENT_DATA_DIR`.
+
+## Safety Reminder
+
+Do not run real platform login or media sync code until its tool is implemented with fixture tests and secret redaction checks. X and Reddit still need user-provided credentials for live verification. Pixiv and Telegram have completed user-assisted live verification for their current deterministic sync slices. Future live runs still require user-provided credentials.

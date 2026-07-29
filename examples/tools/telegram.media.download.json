@@ -1,0 +1,9 @@
+{
+  "download_ref": {
+    "chat_id": "saved_messages",
+    "message_id": "12345",
+    "media_id": "photo-0"
+  },
+  "target_path": "${MEDIAGENT_DATA_DIR}/telegram-dry-run/photo.jpg",
+  "expected_mime_prefix": "image/"
+}

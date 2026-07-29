@@ -1,0 +1,4 @@
+{
+  "chat_types": ["saved_messages", "channel"],
+  "limit": 50
+}
