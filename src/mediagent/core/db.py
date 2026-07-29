@@ -5,12 +5,12 @@ from __future__ import annotations
 import json
 import sqlite3
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 
-SCHEMA_VERSION = "6"
+SCHEMA_VERSION = "7"
 
 
 def initialize_database(db_path: Path) -> None:
@@ -418,9 +418,14 @@ def update_media_file_health(
 
 def upsert_link(db_path: Path, link: dict[str, Any]) -> dict[str, Any]:
     now = datetime.now(UTC).isoformat()
+    incoming_provenance = _link_provenance_from_input(link)
     with connect(db_path) as connection:
         existing = connection.execute(
-            "SELECT id, status FROM link_queue WHERE normalized_url = ?",
+            """
+            SELECT id, status, source_provenance_json
+            FROM link_queue
+            WHERE normalized_url = ?
+            """,
             (link["normalized_url"],),
         ).fetchone()
         if not existing:
@@ -429,9 +434,12 @@ def upsert_link(db_path: Path, link: dict[str, Any]) -> dict[str, Any]:
                 INSERT INTO link_queue (
                     ingest_platform, original_url, normalized_url, source_chat_id,
                     source_message_id, source_message_date, collector_run_id,
-                    status, skip_reason, resolution_json, created_at, updated_at
+                    status, skip_reason, resolution_json, canonical_url, aliases_json,
+                    attempt_count, max_attempts, last_error, last_error_code,
+                    last_attempt_at, next_attempt_at, retryable, lease_owner,
+                    lease_expires_at, source_provenance_json, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     link.get("ingest_platform", "unknown"),
@@ -444,15 +452,48 @@ def upsert_link(db_path: Path, link: dict[str, Any]) -> dict[str, Any]:
                     link.get("status", "queued"),
                     link.get("skip_reason"),
                     json.dumps(link.get("resolution") or {}, sort_keys=True),
+                    link.get("canonical_url"),
+                    json.dumps(link.get("aliases") or [], sort_keys=True),
+                    int(link.get("attempt_count", 0) or 0),
+                    int(link.get("max_attempts", 3) or 3),
+                    link.get("last_error"),
+                    link.get("last_error_code"),
+                    link.get("last_attempt_at"),
+                    link.get("next_attempt_at"),
+                    1 if link.get("retryable", True) else 0,
+                    link.get("lease_owner"),
+                    link.get("lease_expires_at"),
+                    json.dumps(incoming_provenance, sort_keys=True),
                     now,
                     now,
+                ),
+            )
+        else:
+            merged_provenance = _merge_link_provenance(
+                _json_list(existing["source_provenance_json"]),
+                incoming_provenance,
+            )
+            connection.execute(
+                """
+                UPDATE link_queue
+                SET source_provenance_json = ?,
+                    updated_at = ?
+                WHERE normalized_url = ?
+                """,
+                (
+                    json.dumps(merged_provenance, sort_keys=True),
+                    now,
+                    link["normalized_url"],
                 ),
             )
         row = connection.execute(
             """
             SELECT id, ingest_platform, original_url, normalized_url, source_chat_id,
                    source_message_id, source_message_date, collector_run_id, status,
-                   skip_reason, resolution_json, created_at, updated_at
+                   skip_reason, resolution_json, canonical_url, aliases_json,
+                   attempt_count, max_attempts, last_error, last_error_code,
+                   last_attempt_at, next_attempt_at, retryable, lease_owner,
+                   lease_expires_at, source_provenance_json, created_at, updated_at
             FROM link_queue
             WHERE normalized_url = ?
             """,
@@ -472,7 +513,10 @@ def get_link(db_path: Path, *, link_id: int) -> dict[str, Any] | None:
             """
             SELECT id, ingest_platform, original_url, normalized_url, source_chat_id,
                    source_message_id, source_message_date, collector_run_id, status,
-                   skip_reason, resolution_json, created_at, updated_at
+                   skip_reason, resolution_json, canonical_url, aliases_json,
+                   attempt_count, max_attempts, last_error, last_error_code,
+                   last_attempt_at, next_attempt_at, retryable, lease_owner,
+                   lease_expires_at, source_provenance_json, created_at, updated_at
             FROM link_queue
             WHERE id = ?
             """,
@@ -504,7 +548,10 @@ def list_links(
             f"""
             SELECT id, ingest_platform, original_url, normalized_url, source_chat_id,
                    source_message_id, source_message_date, collector_run_id, status,
-                   skip_reason, resolution_json, created_at, updated_at
+                   skip_reason, resolution_json, canonical_url, aliases_json,
+                   attempt_count, max_attempts, last_error, last_error_code,
+                   last_attempt_at, next_attempt_at, retryable, lease_owner,
+                   lease_expires_at, source_provenance_json, created_at, updated_at
             FROM link_queue
             {where}
             ORDER BY id
@@ -513,6 +560,102 @@ def list_links(
             params,
         ).fetchall()
     return [_link_row_to_dict(row) for row in rows]
+
+
+def list_ready_links(
+    db_path: Path,
+    *,
+    status: str | None = None,
+    limit: int | None = None,
+    now: str | None = None,
+) -> list[dict[str, Any]]:
+    if not db_path.exists():
+        return []
+    now_value = now or datetime.now(UTC).isoformat()
+    where, params = _ready_link_where(status=status, now=now_value)
+    limit_sql = ""
+    if limit is not None:
+        limit_sql = " LIMIT ?"
+        params.append(max(0, int(limit)))
+    with connect(db_path) as connection:
+        rows = connection.execute(
+            f"""
+            SELECT id, ingest_platform, original_url, normalized_url, source_chat_id,
+                   source_message_id, source_message_date, collector_run_id, status,
+                   skip_reason, resolution_json, canonical_url, aliases_json,
+                   attempt_count, max_attempts, last_error, last_error_code,
+                   last_attempt_at, next_attempt_at, retryable, lease_owner,
+                   lease_expires_at, source_provenance_json, created_at, updated_at
+            FROM link_queue
+            WHERE {where}
+            ORDER BY id
+            {limit_sql}
+            """,
+            params,
+        ).fetchall()
+    return [_link_row_to_dict(row) for row in rows]
+
+
+def claim_links(
+    db_path: Path,
+    *,
+    status: str | None = None,
+    limit: int | None = None,
+    lease_owner: str,
+    lease_seconds: int = 900,
+    now: str | None = None,
+) -> list[dict[str, Any]]:
+    if not db_path.exists():
+        return []
+    now_dt = _parse_iso_datetime(now) if now else datetime.now(UTC)
+    now_value = now_dt.isoformat()
+    lease_expires_at = (now_dt + timedelta(seconds=max(1, int(lease_seconds)))).isoformat()
+    where, params = _ready_link_where(status=status, now=now_value)
+    limit_sql = ""
+    if limit is not None:
+        limit_sql = " LIMIT ?"
+        params.append(max(0, int(limit)))
+    with connect(db_path) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        rows = connection.execute(
+            f"""
+            SELECT id
+            FROM link_queue
+            WHERE {where}
+            ORDER BY id
+            {limit_sql}
+            """,
+            params,
+        ).fetchall()
+        link_ids = [int(row["id"]) for row in rows]
+        if not link_ids:
+            return []
+        placeholders = ", ".join("?" for _value in link_ids)
+        connection.execute(
+            f"""
+            UPDATE link_queue
+            SET lease_owner = ?,
+                lease_expires_at = ?,
+                updated_at = ?
+            WHERE id IN ({placeholders})
+            """,
+            (lease_owner, lease_expires_at, now_value, *link_ids),
+        )
+        claimed = connection.execute(
+            f"""
+            SELECT id, ingest_platform, original_url, normalized_url, source_chat_id,
+                   source_message_id, source_message_date, collector_run_id, status,
+                   skip_reason, resolution_json, canonical_url, aliases_json,
+                   attempt_count, max_attempts, last_error, last_error_code,
+                   last_attempt_at, next_attempt_at, retryable, lease_owner,
+                   lease_expires_at, source_provenance_json, created_at, updated_at
+            FROM link_queue
+            WHERE id IN ({placeholders})
+            ORDER BY id
+            """,
+            link_ids,
+        ).fetchall()
+    return [_link_row_to_dict(row) for row in claimed]
 
 
 def update_link_resolution(
@@ -524,20 +667,67 @@ def update_link_resolution(
     skip_reason: str | None = None,
 ) -> dict[str, Any]:
     now = datetime.now(UTC).isoformat()
+    storage_resolution = _sanitize_link_resolution_for_storage(resolution)
+    retryable = _link_resolution_retryable(
+        status=status,
+        resolution=storage_resolution,
+        skip_reason=skip_reason,
+    )
+    last_error = None
+    last_error_code = None
+    if status in {"skipped", "failed", "deferred"}:
+        last_error_code = skip_reason or storage_resolution.get("skip_reason")
+        last_error = (storage_resolution.get("details") or {}).get("reason") or last_error_code
+    aliases = _link_aliases_from_resolution(storage_resolution)
     with connect(db_path) as connection:
+        current = connection.execute(
+            "SELECT attempt_count, max_attempts FROM link_queue WHERE id = ?",
+            (link_id,),
+        ).fetchone()
+        if not current:
+            raise ValueError(f"Unknown link: {link_id}")
+        next_attempt_count = int(current["attempt_count"]) + 1
+        max_attempts = int(current["max_attempts"])
+        stored_status = status
+        next_attempt_at = None
+        if status != "resolved" and retryable and next_attempt_count < max_attempts:
+            stored_status = "deferred"
+            next_attempt_at = _next_link_attempt_at(now, next_attempt_count)
+        elif status != "resolved" and retryable and next_attempt_count >= max_attempts:
+            stored_status = "failed"
+            retryable = False
         connection.execute(
             """
             UPDATE link_queue
             SET status = ?,
                 skip_reason = ?,
                 resolution_json = ?,
+                canonical_url = ?,
+                aliases_json = ?,
+                attempt_count = attempt_count + 1,
+                last_error = ?,
+                last_error_code = ?,
+                last_attempt_at = ?,
+                next_attempt_at = ?,
+                retryable = ?,
+                lease_owner = NULL,
+                lease_expires_at = NULL,
                 updated_at = ?
             WHERE id = ?
             """,
             (
-                status,
+                stored_status,
                 skip_reason,
-                json.dumps(resolution, sort_keys=True),
+                json.dumps(storage_resolution, sort_keys=True),
+                storage_resolution.get("canonical_url")
+                or storage_resolution.get("source_url")
+                or storage_resolution.get("normalized_url"),
+                json.dumps(aliases, sort_keys=True),
+                last_error,
+                last_error_code,
+                now,
+                next_attempt_at,
+                1 if retryable else 0,
                 now,
                 link_id,
             ),
@@ -546,7 +736,10 @@ def update_link_resolution(
             """
             SELECT id, ingest_platform, original_url, normalized_url, source_chat_id,
                    source_message_id, source_message_date, collector_run_id, status,
-                   skip_reason, resolution_json, created_at, updated_at
+                   skip_reason, resolution_json, canonical_url, aliases_json,
+                   attempt_count, max_attempts, last_error, last_error_code,
+                   last_attempt_at, next_attempt_at, retryable, lease_owner,
+                   lease_expires_at, source_provenance_json, created_at, updated_at
             FROM link_queue
             WHERE id = ?
             """,
@@ -555,6 +748,53 @@ def update_link_resolution(
     if not row:
         raise ValueError(f"Unknown link: {link_id}")
     return _link_row_to_dict(row)
+
+
+def _ready_link_where(*, status: str | None, now: str) -> tuple[str, list[Any]]:
+    lease_clause = "(lease_owner IS NULL OR lease_expires_at IS NULL OR lease_expires_at <= ?)"
+    if status in (None, "", "queued"):
+        return (
+            """
+            (
+                status = 'queued'
+                OR (
+                    status = 'deferred'
+                    AND retryable = 1
+                    AND attempt_count < max_attempts
+                    AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
+                )
+            )
+            AND {lease_clause}
+            """.format(lease_clause=lease_clause),
+            [now, now],
+        )
+    if status == "deferred":
+        return (
+            """
+            status = 'deferred'
+            AND retryable = 1
+            AND attempt_count < max_attempts
+            AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
+            AND {lease_clause}
+            """.format(lease_clause=lease_clause),
+            [now, now],
+        )
+    return (f"status = ? AND {lease_clause}", [status, now])
+
+
+def _next_link_attempt_at(now: str, attempt_count: int) -> str:
+    now_dt = _parse_iso_datetime(now)
+    delay_seconds = min(3600, 60 * (2 ** max(0, attempt_count - 1)))
+    return (now_dt + timedelta(seconds=delay_seconds)).isoformat()
+
+
+def _parse_iso_datetime(value: str | None) -> datetime:
+    if not value:
+        return datetime.now(UTC)
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
 
 
 def store_auth_session(
@@ -675,6 +915,27 @@ def _ensure_media_files_schema(connection: sqlite3.Connection) -> None:
 
 
 def _ensure_link_queue_schema(connection: sqlite3.Connection) -> None:
+    columns = {
+        row["name"]
+        for row in connection.execute("PRAGMA table_info(link_queue)").fetchall()
+    }
+    migrations = {
+        "canonical_url": "ALTER TABLE link_queue ADD COLUMN canonical_url TEXT",
+        "aliases_json": "ALTER TABLE link_queue ADD COLUMN aliases_json TEXT NOT NULL DEFAULT '[]'",
+        "attempt_count": "ALTER TABLE link_queue ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 0",
+        "max_attempts": "ALTER TABLE link_queue ADD COLUMN max_attempts INTEGER NOT NULL DEFAULT 3",
+        "last_error": "ALTER TABLE link_queue ADD COLUMN last_error TEXT",
+        "last_error_code": "ALTER TABLE link_queue ADD COLUMN last_error_code TEXT",
+        "last_attempt_at": "ALTER TABLE link_queue ADD COLUMN last_attempt_at TEXT",
+        "next_attempt_at": "ALTER TABLE link_queue ADD COLUMN next_attempt_at TEXT",
+        "retryable": "ALTER TABLE link_queue ADD COLUMN retryable INTEGER NOT NULL DEFAULT 1",
+        "lease_owner": "ALTER TABLE link_queue ADD COLUMN lease_owner TEXT",
+        "lease_expires_at": "ALTER TABLE link_queue ADD COLUMN lease_expires_at TEXT",
+        "source_provenance_json": "ALTER TABLE link_queue ADD COLUMN source_provenance_json TEXT NOT NULL DEFAULT '[]'",
+    }
+    for column, statement in migrations.items():
+        if column not in columns:
+            connection.execute(statement)
     connection.execute(
         """
         CREATE UNIQUE INDEX IF NOT EXISTS idx_link_queue_normalized_url
@@ -687,6 +948,18 @@ def _ensure_link_queue_schema(connection: sqlite3.Connection) -> None:
         ON link_queue(status)
         """
     )
+    connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_link_queue_next_attempt
+        ON link_queue(status, retryable, next_attempt_at)
+        """
+    )
+    connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_link_queue_canonical_url
+        ON link_queue(canonical_url)
+        """
+    )
 
 
 def _link_row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
@@ -696,7 +969,136 @@ def _link_row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
         result["resolution"] = json.loads(raw_resolution)
     except json.JSONDecodeError:
         result["resolution"] = {}
+    result["aliases"] = _json_list(result.pop("aliases_json", "[]"))
+    result["source_provenance"] = _json_list(result.pop("source_provenance_json", "[]"))
+    if "retryable" in result:
+        result["retryable"] = bool(result["retryable"])
     return result
+
+
+def _json_list(raw_value: Any) -> list[dict[str, Any]]:
+    if not raw_value:
+        return []
+    try:
+        parsed = json.loads(raw_value)
+    except (TypeError, json.JSONDecodeError):
+        return []
+    if not isinstance(parsed, list):
+        return []
+    return [item for item in parsed if isinstance(item, dict)]
+
+
+def _link_provenance_from_input(link: dict[str, Any]) -> list[dict[str, Any]]:
+    provenance = {
+        "ingest_platform": link.get("ingest_platform", "unknown"),
+        "source_chat_id": link.get("source_chat_id"),
+        "source_message_id": link.get("source_message_id"),
+        "source_message_date": link.get("source_message_date"),
+        "collector_run_id": link.get("collector_run_id"),
+        "original_url": link.get("original_url"),
+    }
+    return [{key: value for key, value in provenance.items() if value not in (None, "")}]
+
+
+def _merge_link_provenance(
+    existing: list[dict[str, Any]],
+    incoming: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in [*existing, *incoming]:
+        key = json.dumps(item, sort_keys=True)
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(item)
+    return merged
+
+
+def _link_aliases_from_resolution(resolution: dict[str, Any]) -> list[dict[str, Any]]:
+    aliases: list[dict[str, Any]] = []
+    for key in ("original_url", "normalized_url", "canonical_url", "source_url", "resolved_media_url"):
+        value = resolution.get(key)
+        if isinstance(value, str) and value:
+            aliases.append({"kind": key, "url": value})
+    for alias in resolution.get("aliases") or []:
+        if isinstance(alias, dict):
+            aliases.append(alias)
+        elif isinstance(alias, str):
+            aliases.append({"kind": "alias", "url": alias})
+    seen: set[str] = set()
+    unique: list[dict[str, Any]] = []
+    for alias in aliases:
+        key = json.dumps(alias, sort_keys=True)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(alias)
+    return unique
+
+
+def _link_resolution_retryable(
+    *,
+    status: str,
+    resolution: dict[str, Any],
+    skip_reason: str | None,
+) -> bool:
+    if status == "resolved":
+        return False
+    reason = skip_reason or resolution.get("skip_reason")
+    if reason in {
+        "unsafe_url",
+        "unsupported_domain",
+        "unsupported_media_type",
+        "unsupported_multi_media",
+        "ambiguous",
+        "ambiguous_candidates",
+        "requires_auth",
+        "login_wall",
+        "external_source_hidden",
+        "javascript_required",
+        "blocked",
+        "deleted_or_removed",
+        "quarantined",
+        "too_large",
+    }:
+        return False
+    return status in {"failed", "skipped", "deferred"}
+
+
+_SENSITIVE_HEADER_NAMES = {
+    "authorization",
+    "cookie",
+    "proxy-authorization",
+    "set-cookie",
+    "x-csrf-token",
+    "x-xsrf-token",
+}
+_HEADER_CONTAINER_KEYS = {"headers", "persistable_headers"}
+_RUNTIME_DOWNLOAD_KEYS = {"runtime_headers", "download_context"}
+
+
+def _sanitize_link_resolution_for_storage(value: Any) -> Any:
+    if isinstance(value, list):
+        return [_sanitize_link_resolution_for_storage(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+
+    sanitized: dict[str, Any] = {}
+    for key, item in value.items():
+        lowered = key.lower()
+        if lowered in _HEADER_CONTAINER_KEYS and isinstance(item, dict):
+            sanitized[key] = {
+                header: header_value
+                for header, header_value in item.items()
+                if header.lower() not in _SENSITIVE_HEADER_NAMES
+            }
+            continue
+        if lowered in _RUNTIME_DOWNLOAD_KEYS:
+            sanitized[key] = None
+            continue
+        sanitized[key] = _sanitize_link_resolution_for_storage(item)
+    return sanitized
 
 
 SCHEMA_SQL = """
@@ -824,6 +1226,18 @@ CREATE TABLE IF NOT EXISTS link_queue (
     status TEXT NOT NULL DEFAULT 'queued',
     skip_reason TEXT,
     resolution_json TEXT NOT NULL DEFAULT '{}',
+    canonical_url TEXT,
+    aliases_json TEXT NOT NULL DEFAULT '[]',
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    max_attempts INTEGER NOT NULL DEFAULT 3,
+    last_error TEXT,
+    last_error_code TEXT,
+    last_attempt_at TEXT,
+    next_attempt_at TEXT,
+    retryable INTEGER NOT NULL DEFAULT 1,
+    lease_owner TEXT,
+    lease_expires_at TEXT,
+    source_provenance_json TEXT NOT NULL DEFAULT '[]',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );

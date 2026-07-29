@@ -101,12 +101,18 @@ Exit codes:
 - `1`: runtime failure
 - `2`: validation or user input error
 
-## Current Tool Execution Flow
+## Current Link-First Flow
 
 ```text
-platform collector output
+explicit URL source
+-> link.queue.upsert
+-> URL safety and canonicalization
+-> resolver chain
+-> media candidates
+-> deterministic candidate selection
 -> media.item.upsert
 -> status filtering
+-> storage.path.plan
 -> download.http
 -> metadata.write
 -> media.file.upsert
@@ -114,7 +120,49 @@ platform collector output
 -> core.run.record
 ```
 
-`x.bookmarks.collect`, `pixiv.bookmarks.collect`, `telegram.messages.collect`, and `reddit.saved.collect` handle collection and normalization. Pixiv and Telegram also have deterministic sync wrappers for the full collect-to-download path: `pixiv.bookmarks.sync` and `telegram.messages.sync`. X and Reddit still use manual CLI/tool composition until they receive sync helpers or Workflow V1 exists.
+This is now the primary product direction. URL sources may be CLI JSON, queued DB rows, Telegram inbox links, future workflow steps, or future Agent/SKILL calls.
+
+`link_queue.normalized_url` is only the first intake dedupe layer. Resolvers must also emit canonical aliases and source/media identity where possible, so short links, canonical post links, old site links, provider watch URLs, and direct media URLs do not create duplicate downloads for the same content.
+
+`link_queue` has a schema-v7 lifecycle foundation for cron or daemon usage. It is the URL resolution queue, not the file-download lifecycle:
+
+```text
+queued
+-> resolving
+-> resolved
+```
+
+Permanent skips and retryable failures stay distinct:
+
+```text
+skipped
+failed
+deferred
+```
+
+The schema now carries retry counts, last error, retryable flag, next attempt time, source provenance merge fields, batch limit support at the tool layer, and lease columns. `link.media.sync` uses active claim/lease behavior for queued runs and schedules retryable failures with bounded `next_attempt_at` backoff. Explicit URL and explicit `link_id` runs bypass queue claiming by design.
+
+A successful `link.media.sync` run may resolve and download in one tool call, but the link row remains `resolved` once URL resolution is complete. Download progress and final file state live in `media_items` and `media_files`, including `downloaded`, `partial`, and `failed` states.
+
+`MediaCandidate` must not persist credential-bearing request headers. Persistable download hints should be allowlisted and non-secret, such as a public `Referer` when required. Runtime-only headers such as `Authorization`, `Cookie`, signed URL tokens, session headers, and CSRF headers must stay in memory through a download context reference and must not be written to SQLite, sidecar metadata, logs, or snapshots.
+
+Multi-candidate resolution is now supported for simple static file groups such as Reddit galleries. The current contract records group id, required files, optional files, partial-success status, and `metadata.files` mapping for those static groups. Muxed video/audio tracks and more complex multi-file posts remain deferred.
+
+## Existing Collector Flow
+
+```text
+platform collector output
+-> media.item.upsert
+-> status filtering
+-> storage.path.plan
+-> download.http or platform-specific downloader
+-> metadata.write
+-> media.file.upsert
+-> media.item.set_status
+-> core.run.record
+```
+
+`pixiv.bookmarks.collect`, `pixiv.bookmarks.sync`, `telegram.messages.collect`, and `telegram.messages.sync` remain useful implemented flows. X bookmark collection and Reddit saved collection exist with fixture/fake-client coverage, but they are not the current expansion path unless the user explicitly resumes auth-assisted account collection.
 
 ## Future Policy Layer
 
@@ -123,7 +171,7 @@ RuleSpec is a planned policy layer, not an implemented runtime feature.
 The intended future shape is:
 
 ```text
-platform collector
+explicit URL source or collector
 -> candidate media items
 -> deterministic RuleSpec policy
 -> sync/download pipeline

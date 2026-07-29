@@ -344,9 +344,39 @@ Permissions:
 - `read_files`
 - `write_files`
 
+## Core Link Tools
+
+These tools are the stable entry points for the Phase 19 link-first product path.
+
+- `link.queue.upsert`: queues one or more explicit URLs with normalized URL dedupe and source provenance merge. It does not resolve or download media.
+- `link.media.sync`: resolves explicit URLs or queued link records, claims ready queued records for cron/daemon runs, schedules retryable deferred records, converts clear media candidates into normalized media items, dedupes known items, plans storage paths, downloads files, writes optional sidecar metadata, records media-file state, and updates parent item status.
+
+Public CLI shortcut:
+
+```bash
+mediagent link sync <url> --json
+```
+
+This shortcut delegates to `link.media.sync`; it is the stable non-Telegram entry point for user-provided links.
+
+`link.media.sync` is deterministic and callable from Python, CLI, cron, workflows, and future Agent/SKILL integrations. It must keep writes under configured project-local roots and must not persist credential-bearing headers from resolver candidates.
+
+## Experimental Link Tools
+
+These tools remain hidden/experimental helper surfaces while the public preview/compatibility story is settled. Use `--include-experimental` for listing and `--allow-experimental` for inspect/run.
+
+- `link.resolve.preview`: safely previews one explicit URL without downloading. It supports direct media, bounded single-media HTML, and small provider-specific resolver behavior where implemented.
+- `link.resolve.to_media_item`: converts a resolved link candidate into a normalized media item for the existing storage/download pipeline.
+- `telegram.inbox.collect_links`: extracts unique external URLs from a curated Telegram inbox without storing raw message text.
+- `telegram.inbox.sync_links`: experimental wrapper that uses Telegram only as URL ingest provenance, resolves external links, downloads clear media results, and stores files under the resolved origin platform.
+
+Do not treat these experimental names as stable public API yet. Promotion must preserve aliases for existing live-test commands and update examples, this catalog, `RUNBOOK.md`, and localized handoff files together.
+
 ## Reddit Tools
 
-Reddit is treated as a curated media source through the authenticated user's saved listing. The first slice only reads OAuth identity/history data and collects direct media candidates. It does not post, comment, vote, save/unsave, moderate, chat, scan subreddits, scrape HTML pages, or run third-party extractors.
+Reddit auth/saved tools exist, but they are currently deferred legacy/advanced capability. The active product direction is explicit-link resolution with anonymous/bounded behavior first, plus Redgifs as the next no-auth provider foundation. Do not build on saved collection unless the user explicitly resumes auth-assisted account collection.
+
+The saved-collection slice only reads OAuth identity/history data and collects direct media candidates. It does not post, comment, vote, save/unsave, moderate, chat, scan subreddits, scrape HTML pages, or run third-party extractors.
 
 ### `reddit.auth.start`
 
@@ -453,7 +483,7 @@ Permissions:
 - X credentials may come from `X_ACCESS_TOKEN` / `X_REFRESH_TOKEN` or from `X_CREDENTIALS_FILE`.
 - Pixiv credentials may come from `PIXIV_CREDENTIALS_FILE`, `PIXIV_REFRESH_TOKEN`, or `PIXIV_ACCESS_TOKEN`. Prefer `pixiv.auth.login` for first-time local setup.
 - Telegram credentials come from `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`, and `TELEGRAM_SESSION_FILE`; the session file is a credential and should live under `${MEDIAGENT_DATA_DIR}/credentials/`. Prefer `telegram.auth.login` for first-time local setup.
-- Reddit credentials may come from `REDDIT_CREDENTIALS_FILE` or token environment variables. Prefer `reddit.auth.start` + `reddit.auth.exchange` for first-time setup, and always use a unique descriptive `REDDIT_USER_AGENT`.
+- Reddit credentials may come from `REDDIT_CREDENTIALS_FILE` or token environment variables. Use `reddit.auth.start` + `reddit.auth.exchange` only when explicitly validating the deferred auth-assisted path, and always use a unique descriptive `REDDIT_USER_AGENT`.
 - `X_CREDENTIALS_FILE`, `PIXIV_CREDENTIALS_FILE`, `TELEGRAM_SESSION_FILE`, and `REDDIT_CREDENTIALS_FILE` should point to explicit files controlled by the user.
 - Token exchange and refresh outputs do not include raw tokens.
 - SQLite run records must never store raw access tokens, refresh tokens, cookies, sessions, or bot tokens.

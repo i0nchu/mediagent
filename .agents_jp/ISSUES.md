@@ -11,12 +11,12 @@
 - **Current behavior:** X OAuth PKCE、exchange、refresh、status、bookmark collection は実装済みで、fake HTTP / fixture tests があります。repo には実 X OAuth client や user credentials がないため、live verification はまだです。
 - **Expected next step:** ユーザー提供の X app credentials で `x.auth.start`、browser authorization flow、`x.auth.exchange`、`x.auth.status`、`x.bookmarks.collect` を順に実行します。
 
-### 2. Sync helper がない platform の download orchestration はまだ manual
+### 2. Daemon/workflow orchestration はまだ deferred
 
 - **Status:** 設計上延期。
 - **Observed in:** `src/mediagent/tools/download_tools.py`、`src/mediagent/tools/metadata_tools.py`、`src/mediagent/workflows/`
-- **Current behavior:** Pixiv と Telegram には deterministic sync helpers があります。Reddit explicit links は experimental Telegram inbox resolver 経由で sync できますが、Reddit saved items と X はまだ collect-only です。Workflow V1 もまだありません。
-- **Expected next step:** Explicit-link resolver behavior を harden し、次の platform sync helper を追加するか、Pixiv/Telegram の additional source tools を議論するか、sync contract が安定してから Workflow V1 を始めます。
+- **Current behavior:** Pixiv と Telegram には deterministic sync helpers があります。Explicit URLs は stable core link tools の `link.queue.upsert` と `link.media.sync` で処理でき、Telegram inbox には compatibility wrapper も残っています。Reddit saved items と X は collect-only legacy/advanced paths のままです。Workflow V1 もまだありません。
+- **Expected next step:** Workflow V1 は deferred のままにし、link-first sync contract がより多くの provider adapters と複数回の cron-style runs でも安定してから開始します。
 
 ### 3. Workflow V1 は意図的に延期
 
@@ -25,14 +25,28 @@
 - **Current behavior:** Tools は Python と CLI から呼べますが、YAML workflow validation/execution はまだありません。
 - **Expected next step:** Deterministic sync behavior が cleanup/recovery tooling 後も安定し、bottom/platform tool contracts が安定してから Workflow V1 を始めます。
 
+### 4. TODO は link-first 決定を書いているが、次の active slice を指定していない
+
+- **Status:** 計画引き継ぎの明確化が必要。
+- **Observed in:** `.agents/TODO.md`、`.agents_zh_tw/TODO.md`、`.agents_jp/TODO.md`
+- **Current behavior:** TODO は user-provided explicit links が primary product path であり Phase 19 が完了したことを明記していますが、current/next focus と ordered acceptance criteria は定義していません。残りの post-19 items には Imgur provider migration、Pixiv artwork links、X post links、Telegram inbox promotion、Reddit auth fallback policy、RuleSpec、Workflow V1、Agent Core が並んでいます。後続の RuleSpec/Workflow gates は、他ドキュメントで使っている link-first stability gate ではなく、古い Pixiv/Telegram deterministic-sync wording のままです。
+- **How it can happen:** 新しい実装者が優先度の低い item を選んだり、Pixiv/Telegram sync がすでに安定しているように見えるため Workflow/Agent Core を始めたり、現在の explicit-link provider adapters 優先方針に反して account/bookmark collector を追加したりする可能性があります。
+- **Expected next step:** 短い `Current Focus` または next-phase section を追加し、次の link-first implementation slice、non-goals、verification targets を明記してください。RuleSpec/Workflow wording も、より多くの provider adapters と複数回の cron-style runs で link-first contract が安定してから始める、という表現へ更新し、3 言語 TODO を同期してください。
+
 ## Recently Resolved
 
+- `STATE.md` の実装済みツール一覧は、3 言語すべてで stable `link.queue.upsert` と `link.media.sync` を experimental preview helpers の前に含むようになりました。
+- Phase 19 handoff docs と TODO は、実装済みの link-first 状態と同期しました。3 言語の `STATE.md`、`TODO.md`、`RUNBOOK.md`、`TOOL_CATALOG.md`、`ARCHITECTURE.md` は schema v7、stable `link.queue.upsert`、stable `link.media.sync`、public `mediagent link sync <url>` entry point、queue claim/retry behavior、Reddit/Redgifs delegation を説明しています。
+- `link_queue` は URL resolution lifecycle だけを表すものとして明記しました。Resolution 完了後の link row は `resolved` のままで、download state は `media_items` と `media_files` が source of truth です。Downloaded、partial、failed outcomes もそちらで扱います。
+- Phase 19 first stable link layer は実装済みです。schema-v7 `link_queue` lifecycle/retry/provenance fields、stable `link.queue.upsert`、stable `link.media.sync`、public `mediagent link sync <url>`、Reddit static と preview-fallback gallery resolution、Reddit-to-Redgifs delegation、Redgifs direct/watch resolution、simple static groups の multi-file candidates、永続化前の credential-bearing candidate header sanitization、regression coverage、2026-07-29 UTC live verification を含みます。
+- Phase 19 queue lifecycle hardening は実装済みです。Queued `link.media.sync` runs は leases で ready links を claim し、temporary failures を scheduled `deferred` links として扱い、permanent skips は non-retryable のままにし、resolved media items を `platform + remote_id` で dedupe し、Telegram inbox sync は同じ link pipeline 上の hidden compatibility wrapper として維持します。
+- `library.file.verify` は explicit non-default `library_root` が指定され、`platform` または `remote_id` selector がない場合に reject するようになりました。これにより live-test roots が、別 root の scanner-friendly relative paths を共有する downloaded DB rows 全体へ誤って適用されることを防ぎます。
 - Telegram numeric dialog selectors は直接再利用できるようになりました。`telegram.dialogs.list` は `"3779502941"` のような selector を返すことがあります。Real Telegram entity selector は Telethon lookup の前に numeric strings を integers へ変換し、regression coverage は string IDs、negative channel IDs、saved messages、username selectors を確認しています。
 - Phase 18 Reddit video-only explicit-link support は実装済みです。`reddit_media_link` は generic direct-media fallback の前に direct `v.redd.it` MP4 URLs を解決し、Reddit post/legacy pages から explicit `v.redd.it/...DASH_*.mp4` candidates を抽出し、`video` / `v0` / `library/reddit/video/...` に map し、`audio_status: "not_merged"` と `mux_required: true` を記録します。Direct `v.redd.it/<id>` manifest links は引き続き `unsupported_media_type` / `reason: video_manifest_unsupported` で skip します。Audio muxing と full DASH/HLS handling は deferred です。
 - Phase 17 Reddit explicit-link resolver foundation は実装済みです。`reddit_media_link` は direct `i.redd.it` images、Reddit post/share links、bounded anonymous HTML、static `over18=1` 付き `old.reddit.com` fallback に対応します。Fake-client tests は direct image resolution、modern markup extraction、JS verification fallback、gallery skip behavior、single-MP4 Reddit video resolution、highest DASH candidate selection、Telegram inbox sync into Reddit layout を覆っています。2026-07-29 UTC の Telegram inbox live verification では Reddit JPEG を `/home/ion/projects/mediagent/mediagent-data/live-test-phase17/library/reddit/photo/2026/07/20260728__reddit__t3_1v8yi6w__p0.jpg` に resolve/download しました。Second-run dedupe は queued downloads 0、`library.file.verify` は 4 live-test files valid を報告しました。
 - Phase 16 generic HTML resolver candidate selection は、明確な original/full media URL を preview/thumbnail candidates より優先するようになりました。単一の winner がない場合は引き続き ambiguous skip します。Telegram inbox live verification では valid な Danbooru original PNG を download し、以前に download 済みの nhentai page は dedupe されました。Reddit short-link page は返却 HTML に static media candidates がなかったため skip のままです。
 - Phase 16 generic HTML media discovery は domain allowlist なしで実装済みです。単一で明確な public HTML media target、HEAD-forbidden HTML pages、X age/login wall の skip に対応し、default preview images は download しません。Telegram inbox live verification では public HTML test link から valid PNG を 1 件 download し、X link は `requires_auth` として skip しました。
-- Phase 16 undocumented Telegram inbox link resolver は experimental boundaries の後ろに実装済みです。`link.resolve.preview`、`link.resolve.to_media_item`、`telegram.inbox.collect_links`、`telegram.inbox.sync_links`、hidden experimental CLI routing、`link_queue` schema v6、origin-source storage metadata、link-safe GET downloads を含みます。
+- Phase 16 undocumented Telegram inbox link resolver は experimental boundaries の後ろに実装済みです。`link.resolve.preview`、`link.resolve.to_media_item`、`telegram.inbox.collect_links`、`telegram.inbox.sync_links`、hidden experimental CLI routing、現在 schema v7 に migrated 済みの initial `link_queue` schema support、origin-source storage metadata、link-safe GET downloads を含みます。
 - Phase 16 URL safety は normalization 前に userinfo を拒否し、malformed URLs を structured unsafe skips として扱います。Regression tests は username-only URLs、username/password URLs、invalid ports、extraction skip behavior、resolver preview skip behavior を覆っています。
 - Phase 16 experimental tool boundaries は enforce 済みです。Normal `tools list` は experimental tools を隠し、normal inspect/run は拒否し、top-level help は hidden experimental command path を露出しません。
 - Phase 16 link sync は link-safe GET path を使います。Redirects を再検証し、byte limits を enforce し、oversized bodies を拒否し、GET 時に MIME を検証し、GET final URL 自体が `.mov` suffix を持つ場合だけ MOV fallback を適用します。
@@ -78,4 +92,4 @@
 - Localized issue handoffs は現在の英語版 issue state に同期済みです。
 - Localized TODO handoffs は Pixiv `pixiv.auth.login` / OAuth PKCE planning update に対応済みで、authorization-code exchange、credential-file writing、redaction tests、skipped-by-default live browser tests を含みます。
 - 英語、繁体字中国語、日本語の handoff docs は Pixiv first-slice status に同期済みです。
-- default test suite は green です: `uv run --locked python -m unittest discover -s tests` が 160 tests passing です。
+- default test suite は green です: `.venv/bin/python -m unittest discover -s tests` が 176 tests passing です。

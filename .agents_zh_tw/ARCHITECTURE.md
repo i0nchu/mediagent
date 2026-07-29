@@ -99,12 +99,18 @@ Exit codes：
 - `1`：runtime/network/rate-limit failure
 - `2`：validation、auth、permission、filesystem、database 或 user input error
 
-## 目前工具執行流
+## 目前 Link-First Flow
 
 ```text
-platform collector output
+explicit URL source
+-> link.queue.upsert
+-> URL safety and canonicalization
+-> resolver chain
+-> media candidates
+-> deterministic candidate selection
 -> media.item.upsert
 -> status filtering
+-> storage.path.plan
 -> download.http
 -> metadata.write
 -> media.file.upsert
@@ -112,7 +118,49 @@ platform collector output
 -> core.run.record
 ```
 
-`x.bookmarks.collect`、`pixiv.bookmarks.collect`、`telegram.messages.collect` 與 `reddit.saved.collect` 負責 collection 與 normalization。Pixiv 與 Telegram 目前都有完整 collect-to-download path 的 deterministic wrappers：`pixiv.bookmarks.sync` 與 `telegram.messages.sync`。X 與 Reddit 在擁有自己的 sync helpers 或 Workflow V1 之前，仍使用手動 CLI/tool composition。
+這是目前主要產品方向。URL source 可以是 CLI JSON、queued DB rows、Telegram inbox links、未來 workflow steps 或未來 Agent/SKILL calls。
+
+`link_queue.normalized_url` 只作為第一層 intake dedupe。Resolver 還必須在可行時輸出 canonical aliases 與 source/media identity，避免 short links、canonical post links、old site links、provider watch URLs、direct media URLs 指向同一內容時產生重複下載。
+
+`link_queue` 已具備 schema v7 lifecycle foundation，可作為 cron 或 daemon 使用前的基底。它是 URL resolution queue，不是檔案下載 lifecycle：
+
+```text
+queued
+-> resolving
+-> resolved
+```
+
+Permanent skips 與 retryable failures 必須分開：
+
+```text
+skipped
+failed
+deferred
+```
+
+Schema 目前已保存 retry counts、last error、retryable flag、next attempt time、source provenance merge fields，tool layer 也支援 batch limit，並有 lease columns。`link.media.sync` 會在 queued runs 使用 active claim/lease behavior，並把 retryable failures 以 bounded `next_attempt_at` backoff 排程。Explicit URL 與 explicit `link_id` runs 則刻意不走 queue claiming。
+
+成功的 `link.media.sync` run 可以在同一個 tool call 內完成 resolve 與 download，但 link row 在 URL resolution 完成後會停在 `resolved`。下載進度與最後檔案狀態以 `media_items` 與 `media_files` 為準，包含 `downloaded`、`partial` 與 `failed` 等狀態。
+
+`MediaCandidate` 不得持久化帶有 credentials 的 request headers。可保存的 download hints 必須是 allowlisted 且 non-secret，例如必要時使用的 public `Referer`。`Authorization`、`Cookie`、signed URL tokens、session headers、CSRF headers 等 runtime-only headers 必須透過 download context reference 保存在記憶體中，不得寫入 SQLite、sidecar metadata、logs 或 snapshots。
+
+Multi-candidate resolution 目前已支援簡單 static file groups，例如 Reddit galleries。現行 contract 會針對這些 static groups 記錄 group id、required files、optional files、partial-success status 與 `metadata.files` mapping。Muxed video/audio tracks 與更複雜的 multi-file posts 仍維持 deferred。
+
+## 既有 Collector Flow
+
+```text
+platform collector output
+-> media.item.upsert
+-> status filtering
+-> storage.path.plan
+-> download.http or platform-specific downloader
+-> metadata.write
+-> media.file.upsert
+-> media.item.set_status
+-> core.run.record
+```
+
+`pixiv.bookmarks.collect`、`pixiv.bookmarks.sync`、`telegram.messages.collect` 與 `telegram.messages.sync` 仍是有用且已實作的流程。X bookmark collection 與 Reddit saved collection 已有 fixture/fake-client coverage，但除非使用者明確恢復 auth-assisted account collection，否則它們不是目前擴展路徑。
 
 ## Future Policy Layer
 
@@ -121,7 +169,7 @@ RuleSpec 是預留的 policy layer，不是已實作 runtime feature。
 未來預期形狀：
 
 ```text
-platform collector
+explicit URL source or collector
 -> candidate media items
 -> deterministic RuleSpec policy
 -> sync/download pipeline

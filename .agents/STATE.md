@@ -9,11 +9,11 @@
 - Tool registry exists through `src/mediagent/tools/defaults.py`.
 - CLI bridge exists in `src/mediagent/cli.py`.
 - SQLite schema initialization exists in `src/mediagent/core/db.py`.
-- Current SQLite schema version is `6`, with idempotent migration support for old media item/file tables and the experimental `link_queue` table.
+- Current SQLite schema version is `7`, with idempotent migration support for old media item/file tables and the stable `link_queue` lifecycle/retry/provenance fields.
 - Filesystem safety helpers exist in `src/mediagent/core/filesystem.py`.
 - Secret redaction helpers exist in `src/mediagent/core/redaction.py`.
 - HTTP abstraction exists in `src/mediagent/core/http.py`.
-- Experimental URL intake and resolver helpers exist in `src/mediagent/core/links.py`.
+- Core URL intake and resolver helpers exist in `src/mediagent/core/links.py`.
 - Reddit public-link parsing helpers exist in `src/mediagent/platforms/reddit/links.py`.
 - Credential and auth-session primitives exist in `src/mediagent/core/auth.py`.
 - Rate-limit metadata parsing exists in `src/mediagent/core/rate_limit.py`.
@@ -22,7 +22,7 @@
 - Telegram platform support exists under `src/mediagent/platforms/telegram/` for Telethon-backed user-session configuration, explicit login boundaries, session status boundaries, dialog listing, message collection/link-inbox boundaries, media normalization, and Telegram-specific media download.
 - Telegram numeric dialog selectors returned by `telegram.dialogs.list` can be passed back to collect/sync tools as strings or explicit object IDs.
 - Reddit platform support exists under `src/mediagent/platforms/reddit/` for OAuth config/auth helpers, saved-listing API calls, and media parsing for first-version image/gallery/video/direct-media shapes.
-- Reddit explicit-link support exists through the `reddit_media_link` resolver for direct `i.redd.it` image URLs, direct `v.redd.it` MP4 video-only URLs, Reddit post/share links, bounded anonymous HTML, `old.reddit.com` fallback with static non-secret `over18=1`, and structured skips for gallery/manifest cases.
+- Reddit explicit-link support exists through the `reddit_media_link` resolver for direct `i.redd.it` image URLs, direct `v.redd.it` MP4 video-only URLs, Reddit post/share links, bounded anonymous HTML, `old.reddit.com` fallback with static non-secret `over18=1`, static galleries, preview-fallback galleries, and structured skips for manifest/login-wall cases.
 - Deterministic sync helpers exist in `src/mediagent/core/sync.py`.
 - Universal storage planning exists in `src/mediagent/core/storage.py`.
 - The default shared-root storage layout is `scanner-friendly-v2`: `<platform>/<media_type>/<yyyy>/<mm>/<filename>`.
@@ -53,6 +53,8 @@
 - `core.sync_cursor.set`
 - `download.http`
 - `library.file.verify`
+- `link.queue.upsert`
+- `link.media.sync`
 - `link.resolve.preview` (experimental)
 - `link.resolve.to_media_item` (experimental)
 - `media.file.upsert`
@@ -107,7 +109,7 @@ uv run --locked mediagent tools run reddit.saved.collect --input examples/tools/
 uv run --locked mediagent tools run x.auth.start --input examples/tools/x.auth.start.json --json
 ```
 
-The latest local full suite has 160 passing tests.
+The latest local full suite has 176 passing tests.
 
 Phase 16 Telegram inbox link resolver verification:
 
@@ -131,13 +133,27 @@ Phase 17/18 Reddit explicit-link resolver verification:
 - Second-run dedupe succeeded with 0 queued downloads and 0 bytes written.
 - `library.file.verify` checked 4 live-test files: 4 valid, 0 missing, 0 corrupt, 0 unknown.
 
+Phase 19 link-first live verification:
+
+- Stable core link tools `link.queue.upsert` and `link.media.sync` are implemented and discoverable without experimental flags.
+- Public CLI entry point `mediagent link sync <url>` delegates to `link.media.sync`, so non-Telegram link automation uses the same resolver/download/storage pipeline as the Telegram inbox compatibility wrapper.
+- Public CLI live smoke re-ran a known Redgifs URL through `mediagent link sync <url>`; it resolved through the same pipeline, skipped the already-downloaded item, and wrote 0 duplicate bytes.
+- Queued `link.media.sync` runs claim ready links with `lease_owner` / `lease_expires_at`, ignore non-expired leases from other workers, and schedule retryable failures as `deferred` records with bounded `next_attempt_at` backoff.
+- Reddit explicit links can delegate a single publicly visible external post URL back into the resolver chain. Redgifs delegated results keep Redgifs storage/layout while preserving Reddit upstream metadata.
+- Telegram inbox compatibility wrapper `telegram.inbox.sync_links` was live-run on 2026-07-29 UTC against chat selector `3779502941` with `store_cursor:false` and output root `/home/ion/projects/mediagent/mediagent-data/live-test-phase19/library`.
+- The first run collected 13 external links, resolved 9, queued/downloaded 6 new media items, skipped 4 links with structured reasons, and had 0 failed/partial downloads.
+- A previously skipped Reddit gallery link was re-run through `link.media.sync`; anonymous `old.reddit.com` public HTML exposed `preview.redd.it` candidates, and preview fallback downloaded 3 JPEG files for `t3_1v8boac`.
+- The latest compatibility-wrapper rerun collected 13 links, resolved 12, skipped 1 expected X/auth link, downloaded 2 new Reddit-delegated Redgifs MP4 files, skipped 10 already-known items, and had 0 failed/partial downloads.
+- Downloaded files in the Phase 19 live-test library are 5 Redgifs MP4 videos and 6 Reddit photo/GIF/JPEG files under `library/redgifs/video/2026/07/...` and `library/reddit/photo/2026/07/...`, totaling 211178527 bytes.
+- `library.file.verify` with platform selectors confirmed 5/5 Redgifs files valid and 6/6 Reddit files valid. No `.partial` or `.tmp` files remained.
+
 Reddit foundation verification:
 
 - `reddit.auth.start`, `reddit.auth.exchange`, `reddit.auth.refresh`, and `reddit.auth.status` are implemented and discoverable through CLI.
 - `reddit.saved.collect` is implemented and discoverable through CLI.
 - Fake-client tests cover auth URL generation, token exchange credential-file writing, refresh token preservation, status checks, redaction, generic user-agent rejection, unsafe credential paths, saved-listing normalization, cursor storage, dry-run no DB writes, unsafe collector DB paths, media-type filtering, saved comment skip, and unsupported embed skip.
 - `reddit.saved.collect` returns normalized media items only and does not write `media_files`.
-- Reddit live verification is still pending user-provided Reddit app credentials.
+- Reddit auth/saved live verification is deferred unless auth-assisted account collection is explicitly resumed.
 
 Cleanup/recovery foundation verification:
 
@@ -220,9 +236,9 @@ Phase 13 Telegram + Pixiv layout live verification ran on 2026-07-24 UTC:
 - built-in scheduler
 - cron examples
 - live X OAuth verification with a real X account and app credentials
-- live Reddit OAuth/saved-collection verification with a real Reddit account and app credentials
-- Reddit audio muxing, DASH/HLS manifest handling, and gallery multi-file resolution
-- `reddit.saved.sync`
+- live Reddit OAuth/saved-collection verification with a real Reddit account and app credentials, now deferred unless auth-assisted collection is explicitly resumed
+- Reddit audio muxing, DASH/HLS manifest handling, and complex multi-file `v.redd.it` support
+- `reddit.saved.sync`, now deferred unless auth-assisted collection is explicitly resumed
 - Pixiv localhost callback server
 - Instagram support
 - LLM Agent Core
@@ -230,6 +246,6 @@ Phase 13 Telegram + Pixiv layout live verification ran on 2026-07-24 UTC:
 
 ## Next Recommended Task
 
-Harden the explicit-link resolver path before starting Workflow V1: add the remaining Reddit single-media fake-client coverage, prepare the internal multi-file resolver contract, then plan explicit Pixiv artwork-link and X post-link resolvers.
+Phase 19 first stable link layer and Telegram inbox live verification are complete. Before starting Workflow V1, keep any remaining work focused on post-Phase-19 provider adapters, optional auth fallback design, and broader explicit-link platform coverage.
 
-Keep Reddit OAuth/saved live verification pending until credentials are available. Do not start Workflow V1 unless the user explicitly chooses workflow work next.
+Treat Reddit OAuth/saved collection and X live auth verification as deferred legacy/advanced paths. Do not start Workflow V1 unless the user explicitly chooses workflow work next.

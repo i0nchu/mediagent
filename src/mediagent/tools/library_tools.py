@@ -58,6 +58,13 @@ async def library_file_verify(context: ToolContext, input_data: dict[str, Any]) 
         ensure_inside(library_root, context.allowed_write_roots())
     except (PathSafetyError, ValueError) as exc:
         return ToolResult.failure("unsafe_path", str(exc), category=ErrorCategory.FILESYSTEM)
+    if _custom_root_without_selector(context, input_data, library_root):
+        return ToolResult.failure(
+            "custom_library_root_requires_selector",
+            "Provide platform or remote_id when verifying an explicit non-default library_root.",
+            category=ErrorCategory.VALIDATION,
+            details={"library_root": str(library_root)},
+        )
 
     db.initialize_database(db_path)
     records = db.list_media_files(
@@ -145,3 +152,15 @@ def _library_root(context: ToolContext, input_data: dict[str, Any]) -> Path:
     if raw_path:
         return normalize_path(str(raw_path), env=context.env, cwd=context.cwd)
     return default_library_root(data_dir=context.data_dir, library_dir=context.library_dir)
+
+
+def _custom_root_without_selector(context: ToolContext, input_data: dict[str, Any], library_root: Path) -> bool:
+    if not input_data.get("library_root"):
+        return False
+    if input_data.get("platform") or input_data.get("remote_id"):
+        return False
+    try:
+        default_root = default_library_root(data_dir=context.data_dir, library_dir=context.library_dir)
+    except PathSafetyError:
+        return True
+    return library_root.resolve() != default_root.resolve()

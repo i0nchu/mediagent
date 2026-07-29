@@ -1,0 +1,5 @@
+{
+  "url": "https://example.com/path/to/media.jpg",
+  "write_sidecar_metadata": true,
+  "max_media_bytes": 1073741824
+}

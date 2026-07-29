@@ -40,7 +40,7 @@ class BottomToolTests(unittest.TestCase):
             self.assertTrue(first.is_success)
             self.assertTrue(second.is_success)
             self.assertTrue(db_path.exists())
-            self.assertEqual(second.data["schema_version"], "6")
+            self.assertEqual(second.data["schema_version"], "7")
 
     def test_run_record_writes_summary_without_secrets(self) -> None:
         registry = create_default_registry()
@@ -287,7 +287,7 @@ class BottomToolTests(unittest.TestCase):
 
         self.assertTrue(result.is_success)
         self.assertIn("downloaded_at", columns)
-        self.assertEqual(schema_version, "6")
+        self.assertEqual(schema_version, "7")
         self.assertIsNotNone(downloaded_at)
 
     def test_media_file_upsert_is_idempotent_with_null_remote_url(self) -> None:
@@ -403,6 +403,34 @@ class BottomToolTests(unittest.TestCase):
         self.assertEqual(rows["valid"], "valid")
         self.assertEqual(rows["missing"], "missing")
         self.assertEqual(rows["corrupt"], "corrupt")
+
+    def test_library_file_verify_requires_selector_for_custom_root(self) -> None:
+        registry = create_default_registry()
+        with TemporaryDirectory() as temp_dir:
+            data_dir = Path(temp_dir) / "data"
+            library_dir = data_dir / "library"
+            custom_root = data_dir / "live-test" / "library"
+            db_path = data_dir / "mediagent.sqlite3"
+            context = ToolContext.from_env(
+                env={
+                    "MEDIAGENT_DATA_DIR": str(data_dir),
+                    "MEDIAGENT_LIBRARY_DIR": str(library_dir),
+                    "MEDIAGENT_DB_PATH": str(db_path),
+                },
+                cwd=Path(temp_dir),
+            )
+            db.initialize_database(db_path)
+
+            result = asyncio.run(
+                registry.run(
+                    "library.file.verify",
+                    {"library_root": str(custom_root)},
+                    context,
+                )
+            )
+
+        self.assertFalse(result.is_success)
+        self.assertEqual(result.error.code, "custom_library_root_requires_selector")
 
     def test_download_http_uses_fake_client(self) -> None:
         registry = create_default_registry()

@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
-from urllib.parse import urljoin, urlparse, urlunparse
+from urllib.parse import parse_qs, urljoin, urlparse, urlunparse
 
 from mediagent.core.storage import safe_storage_segment
 
@@ -24,10 +24,11 @@ REDDIT_PAGE_HOSTS = {
     "redd.it",
 }
 REDDIT_DIRECT_IMAGE_HOSTS = {"i.redd.it"}
+REDDIT_PREVIEW_IMAGE_HOSTS = {"preview.redd.it"}
 REDDIT_DIRECT_VIDEO_HOSTS = {"v.redd.it"}
 REDDIT_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
 REDDIT_VIDEO_EXTENSIONS = {".mp4"}
-REDDIT_MEDIA_URL_RE = re.compile(r"https://(?:i|v)\.redd\.it/[^\s\"'<>]+", re.IGNORECASE)
+REDDIT_MEDIA_URL_RE = re.compile(r"https://(?:i|v|preview)\.redd\.it/[^\s\"'<>]+", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -38,6 +39,8 @@ class RedditMediaExtraction:
     metadata: dict[str, Any]
     skip_reason: str | None = None
     details: dict[str, Any] | None = None
+    media_urls: tuple[str, ...] = ()
+    external_urls: tuple[str, ...] = ()
 
 
 def is_reddit_page_host(host: str) -> bool:
@@ -112,13 +115,33 @@ def extract_single_media_from_html(content: bytes, *, base_url: str) -> RedditMe
     parser.feed(text)
     parser.close()
     metadata = parser.metadata
+    gallery_preview_urls = choose_gallery_preview_urls(parser.preview_image_urls) if parser.gallery_hint else []
     details = {
         "markers": reddit_html_markers(text),
         "candidate_count": len(parser.image_urls) + len(parser.video_urls),
         "image_candidate_count": len(parser.image_urls),
+        "preview_candidate_count": len(parser.preview_image_urls),
         "video_candidate_count": len(parser.video_urls),
+        "external_candidate_count": len(parser.external_urls),
     }
     if parser.gallery_hint:
+        gallery_urls = parser.image_urls or gallery_preview_urls
+        if gallery_urls:
+            is_preview_fallback = not parser.image_urls and bool(gallery_preview_urls)
+            return RedditMediaExtraction(
+                media_url=gallery_urls[0],
+                media_urls=tuple(gallery_urls),
+                media_type="photo",
+                remote_id=parser.remote_id or direct_image_remote_id(gallery_urls[0]),
+                metadata=metadata,
+                details={
+                    **details,
+                    "media_count": len(gallery_urls),
+                    "content_group": "gallery",
+                    "preview_fallback_count": len(gallery_preview_urls),
+                    "media_quality": "preview_fallback" if is_preview_fallback else "source",
+                },
+            )
         return RedditMediaExtraction(
             media_url=None,
             media_type=None,
@@ -170,12 +193,12 @@ def extract_single_media_from_html(content: bytes, *, base_url: str) -> RedditMe
         )
     if len(parser.image_urls) > 1:
         return RedditMediaExtraction(
-            media_url=None,
-            media_type=None,
-            remote_id=parser.remote_id,
+            media_url=parser.image_urls[0],
+            media_urls=tuple(parser.image_urls),
+            media_type="photo",
+            remote_id=parser.remote_id or direct_image_remote_id(parser.image_urls[0]),
             metadata=metadata,
-            skip_reason="ambiguous",
-            details={**details, "media_count": len(parser.image_urls)},
+            details={**details, "media_count": len(parser.image_urls), "content_group": "multi_image"},
         )
     if not parser.image_urls:
         markers = details["markers"]
@@ -201,6 +224,7 @@ def extract_single_media_from_html(content: bytes, *, base_url: str) -> RedditMe
             metadata=metadata,
             skip_reason=skip_reason,
             details={**details, "reason": reason},
+            external_urls=tuple(parser.external_urls),
         )
     media_url = parser.image_urls[0]
     resolved_markers = [
@@ -212,11 +236,53 @@ def extract_single_media_from_html(content: bytes, *, base_url: str) -> RedditMe
         remote_id=parser.remote_id or direct_image_remote_id(media_url),
         metadata=metadata,
         details={**details, "markers": resolved_markers, "media_count": 1},
+        media_urls=(media_url,),
     )
 
 
 def extract_single_image_from_html(content: bytes, *, base_url: str) -> RedditMediaExtraction:
     return extract_single_media_from_html(content, base_url=base_url)
+
+
+def choose_gallery_preview_urls(urls: list[str]) -> list[str]:
+    grouped: dict[str, list[str]] = {}
+    for url in urls:
+        key = Path(urlparse(url).path).stem
+        grouped.setdefault(key, []).append(url)
+    selected: list[str] = []
+    for group in grouped.values():
+        best = choose_best_preview_url(group)
+        if best:
+            selected.append(best)
+    return selected
+
+
+def choose_best_preview_url(urls: list[str]) -> str | None:
+    if not urls:
+        return None
+    scored = [(reddit_preview_url_score(url), url) for url in urls]
+    score, url = max(scored, key=lambda item: item[0])
+    return url if score >= 300 else None
+
+
+def reddit_preview_url_score(url: str) -> int:
+    query = parse_qs(urlparse(url).query)
+    width = _first_int(query.get("width"))
+    score = width or 0
+    if "blur" in query:
+        score -= 10_000
+    if query.get("crop"):
+        score -= 1_000
+    return score
+
+
+def _first_int(values: list[str] | None) -> int | None:
+    if not values:
+        return None
+    try:
+        return int(values[0])
+    except (TypeError, ValueError):
+        return None
 
 
 def choose_primary_reddit_video_url(urls: list[str]) -> str | None:
@@ -263,9 +329,13 @@ class RedditMediaHTMLParser(HTMLParser):
         super().__init__(convert_charrefs=True)
         self.base_url = base_url
         self.image_urls: list[str] = []
+        self.preview_image_urls: list[str] = []
         self.video_urls: list[str] = []
+        self.external_urls: list[str] = []
         self._seen_image_urls: set[str] = set()
+        self._seen_preview_image_urls: set[str] = set()
         self._seen_video_urls: set[str] = set()
+        self._seen_external_urls: set[str] = set()
         self.metadata: dict[str, Any] = {}
         self.remote_id: str | None = None
         self.gallery_hint = False
@@ -284,7 +354,7 @@ class RedditMediaHTMLParser(HTMLParser):
             self._add_media_url(values.get(key))
 
     def handle_data(self, data: str) -> None:
-        if "i.redd.it" not in data and "v.redd.it" not in data:
+        if "i.redd.it" not in data and "v.redd.it" not in data and "preview.redd.it" not in data:
             return
         for match in REDDIT_MEDIA_URL_RE.finditer(data.replace("\\/", "/")):
             self._add_media_url(match.group(0))
@@ -315,6 +385,11 @@ class RedditMediaHTMLParser(HTMLParser):
                 }:
                     self._add_media_url(item)
                     self._capture_unsupported_hints(item)
+                elif isinstance(item, str) and (
+                    "i.redd.it" in item or "v.redd.it" in item or "preview.redd.it" in item
+                ):
+                    self._add_media_url(item)
+                    self._capture_unsupported_hints(item)
                 else:
                     self._scan_json(item)
             return
@@ -339,6 +414,7 @@ class RedditMediaHTMLParser(HTMLParser):
         if post_type in {"video", "hosted:video"} or post.get("is_video") is True:
             self.video_hint = True
         self._add_media_url(post.get("url"))
+        self._add_external_url(post.get("url"))
         self._capture_unsupported_hints(str(post.get("url") or ""))
         media = post.get("media")
         if isinstance(media, dict):
@@ -360,6 +436,8 @@ class RedditMediaHTMLParser(HTMLParser):
             self.gallery_hint = True
         if post_type in {"video", "hosted:video"}:
             self.video_hint = True
+        for key in ("content-href", "data-url", "url"):
+            self._add_external_url(values.get(key))
 
     def _capture_old_reddit_thing(self, values: dict[str, str]) -> None:
         if "data-fullname" not in values and "data-url" not in values:
@@ -377,6 +455,7 @@ class RedditMediaHTMLParser(HTMLParser):
             self.video_hint = True
         if domain == "reddit.com" and "/gallery/" in (values.get("data-url") or ""):
             self.gallery_hint = True
+        self._add_external_url(values.get("data-url"))
 
     def _capture_media_hints(self, values: dict[str, str]) -> None:
         if _bool_value(values.get("data-is-gallery")) is True:
@@ -394,6 +473,22 @@ class RedditMediaHTMLParser(HTMLParser):
         if parsed.path.startswith("/gallery/") or "/gallery/" in parsed.path:
             self.gallery_hint = True
 
+    def _add_external_url(self, raw_url: str | None) -> None:
+        if not raw_url:
+            return
+        resolved = urljoin(self.base_url, html.unescape(raw_url.strip()).replace("\\/", "/"))
+        parsed = urlparse(resolved)
+        host = (parsed.hostname or "").lower()
+        if parsed.scheme != "https" or not host:
+            return
+        if host in REDDIT_PAGE_HOSTS | REDDIT_DIRECT_IMAGE_HOSTS | REDDIT_PREVIEW_IMAGE_HOSTS | REDDIT_DIRECT_VIDEO_HOSTS:
+            return
+        normalized = urlunparse(("https", parsed.netloc.lower(), parsed.path, "", parsed.query, ""))
+        if normalized in self._seen_external_urls:
+            return
+        self._seen_external_urls.add(normalized)
+        self.external_urls.append(normalized)
+
     def _add_media_url(self, raw_url: str | None) -> None:
         if not raw_url:
             return
@@ -407,6 +502,13 @@ class RedditMediaHTMLParser(HTMLParser):
                 return
             self._seen_image_urls.add(normalized)
             self.image_urls.append(normalized)
+            return
+        if host in REDDIT_PREVIEW_IMAGE_HOSTS and suffix in REDDIT_IMAGE_EXTENSIONS:
+            normalized = urlunparse(("https", parsed.netloc.lower(), parsed.path, "", parsed.query, ""))
+            if normalized in self._seen_preview_image_urls:
+                return
+            self._seen_preview_image_urls.add(normalized)
+            self.preview_image_urls.append(normalized)
             return
         if host != "v.redd.it":
             return

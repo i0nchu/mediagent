@@ -99,12 +99,18 @@ Exit codes:
 - `1`: runtime/network/rate-limit failure
 - `2`: validation、auth、permission、filesystem、database、user input error
 
-## 現在の Tool Execution Flow
+## 現在の Link-First Flow
 
 ```text
-platform collector output
+explicit URL source
+-> link.queue.upsert
+-> URL safety and canonicalization
+-> resolver chain
+-> media candidates
+-> deterministic candidate selection
 -> media.item.upsert
 -> status filtering
+-> storage.path.plan
 -> download.http
 -> metadata.write
 -> media.file.upsert
@@ -112,7 +118,49 @@ platform collector output
 -> core.run.record
 ```
 
-`x.bookmarks.collect`、`pixiv.bookmarks.collect`、`telegram.messages.collect`、`reddit.saved.collect` は collection と normalization を担当します。Pixiv と Telegram には full collect-to-download path の deterministic wrappers として `pixiv.bookmarks.sync` と `telegram.messages.sync` があります。X と Reddit は独自 sync helpers または Workflow V1 ができるまで manual CLI/tool composition を使います。
+これが現在の主要 product direction です。URL source は CLI JSON、queued DB rows、Telegram inbox links、future workflow steps、future Agent/SKILL calls になり得ます。
+
+`link_queue.normalized_url` は最初の intake dedupe layer にすぎません。Resolvers は可能な場合、canonical aliases と source/media identity も出力し、short links、canonical post links、old site links、provider watch URLs、direct media URLs が同じ content を指す場合に duplicate downloads が発生しないようにします。
+
+`link_queue` には schema v7 lifecycle foundation があり、cron または daemon usage の土台になります。これは URL resolution queue であり、file-download lifecycle ではありません。
+
+```text
+queued
+-> resolving
+-> resolved
+```
+
+Permanent skips と retryable failures は分けます。
+
+```text
+skipped
+failed
+deferred
+```
+
+Schema は retry counts、last error、retryable flag、next attempt time、source provenance merge fields を保持し、tool layer は batch limit を持ち、lease columns も持ちます。`link.media.sync` は queued runs で active claim/lease behavior を使い、retryable failures を bounded `next_attempt_at` backoff 付きで schedule します。Explicit URL と explicit `link_id` runs は意図的に queue claiming を bypass します。
+
+Successful な `link.media.sync` run は 1 回の tool call で resolve と download を行うことがありますが、URL resolution が完了した link row は `resolved` のままです。Download progress と最終 file state は `media_items` と `media_files` が source of truth で、`downloaded`、`partial`、`failed` などの状態を持ちます。
+
+`MediaCandidate` は credential-bearing request headers を永続化してはいけません。Persistable download hints は allowlisted かつ non-secret に限定し、必要な場合の public `Referer` などだけを許可します。`Authorization`、`Cookie`、signed URL tokens、session headers、CSRF headers など runtime-only headers は download context reference 経由で memory に保持し、SQLite、sidecar metadata、logs、snapshots には保存しません。
+
+Multi-candidate resolution は、Reddit galleries のような simple static file groups ではすでに対応しています。現在の contract は、それらの static groups について group id、required files、optional files、partial-success status、`metadata.files` mapping を記録します。Muxed video/audio tracks やより complex な multi-file posts は deferred のままです。
+
+## 既存 Collector Flow
+
+```text
+platform collector output
+-> media.item.upsert
+-> status filtering
+-> storage.path.plan
+-> download.http or platform-specific downloader
+-> metadata.write
+-> media.file.upsert
+-> media.item.set_status
+-> core.run.record
+```
+
+`pixiv.bookmarks.collect`、`pixiv.bookmarks.sync`、`telegram.messages.collect`、`telegram.messages.sync` は有用な実装済み flows として維持します。X bookmark collection と Reddit saved collection は fixture/fake-client coverage を持ちますが、user が明示的に auth-assisted account collection を再開しない限り、現在の expansion path ではありません。
 
 ## Future Policy Layer
 
@@ -121,7 +169,7 @@ RuleSpec は planned policy layer であり、implemented runtime feature では
 将来の想定形:
 
 ```text
-platform collector
+explicit URL source or collector
 -> candidate media items
 -> deterministic RuleSpec policy
 -> sync/download pipeline

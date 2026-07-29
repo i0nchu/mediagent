@@ -8,20 +8,20 @@
 - Tool contract は `src/mediagent/core/tooling.py` にあります。
 - Tool registry は `src/mediagent/tools/defaults.py` にあります。
 - CLI bridge は `src/mediagent/cli.py` にあります。
-- SQLite 初期化は `src/mediagent/core/db.py` にあり、現在の schema version は `6` です。old media item/file tables と experimental `link_queue` table の idempotent migration に対応しています。
+- SQLite 初期化は `src/mediagent/core/db.py` にあり、現在の schema version は `7` です。old media item/file tables と stable `link_queue` lifecycle/retry/provenance fields の idempotent migration に対応しています。
 - ファイル安全 helper は `src/mediagent/core/filesystem.py` にあります。
 - credential/auth primitives は `src/mediagent/core/auth.py` にあります。
 - rate-limit metadata parsing は `src/mediagent/core/rate_limit.py` にあります。
 - secret redaction helper は `src/mediagent/core/redaction.py` にあります。
 - HTTP abstraction は `src/mediagent/core/http.py` にあり、`download.http` は custom request headers に対応しています。
-- Experimental URL intake と resolver helpers は `src/mediagent/core/links.py` にあります。
+- Core URL intake と resolver helpers は `src/mediagent/core/links.py` にあります。
 - Reddit public-link parsing helpers は `src/mediagent/platforms/reddit/links.py` にあります。
 - X platform support は `src/mediagent/platforms/x/` にあります。
 - Pixiv platform support は `src/mediagent/platforms/pixiv/` にあり、local OAuth/PKCE setup、explicit refresh-token auth、token refresh、bookmark API calls、multi-page parsing、ugoira metadata preservation を含みます。
 - Telegram platform support は `src/mediagent/platforms/telegram/` にあり、Telethon-backed user-session configuration、explicit login boundaries、session status boundaries、dialog listing、message collection/link-inbox boundaries、media normalization、Telegram-specific media download を含みます。
 - `telegram.dialogs.list` が返す Telegram numeric dialog selectors は、string または explicit object ID として collect/sync tools に渡せます。
 - Reddit platform support は `src/mediagent/platforms/reddit/` にあり、OAuth config/auth helpers、saved-listing API calls、first-version image/gallery/video/direct-media shapes parsing を含みます。
-- Reddit explicit-link support は `reddit_media_link` resolver で実装済みです。Direct `i.redd.it` image URLs、direct `v.redd.it` MP4 video-only URLs、Reddit post/share links、bounded anonymous HTML、static non-secret `over18=1` 付き `old.reddit.com` fallback、gallery/manifest cases の structured skips に対応しています。
+- Reddit explicit-link support は `reddit_media_link` resolver で実装済みです。Direct `i.redd.it` image URLs、direct `v.redd.it` MP4 video-only URLs、Reddit post/share links、bounded anonymous HTML、static non-secret `over18=1` 付き `old.reddit.com` fallback、static galleries、preview-fallback galleries、manifest/login-wall cases の structured skips に対応しています。
 - Deterministic sync helpers は `src/mediagent/core/sync.py` にあります。
 - Universal storage planning は `src/mediagent/core/storage.py` にあります。
 - Default shared-root storage layout は `scanner-friendly-v2` です: `<platform>/<media_type>/<yyyy>/<mm>/<filename>`。
@@ -52,6 +52,8 @@
 - `core.sync_cursor.set`
 - `download.http`
 - `library.file.verify`
+- `link.queue.upsert`
+- `link.media.sync`
 - `link.resolve.preview`（experimental）
 - `link.resolve.to_media_item`（experimental）
 - `media.file.upsert`
@@ -106,7 +108,7 @@ uv run --locked mediagent tools run reddit.saved.collect --input examples/tools/
 uv run --locked mediagent tools run x.auth.start --input examples/tools/x.auth.start.json --json
 ```
 
-最新の local full suite は 160 tests passing です。
+最新の local full suite は 176 tests passing です。
 
 Phase 16 Telegram inbox link resolver verification:
 
@@ -130,13 +132,27 @@ Phase 17/18 Reddit explicit-link resolver verification:
 - Second-run dedupe は成功し、queued downloads 0、bytes written 0 でした。
 - `library.file.verify` は 4 live-test files を checked しました: valid 4、missing 0、corrupt 0、unknown 0。
 
+Phase 19 link-first live verification:
+
+- Stable core link tools `link.queue.upsert` と `link.media.sync` は実装済みで、experimental flags なしで discovery できます。
+- Public CLI entry point `mediagent link sync <url>` は `link.media.sync` に delegate します。そのため non-Telegram link automation も Telegram inbox compatibility wrapper と同じ resolver/download/storage pipeline を使います。
+- Public CLI live smoke は known Redgifs URL を `mediagent link sync <url>` で rerun しました。同じ pipeline で resolve し、already-downloaded item を skip し、duplicate bytes は 0 でした。
+- Queued `link.media.sync` runs は `lease_owner` / `lease_expires_at` で ready links を claim し、他 worker の non-expired leases を無視し、retryable failures を bounded `next_attempt_at` backoff 付きの `deferred` records として schedule します。
+- Reddit explicit links は、publicly visible な external post URL が 1 件だけある場合、それを resolver chain に delegate できます。Redgifs delegated results は Redgifs storage/layout を維持しつつ Reddit upstream metadata も保存します。
+- Telegram inbox compatibility wrapper `telegram.inbox.sync_links` は 2026-07-29 UTC に chat selector `3779502941` に対して live-run 済みです。`store_cursor:false`、output root は `/home/ion/projects/mediagent/mediagent-data/live-test-phase19/library` でした。
+- First run は 13 external links を collect し、9 件を resolve し、6 件の新規 media items を queue/download し、4 links を structured reasons で skip し、failed/partial downloads は 0 でした。
+- 以前 skipped だった Reddit gallery link は `link.media.sync` で rerun しました。Anonymous `old.reddit.com` public HTML が `preview.redd.it` candidates を公開し、preview fallback により `t3_1v8boac` の JPEG files 3 件を download しました。
+- Latest compatibility-wrapper rerun は 13 links を collect し、12 件を resolve し、1 件の expected X/auth link を skip し、2 件の新規 Reddit-delegated Redgifs MP4 files を download し、10 件の already-known items を skip しました。Failed/partial downloads は 0 でした。
+- Phase 19 live-test library の downloaded files は 5 件の Redgifs MP4 videos と 6 件の Reddit photo/GIF/JPEG files で、`library/redgifs/video/2026/07/...` と `library/reddit/photo/2026/07/...` 配下に保存され、合計 211178527 bytes でした。
+- Platform selectors を使った `library.file.verify` は Redgifs 5/5 valid、Reddit 6/6 valid を確認しました。`.partial` / `.tmp` files は残っていません。
+
 Reddit foundation verification:
 
 - `reddit.auth.start`、`reddit.auth.exchange`、`reddit.auth.refresh`、`reddit.auth.status` は実装済みで、CLI discovery が可能です。
 - `reddit.saved.collect` は実装済みで、CLI discovery が可能です。
 - Fake-client tests は auth URL generation、token exchange credential-file writing、refresh token preservation、status checks、redaction、generic user-agent rejection、unsafe credential paths、saved-listing normalization、cursor storage、dry-run no DB writes、unsafe collector DB paths、media-type filtering、saved comment skip、unsupported embed skip を覆っています。
 - `reddit.saved.collect` は normalized media items だけを返し、`media_files` は書きません。
-- Reddit live verification は user-provided Reddit app credentials 待ちです。
+- Reddit auth/saved live verification は auth-assisted account collection を明示的に再開するまで deferred です。
 
 Cleanup/recovery foundation verification:
 
@@ -219,9 +235,9 @@ Phase 13 Telegram + Pixiv layout live verification は 2026-07-24 UTC に実行�
 - built-in scheduler
 - cron examples
 - 実 X OAuth account による live verification
-- 実 Reddit OAuth / saved-collection live verification
-- Reddit audio muxing、DASH/HLS manifest handling、gallery multi-file resolution
-- `reddit.saved.sync`
+- 実 Reddit OAuth / saved-collection live verification。現在は auth-assisted collection を明示的に再開するまで deferred
+- Reddit audio muxing、DASH/HLS manifest handling、complex multi-file `v.redd.it` support
+- `reddit.saved.sync`。現在は auth-assisted collection を明示的に再開するまで deferred
 - Pixiv localhost callback server
 - Instagram support
 - LLM Agent Core
@@ -229,6 +245,6 @@ Phase 13 Telegram + Pixiv layout live verification は 2026-07-24 UTC に実行�
 
 ## 次の推奨作業
 
-Workflow V1 に進む前に explicit-link resolver path を harden します。残りの Reddit single-media fake-client coverage を追加し、internal multi-file resolver contract を準備し、その後 explicit Pixiv artwork-link と X post-link resolvers を計画します。
+Phase 19 first stable link layer と Telegram inbox live verification は完了済みです。Workflow V1 に進む前に、queue claim/retry scheduling、canonical/media identity dedupe、Reddit external-provider delegation、multi-candidate partial-success semantics を harden します。
 
-Reddit OAuth/saved live verification は credentials 待ちのままにします。ユーザーが明示的に求めない限り、Workflow V1 はまだ始めません。
+Reddit OAuth/saved collection と X live auth verification は deferred legacy/advanced paths として扱います。ユーザーが明示的に求めない限り、Workflow V1 はまだ始めません。

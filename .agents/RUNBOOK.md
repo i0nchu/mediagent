@@ -410,9 +410,81 @@ $MEDIAGENT_DATA_DIR/telegram/video/2026/07/20260722__telegram__trusted-12345-vid
 
 Telegram cursors are stored per source and media-type scope, for example `messages:saved_messages:photo-video`. They advance only after successful durable sync processing.
 
-## Reddit OAuth And Saved Collection Shape
+## Link-First Resolver Smoke Checks
 
-Reddit V1 foundation is implemented with fake-client coverage, but real live verification is skipped until the user provides Reddit app credentials. It treats saved posts as the first curated source and does not post, comment, vote, save/unsave, moderate, chat, scan subreddits, scrape HTML pages, or run third-party extractors.
+The current primary path is explicit URL resolution, not account saved/bookmark collection. Use these checks when working on Phase 19 link-first tools.
+
+List experimental link tools:
+
+```bash
+uv run --locked mediagent tools list --json --include-experimental
+```
+
+Inspect stable link tools:
+
+```bash
+uv run --locked mediagent tools inspect link.queue.upsert --json
+uv run --locked mediagent tools inspect link.media.sync --json
+```
+
+Queue an explicit URL without downloading:
+
+```bash
+printf '%s\n' '{"url":"https://example.com/path/to/media.jpg","ingest_platform":"cli"}' \
+  | uv run --locked mediagent tools run link.queue.upsert --input - --json
+```
+
+Resolve and download an explicit URL through the core link pipeline:
+
+```bash
+printf '%s\n' '{"url":"https://example.com/path/to/media.jpg","write_sidecar_metadata":true}' \
+  | uv run --locked mediagent tools run link.media.sync --input - --json
+```
+
+Use the public link entry point for the same workflow without writing tool JSON:
+
+```bash
+uv run --locked mediagent link sync 'https://example.com/path/to/media.jpg' --write-sidecar-metadata --json
+```
+
+Run queued links from cron or a daemon worker:
+
+```bash
+uv run --locked mediagent tools run link.media.sync --json
+```
+
+Queued runs claim ready links with a short lease, skip links leased by other workers, and include retryable `deferred` links only after `next_attempt_at`. Permanent skips such as login walls, unsafe URLs, unsupported media, deleted/removed content, and access controls are not retried.
+
+Inspect the current preview resolver:
+
+```bash
+uv run --locked mediagent tools inspect link.resolve.preview --json --allow-experimental
+```
+
+Preview an explicit URL without downloading:
+
+```bash
+printf '%s\n' '{"url":"https://example.com/path/to/media.jpg","record":false}' \
+  | uv run --locked mediagent tools run link.resolve.preview --input - --json --allow-experimental
+```
+
+Expected behavior:
+
+- direct public image/video/audio URLs resolve before full HTML fetches
+- public single-media HTML may resolve when exactly one clear candidate exists
+- Reddit static galleries may resolve as multiple photo candidates; complex galleries, login-required, JavaScript-required, blocked, unsafe, or ambiguous pages return structured skip reasons
+- download steps must repeat URL safety, redirect, MIME, and byte-limit checks instead of trusting preview output
+- output files, if a sync/download command is used, must stay under `${MEDIAGENT_DATA_DIR}`
+
+Redgifs direct/watch links are implemented as a no-auth provider foundation. Direct `redgifs.com/watch/<id>` links should resolve to `origin_source: "redgifs"`, `media_type: "video"`, file key `v0`, and scanner-friendly storage under `library/redgifs/video/<yyyy>/<mm>/...` when public HTML exposes a direct MP4 candidate.
+
+Reddit explicit links currently use anonymous/bounded behavior. If a Reddit page hides external media behind a login wall or dynamic client data, the resolver should skip with `login_wall` or `external_source_hidden`. Do not use Reddit saved collection as the next product path unless the user explicitly reopens auth-assisted collection.
+
+## Deferred Reddit OAuth And Saved Collection
+
+Reddit V1 auth/saved tooling exists with fake-client coverage, but it is deferred legacy/advanced capability. It must not post, comment, vote, save/unsave, moderate, chat, scan subreddits, scrape HTML pages, or run third-party extractors.
+
+Use this section only when explicitly validating the legacy auth-assisted path.
 
 Add local-only values to `.env`:
 
@@ -463,7 +535,7 @@ Preview the collector without credentials, DB writes, or network:
 uv run --locked mediagent tools run reddit.saved.collect --input examples/tools/reddit.saved.collect.json --dry-run --json
 ```
 
-`reddit.saved.collect` returns normalized media items and optional cursor state only. Download orchestration remains deferred until `reddit.saved.sync` is intentionally added.
+`reddit.saved.collect` returns normalized media items and optional cursor state only. Download orchestration is not the current direction; do not add `reddit.saved.sync` unless the user explicitly chooses to resume auth-assisted account collection.
 
 ## Common Troubleshooting
 
@@ -475,8 +547,9 @@ uv run --locked mediagent tools run reddit.saved.collect --input examples/tools/
 - Pixiv auth failure: check `PIXIV_CREDENTIALS_FILE`, token expiration, callback URL/code freshness, and whether the credential file is under `MEDIAGENT_DATA_DIR`. If using the older refresh-token path, also check `PIXIV_REFRESH_TOKEN`.
 - Pixiv download returns 403: include `{"Referer":"https://www.pixiv.net/"}` in the `download.http` headers.
 - Telegram auth failure: check `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`, `TELEGRAM_SESSION_FILE`, and whether the session file is under `MEDIAGENT_DATA_DIR`.
-- Reddit auth failure: check `REDDIT_CLIENT_ID`, `REDDIT_REDIRECT_URI`, `REDDIT_USER_AGENT`, `REDDIT_CREDENTIALS_FILE`, callback-code freshness, and whether the credential file is under `MEDIAGENT_DATA_DIR`.
+- Reddit explicit link returns `login_wall` or `external_source_hidden`: this is an expected skip when public HTML does not expose the media URL. Prefer direct provider links such as Redgifs when available.
+- Reddit auth failure in the deferred saved-collection tooling: check `REDDIT_CLIENT_ID`, `REDDIT_REDIRECT_URI`, `REDDIT_USER_AGENT`, `REDDIT_CREDENTIALS_FILE`, callback-code freshness, and whether the credential file is under `MEDIAGENT_DATA_DIR`.
 
 ## Safety Reminder
 
-Do not run real platform login or media sync code until its tool is implemented with fixture tests and secret redaction checks. X and Reddit still need user-provided credentials for live verification. Pixiv and Telegram have completed user-assisted live verification for their current deterministic sync slices. Future live runs still require user-provided credentials.
+Do not run real platform login or media sync code until its tool is implemented with fixture tests and secret redaction checks. The current expansion path is explicit link resolution with no-auth behavior first. X and Reddit auth-assisted collection are deferred unless the user explicitly resumes them. Pixiv and Telegram have completed user-assisted live verification for their current deterministic sync slices. Future live runs still require user-provided credentials when a platform-specific login tool is used.

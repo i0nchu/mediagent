@@ -24,73 +24,183 @@ The following foundations are complete enough to treat as the current baseline:
 - Telegram stream-safe real downloads and one-hour video live verification are complete for the current phase
 - Phase 16 undocumented Telegram inbox link resolver foundation exists behind experimental boundaries: URL queueing, URL safety, direct media / generic single-media HTML / Imgur single-page / Pixiv artwork-link resolver behavior, origin-source storage metadata, link-safe download, and regression tests
 - Phase 17/18 Reddit explicit-link resolver foundation exists for credential-light single-media links: direct `i.redd.it` images, direct `v.redd.it` MP4 video-only files, Reddit post/share links, bounded anonymous HTML, `old.reddit.com` fallback with static `over18=1`, structured skips for unsupported gallery/manifest cases, Reddit metadata preservation, Telegram-inbox live verification, dedupe verification, and file verification
+- Phase 19 first stable link layer exists: schema-v7 `link_queue` lifecycle fields, active claim/lease and retry scheduling, source provenance merge, stable `link.queue.upsert`, stable `link.media.sync`, public `mediagent link sync <url>` CLI entry point, Redgifs direct/watch resolver foundation, Reddit static/preview gallery support, Reddit external-provider delegation, multiple file candidates for simple static groups, resolver header sanitization before persistence, and regression tests
 - Conservative cleanup/recovery foundation exists through `core.cleanup.media_state`, with dry-run planning, manifest output, explicit apply confirmation, quarantine-before-DB-reset behavior, and credential path protection
-- Reddit foundation exists: OAuth config/auth tools, saved-listing collector, media parser for image/gallery/video/direct media shapes, CLI examples, credential path safety, cursor path safety, and fake-client tests
+- Phase 19 live verification is complete for the public `mediagent link sync <url>` entry point, Redgifs direct/watch links, Reddit-to-Redgifs delegation, anonymous Reddit single-file photo/GIF links, and one Reddit multi-image gallery through preview fallback. The latest compatibility wrapper rerun resolved 12/13 inbox links, skipped 1 expected X/auth link, downloaded 2 new delegated Redgifs MP4 files, and left 0 failed/partial downloads. The phase19 live-test library currently has 5 Redgifs MP4 files and 6 Reddit photo/GIF/JPEG files.
+- Reddit foundation exists: OAuth config/auth tools, saved-listing collector, media parser for image/gallery/video/direct media shapes, CLI examples, credential path safety, cursor path safety, and fake-client tests. Treat this as deferred legacy/advanced capability unless the user explicitly resumes auth-assisted account collection.
 
 Do not expand completed phases here. Add only short baseline notes when they directly affect future work.
 
-## Current Focus: Phase 18 Link Resolver Hardening And Multi-File Readiness
+## Completed Focus: Phase 19 Link-First Resolver Hardening
 
-Goal: harden the link-first resolver path after the first successful Reddit live test, without turning it into an unrestricted crawler.
+The operational Phase 19 slice is complete. Unchecked items inside this section are post-19 promotion, future provider planning, or deferred policy/test follow-ups; they are not blockers for the current stable link-first baseline.
 
-The current resolver path proves the desired shape:
+Goal: make explicit user-provided links the primary product path.
+
+The old auth-first path is no longer the main direction:
 
 ```text
-explicit user-provided link
--> URL normalization and uniqueness check
--> resolver registry
--> normalized media item
--> existing sync/download/storage pipeline
+auth
+-> account bookmarks / saved items / feeds
+-> automatic discovery
+-> download
 ```
 
-### 18A. Finish Reddit Single-Media Coverage
+The new primary path is:
 
-- [ ] Add fake-client coverage for `redd.it/<post_id>` short URLs that redirect to post pages.
-- [ ] Add fake-client coverage for direct `old.reddit.com` input links.
-- [ ] Add fake-client coverage for `shreddit-screenview-data` JSON extraction.
-- [ ] Add tests proving preview/thumbnail Reddit URLs are ignored when a clear original `i.redd.it` image exists.
-- [ ] Add structured skip tests for no-media pages, blocked pages, deleted/removed pages, login-required pages, quarantined pages, and ambiguous multi-image pages.
-- [x] Add Telegram inbox sync fake-client coverage proving Reddit links download under `library/reddit/...` while Telegram remains only `ingested_from`.
-- [x] Add direct `v.redd.it` MP4 support before generic direct-media fallback.
-- [x] Add Reddit post/legacy-page extraction for explicit `v.redd.it/...DASH_*.mp4` candidates.
-- [x] Add tests proving Reddit MP4 links map to `video`, `v0`, and `library/reddit/video/...`.
+```text
+explicit URL source
+-> URL normalization and uniqueness check
+-> link queue lifecycle control
+-> safe resolver chain
+-> normalized media candidates
+-> deterministic candidate selection
+-> existing media/download/storage pipeline
+```
 
-### 18B. Prepare The Multi-File Resolver Contract
+Pixiv bookmark sync remains supported as an exception because it is already implemented and useful. New platform work should start from explicit-link resolution before account collection.
 
-- [ ] Keep the current public result shape compatible with one resolved media item.
-- [ ] Draft an internal resolver result shape that can later return multiple files from one input link.
-- [ ] Map the future multi-file result into the existing media item `metadata.files` format.
-- [ ] Do not enable Reddit galleries or multi-stream video muxing until the multi-file shape is covered by unit tests.
-- [ ] Keep storage layout unchanged: `<platform>/<media_type>/<yyyy>/<mm>/<filename>`.
+### 19A. Public Link Tool Surface
 
-### 18C. Next Provider Link Resolvers
+- [x] Promote the current hidden link resolver work from a Telegram-only secret feature into a first-class core link workflow.
+- [x] Keep the CLI surface conservative while stabilizing it; the implementation lives in core link tools, not inside Telegram-only code.
+- [x] Add `link.queue.upsert` for URL intake and normalized-URL dedupe.
+- [x] Add schema-v7 queue fields for lifecycle, retry metadata, source provenance, and future leases.
+- [x] Keep permanent skips separate from retryable failures; login walls, unsupported domains, unsafe URLs, and ambiguous pages should not be retried indefinitely.
+- [x] Merge source provenance when the same URL is submitted from multiple sources, such as CLI, Telegram inbox, workflow, and future Agent/SKILL calls.
+- [x] Add `link.media.sync` as the deterministic orchestration tool: queue/read URLs, resolve, upsert media items, filter known items, plan storage paths, download files, write metadata, and record file state.
+- [x] Allow URL input from CLI JSON, queued `link_id` records, Telegram inbox links, future workflow steps, and future Agent/SKILL calls.
+- [x] Dry-run mode must not write files, mutate DB state, or create media-file records.
+- [x] JSON output is stable enough for cron, workflows, and future agents in the current single-worker path.
+- [x] Activate queue claim/lease behavior so concurrent cron or daemon runs do not process the same queued link.
+- [x] Add retry scheduling with `next_attempt_at`, bounded attempts, and retryable skip handling.
+- [ ] Promote or replace `link.resolve.preview` and `link.resolve.to_media_item` after the public preview/debug API is settled.
 
-- [ ] Plan an explicit Pixiv artwork-link resolver that can reuse existing Pixiv auth and artwork parsing instead of bookmark access.
-- [ ] Plan an explicit X post-link resolver separately from X bookmark APIs, with clear handling for login walls and anti-bot limits.
-- [ ] Keep generic HTML resolver conservative: one clear public media file only, no JavaScript execution, no credential scraping, no page dumps.
+### 19B. Resolver Contract
 
-### 18D. Reddit Deferred Scope
+- [x] Define `MediaCandidate` with JSON-compatible fields: `url`, `media_type`, `mime_type`, `extension`, `size_bytes`, `source`, `quality_rank`, `file_index`, `content_identity`, `persistable_headers`, `download_context_ref`, and `details`.
+- [x] Treat `persistable_headers` as an allowlisted, non-secret set only. `Referer` may be persisted when required for public media delivery; `Authorization`, `Cookie`, bearer tokens, signed URL secrets, session headers, and CSRF headers must stay runtime-only and must never be written to SQLite, sidecar metadata, logs, or snapshots.
+- [x] Strip credential-bearing candidate headers before persisting link resolution state.
+- [x] Define `LinkResolution` with `status`, `skip_reason`, `original_url`, `normalized_url`, `canonical_url`, `aliases`, `final_url`, `origin_source`, `resolver_chain`, `auth_used`, `media_candidates`, `selected_candidate`, `warnings`, and `details`.
+- [x] Require resolvers to emit a canonical source identity when available, such as `platform + remote_id`, provider media id, canonical post URL, or direct content URL.
+- [x] Support multiple internal candidates for simple static file groups.
+- [x] Define simple multi-candidate group semantics for static file groups: group id, required files, optional files, candidate ordering, partial-success status, and `metadata.files` mapping.
+- [x] Use structured skip reasons such as `requires_auth`, `login_wall`, `unsupported_domain`, `unsupported_media_type`, `unsupported_multi_media`, `javascript_required`, `blocked`, `unsafe_url`, `too_large`, and `ambiguous_candidates`.
+- [x] Preserve enough metadata for debugging and indexing, but never store raw HTML dumps, raw Telegram message text, cookies, tokens, or credential-bearing headers.
+- [x] Keep storage layout unchanged: `<platform>/<media_type>/<yyyy>/<mm>/<filename>`.
 
-- [ ] Keep Reddit OAuth live verification pending while credentials are unavailable.
-- [ ] Defer `reddit.saved.sync` until explicit-link behavior and the collector output shape are stable.
-- [ ] Defer Reddit galleries until the resolver contract cleanly supports one link producing multiple files.
-- [ ] Defer Reddit audio muxing, DASH/HLS manifest handling, and full multi-file `v.redd.it` support until the ffmpeg/dependency strategy and multi-file resolver contract are stable.
-- [ ] Do not add Reddit posting, commenting, voting, save/unsave, moderation, or chat-management features.
+### 19C. Canonical Dedupe
 
-### 18E. Reddit Video Mux And Managed FFmpeg Plan
+- [x] Treat `link_queue.normalized_url` as only the first intake dedupe layer, not the final media identity.
+- [x] Add a first link alias strategy so `redd.it/<id>`, `reddit.com/r/.../comments/<id>/...`, `old.reddit.com/...`, provider watch URLs, and direct media URLs can point to the same queued link or resolved source.
+- [x] Use resolver output to dedupe at link aliases and `platform + remote_id` media item layers; known file records and checksums prevent target re-downloads.
+- [x] Preserve all known source URLs as provenance without creating duplicate download work.
+- [x] Ensure reruns can update resolution metadata for an existing link without resetting completed media-file state.
 
-- [ ] Decide whether Mediagent should manage a project-local ffmpeg binary, accept an explicit `MEDIAGENT_FFMPEG_PATH`, or support both.
-- [ ] Add a tool-safe ffmpeg capability check that reports version and supported codecs without modifying PATH.
-- [ ] Plan one media item with multiple source files so Reddit video and audio tracks can be downloaded separately, then muxed into one final file.
-- [ ] Keep direct single MP4 video-only downloads supported while muxing is unavailable.
-- [ ] Add tests proving audio-only MP4 candidates are not saved as user-facing video files.
+### 19D. Generic Resolver
 
-## Side Decisions
+- [x] Resolve direct public media URLs before fetching full HTML.
+- [x] Support bounded image/video/audio MIME checks, including `.mov` / `video/quicktime`.
+- [x] Revalidate redirects, final URL, MIME type, and size with HEAD, range GET, or bounded GET fallback.
+- [x] Parse bounded public HTML for `og:image`, `og:video`, `twitter:image`, `twitter:player:stream`, `<video>`, `<source>`, direct media anchors, and simple JSON-LD/media URL fields.
+- [x] Score candidates so obvious originals/full-size media beat thumbnails, icons, avatars, and decorative images.
+- [x] Download only when one clear media candidate can be selected deterministically.
+- [x] Return `ambiguous_candidates` or `unsupported_multi_media` instead of downloading when a page exposes multiple plausible media files.
+- [x] Do not execute JavaScript, solve CAPTCHA, bypass DRM, scrape credentials, or keep page dumps.
 
+### 19E. Reddit Resolver
+
+- [x] Keep anonymous resolution first: direct `i.redd.it`, direct `v.redd.it` MP4, Reddit post/share links, `redd.it/<id>`, and `old.reddit.com` fallback.
+- [x] Detect login walls, blocked pages, and no-media pages with structured skip reasons.
+- [ ] Expand structured skip coverage for deleted/removed/quarantined pages when real examples or fixtures are available.
+- [x] Do not implement Reddit auth fallback in the current phase; unresolved login-wall posts should skip with `login_wall` or `external_source_hidden`.
+- [x] Parse publicly visible Reddit metadata fields when available, such as `url_overridden_by_dest`, `secure_media`, `media_embed`, `preview`, `reddit_video`, and static gallery metadata.
+- [x] If publicly visible Reddit metadata points to an external URL, delegate that URL back into the resolver chain instead of writing one-off domain logic inside Reddit.
+- [x] Keep Redgifs as the priority provider adapter because the live test proved Reddit rich-video posts commonly delegate there.
+- [x] Let unknown external providers fall back to the Generic Resolver.
+- [x] Support static Reddit image galleries when public HTML exposes direct `i.redd.it` candidates.
+- [x] Keep DASH/HLS muxing and multi-file `v.redd.it` support deferred until the multi-candidate contract is tested.
+- [x] Do not add Reddit posting, commenting, voting, save/unsave, moderation, or chat-management features.
+
+### 19F. Redgifs Foundation
+
+Goal: make Redgifs a stable no-auth provider adapter so direct Redgifs links can be downloaded now, and future `reddit link -> Redgifs link` discovery can reuse the same downstream path.
+
+- [x] Add a dedicated Redgifs resolver for public `redgifs.com/watch/<id>` and known Redgifs host variants.
+- [x] Normalize Redgifs URLs to a canonical watch URL and stable remote id.
+- [x] Extract direct MP4 candidates from bounded public Redgifs watch-page HTML.
+- [x] Prefer clear video candidates such as `media.redgifs.com/<Id>.mp4` or `media.redgifs.com/<Id>-silent.mp4` over preview images and decorative assets.
+- [x] Record `audio_status` as `unknown`, `silent`, or `not_detected` without promising muxed audio.
+- [x] Validate direct Redgifs media with the same redirect, MIME, size, and URL safety checks used by Generic Resolver and `download.http`.
+- [x] Map resolved items to `origin_source: "redgifs"`, `media_type: "video"`, file key `v0`, and storage path `library/redgifs/video/<yyyy>/<mm>/...`.
+- [x] Preserve upstream provenance when Redgifs is reached from another resolver, such as Telegram inbox or future Reddit delegation.
+- [x] Return structured skips for unavailable videos, region blocks, login/age gates, JavaScript-only pages, ambiguous multi-media pages, unsupported MIME, and oversized media.
+- [x] Do not use Redgifs API credentials or third-party API access in this phase.
+- [x] Do not scrape creator profiles, searches, feeds, related videos, comments, or account data.
+- [x] Live-test with direct and Reddit-delegated Redgifs links from Telegram inbox; five Redgifs watch links resolved and downloaded MP4 files under the phase19 live-test library.
+
+### 19G. Post-19 Connected Provider Adapters
+
+- [ ] Keep Imgur single-media support but migrate it into the same provider-adapter pattern.
+- [ ] Plan Pixiv artwork-link resolution separately from Pixiv bookmark sync.
+- [ ] Plan X post-link resolution separately from X bookmark APIs and assume login wall / anti-bot failures may remain normal skip states.
+- [ ] Keep Instagram deferred until the generic, Redgifs, and Reddit resolver contracts are stable.
+
+### 19H. Deferred Auth Fallback Policy
+
+- [ ] Do not implement Reddit app-only auth in the current phase.
+- [ ] Keep Reddit user OAuth and script password grant as later optional local-only fallbacks, not as the primary project direction.
+- [ ] If Reddit API approval becomes available later, revisit optional metadata-only fallback for explicit Reddit links.
+- [ ] Any future Reddit auth fallback must read only metadata for user-provided explicit links and must not read saved items, feeds, subreddits, comments, votes, or account history.
+- [ ] Any future Reddit Data API use must use a registered OAuth token, a unique descriptive `REDDIT_USER_AGENT`, and rate-limit backoff from `X-Ratelimit-Used`, `X-Ratelimit-Remaining`, and `X-Ratelimit-Reset`.
+- [ ] Respect Reddit's current free Data API guidance of 100 QPM per OAuth client id, averaged over a 10-minute window, unless the official policy changes.
+- [ ] Do not attempt to bypass Reddit API limits, login walls, deleted content, removed content, or access controls.
+- [ ] If Reddit metadata is stored via API fallback, add a retention/deletion strategy for deleted Reddit user content before promoting the feature.
+
+References:
+
+- Reddit Data API Wiki: <https://support.reddithelp.com/hc/en-us/articles/16160319875092-Reddit-Data-API-Wiki>
+- Reddit Data API Terms: <https://redditinc.com/policies/data-api-terms>
+
+### 19I. Promotion And Compatibility
+
+- [x] Decide stable public tool names for queue intake and sync orchestration: `link.queue.upsert` and `link.media.sync`.
+- [x] Keep `telegram.inbox.sync_links` as a wrapper so existing live-test commands do not break.
+- [x] Update examples for `link.queue.upsert` and `link.media.sync`.
+- [x] Update `TOOL_CATALOG.md`, `RUNBOOK.md`, `ARCHITECTURE.md`, and localized handoff files for the stable core link tools.
+- [x] Keep normal tool listing conservative; stable link tools are public, while experimental Telegram inbox and preview helpers still require explicit opt-in flags.
+- [x] Document exit codes, JSON result shape, dry-run behavior, queue behavior, and structured skip reasons for promoted link tools.
+
+### 19J. Verification And Post-19 Test Follow-Ups
+
+- [x] Unit-test URL normalization, canonicalization, and normalized URL uniqueness.
+- [x] Unit-test initial link queue lifecycle metadata, retryable vs permanent skips, source provenance merge, and batch limits.
+- [x] Unit-test active retry scheduling and concurrent claim behavior after claim/lease execution is implemented.
+- [x] Unit-test alias/canonical/media-item dedupe across distinct Reddit links and provider/direct media identities.
+- [x] Unit-test that credential-bearing headers are not persisted to SQLite through link resolution state.
+- [ ] Extend secret persistence tests to metadata sidecars, logs, snapshots, signed runtime download data, and `download_context_ref` once runtime-only download contexts exist.
+- [x] Unit-test SSRF protections: unsafe schemes, userinfo, localhost/private IPs, unresolved hosts, redirect limits, and redirect-to-private-target.
+- [x] Unit-test direct media resolution for images, GIF, MP4, WebM, MOV, and audio MIME types.
+- [x] Unit-test generic HTML candidate parsing, thumbnail rejection, ambiguous candidate skip, and no-JS behavior.
+- [x] Unit-test Redgifs URL normalization, watch-page extraction, direct MP4 candidate selection, preview rejection, unavailable video skip, and live-test fixture parsing.
+- [x] Unit-test Reddit external URL delegation to Redgifs after that delegation is implemented.
+- [x] Unit-test Reddit anonymous fallback, login-wall detection, static gallery resolution, and structured skips.
+- [x] Unit-test multi-candidate planning fixtures for partial success, required-file failure, and `metadata.files` mapping for static file groups.
+- [ ] Unit-test Reddit rate-limit metadata parsing and backoff behavior before any Reddit API fallback is promoted.
+- [x] Unit-test `link.media.sync` dry-run no writes and rerun dedupe.
+- [x] Live-test only with explicit user-provided URLs and project-local output paths under `${MEDIAGENT_DATA_DIR}`.
+
+## Side Decisions And Post-19 Guidance
+
+These items guide future work and should not be treated as unfinished Phase 19 implementation.
+
+- [ ] Treat auth-assisted account collection as optional legacy/advanced behavior; Pixiv bookmark sync remains the only current exception.
+- [ ] Prioritize explicit-link resolvers over saved/bookmark/feed collectors for Reddit, X, Instagram, and future platforms.
+- [ ] Defer Reddit auth fallback until the no-auth Generic Resolver, Redgifs foundation, and Reddit anonymous resolver are stable.
 - [ ] X live OAuth verification remains pending because API access may require paid credits.
-- [ ] Plan X and Pixiv explicit-link resolvers after Phase 18 hardening, so inbox automation can download from explicit post/artwork links without relying on bookmark/feed access.
+- [ ] Plan X and Pixiv explicit-link resolvers after Phase 19 core link tools, so inbox automation can download from explicit post/artwork links without relying on bookmark/feed access.
 - [ ] Discuss whether Pixiv needs additional source tools beyond bookmarks, such as following-user works or explicit artwork IDs.
-- [ ] Keep Telegram link resolver behavior undocumented until the user explicitly decides to promote it.
+- [ ] Promote Telegram inbox link behavior only as one URL input source after core link tools exist.
 - [ ] Keep Instagram deferred until Pixiv, Telegram, Reddit, and X boundaries are stable.
 
 ## Design Decision: Option B Hidden Telegram Link Resolver
@@ -113,7 +223,7 @@ Telegram inbox message
 Implementation boundaries:
 
 - Telegram remains the ingest source and provenance only; storage platform comes from the resolved `origin_source`.
-- `link_queue.normalized_url` is the uniqueness key, so duplicate pasted links do not create duplicate work.
+- `link_queue.normalized_url` is the first intake uniqueness key. Resolver canonical aliases and final media identity must prevent duplicate downloads when different URLs point to the same content.
 - Resolver behavior must stay behind experimental/undocumented tool boundaries until explicitly promoted.
 - Do not require a domain allowlist for public HTML pages.
 - First-version resolvers should stay limited to public HTTPS direct media URLs, bounded public HTML parsing for one clear media target, and small explicit provider adapters only when needed.
@@ -164,7 +274,7 @@ Goal: let users describe source selection and filtering rules without hard-codin
 Proposed flow:
 
 ```text
-platform collector
+explicit URL source or collector
 -> candidate media items
 -> deterministic RuleSpec policy
 -> sync/download pipeline

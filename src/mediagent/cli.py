@@ -47,6 +47,24 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="mediagent")
     subcommands = parser.add_subparsers(dest="command")
 
+    link = subcommands.add_parser("link", help="Resolve and download explicit media links.")
+    link_commands = link.add_subparsers(dest="link_command")
+
+    link_sync = link_commands.add_parser("sync", help="Resolve and download one explicit URL.")
+    link_sync.add_argument("url", help="Explicit URL to resolve and download.")
+    link_sync.add_argument("--db-path", default=None, help="SQLite database path. Defaults to MEDIAGENT_DB_PATH.")
+    link_sync.add_argument("--library-root", default=None, help="Output library root. Defaults to configured library root.")
+    link_sync.add_argument("--target-dir", default=None, help=argparse.SUPPRESS)
+    link_sync.add_argument("--write-sidecar-metadata", action="store_true", help="Write JSON sidecar metadata files.")
+    link_sync.add_argument("--overwrite", action="store_true", help="Overwrite existing known target files.")
+    link_sync.add_argument("--retry-failed", action="store_true", help="Retry media items currently marked failed.")
+    link_sync.add_argument("--max-html-bytes", type=int, default=None, help=argparse.SUPPRESS)
+    link_sync.add_argument("--max-media-bytes", type=int, default=None, help=argparse.SUPPRESS)
+    link_sync.add_argument("--timeout-seconds", type=float, default=None, help=argparse.SUPPRESS)
+    link_sync.add_argument("--json", action="store_true", help="Emit machine-readable JSON.")
+    link_sync.add_argument("--dry-run", action="store_true", help="Run without tool side effects.")
+    link_sync.set_defaults(handler=handle_link_sync)
+
     tools = subcommands.add_parser("tools", help="Inspect and run agent-callable tools.")
     tool_commands = tools.add_subparsers(dest="tools_command")
 
@@ -117,26 +135,66 @@ def handle_tools_run(args: argparse.Namespace) -> int:
             exit_code=EXIT_VALIDATION_ERROR,
         )
 
+    return run_tool_command(
+        tool=args.tool,
+        input_data=input_data,
+        json_output=args.json,
+        dry_run=args.dry_run,
+        allow_experimental=args.allow_experimental,
+    )
+
+
+def handle_link_sync(args: argparse.Namespace) -> int:
+    input_data: dict[str, Any] = {
+        "url": args.url,
+        "write_sidecar_metadata": args.write_sidecar_metadata,
+        "overwrite": args.overwrite,
+        "retry_failed": args.retry_failed,
+    }
+    optional_fields = {
+        "db_path": args.db_path,
+        "library_root": args.library_root,
+        "target_dir": args.target_dir,
+        "max_html_bytes": args.max_html_bytes,
+        "max_media_bytes": args.max_media_bytes,
+        "timeout_seconds": args.timeout_seconds,
+    }
+    input_data.update({key: value for key, value in optional_fields.items() if value is not None})
+    return run_tool_command(
+        tool="link.media.sync",
+        input_data=input_data,
+        json_output=args.json,
+        dry_run=args.dry_run,
+    )
+
+
+def run_tool_command(
+    *,
+    tool: str,
+    input_data: dict[str, Any],
+    json_output: bool,
+    dry_run: bool,
+    allow_experimental: bool = False,
+) -> int:
     registry = create_default_registry()
-    context = ToolContext.from_env(dry_run=args.dry_run)
+    context = ToolContext.from_env(dry_run=dry_run)
     try:
         result = asyncio.run(
             registry.run(
-                args.tool,
+                tool,
                 input_data,
                 context,
-                allow_experimental=args.allow_experimental,
+                allow_experimental=allow_experimental,
             )
         )
     except ToolRegistryError as exc:
-        return print_error(exc.error.to_dict(), json_output=args.json, exit_code=exc.exit_code)
-
+        return print_error(exc.error.to_dict(), json_output=json_output, exit_code=exc.exit_code)
     payload = {
-        "tool": args.tool,
+        "tool": tool,
         "run_id": context.run_id,
         **result.to_dict(),
     }
-    if args.json:
+    if json_output:
         print_json(payload)
     else:
         print_human_result(payload)

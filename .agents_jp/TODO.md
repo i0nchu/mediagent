@@ -24,73 +24,183 @@
 - Telegram stream-safe real downloads と 1 時間 video live verification は現在 phase の目標として完了済み
 - Phase 16 undocumented Telegram inbox link resolver foundation は experimental boundaries の後ろに実装済みです。URL queueing、URL safety、direct media / generic single-media HTML / Imgur single-page / Pixiv artwork-link resolver behavior、origin-source storage metadata、link-safe download、regression tests を含みます
 - Phase 17/18 Reddit explicit-link resolver foundation は credential-light single-media links に対応済みです。Direct `i.redd.it` images、direct `v.redd.it` MP4 video-only files、Reddit post/share links、bounded anonymous HTML、static `over18=1` 付き `old.reddit.com` fallback、unsupported gallery/manifest cases の structured skips、Reddit metadata preservation、Telegram inbox live verification、dedupe verification、file verification を含みます
+- Phase 19 first stable link layer は実装済みです。schema-v7 `link_queue` lifecycle fields、active claim/lease と retry scheduling、source provenance merge、stable `link.queue.upsert`、stable `link.media.sync`、public `mediagent link sync <url>` CLI entry point、Redgifs direct/watch resolver foundation、Reddit static/preview gallery support、Reddit external-provider delegation、simple static groups の multiple file candidates、resolver header persistence sanitizer、regression tests を含みます
 - Conservative cleanup/recovery foundation は `core.cleanup.media_state` で実装済みです。dry-run planning、manifest output、explicit apply confirmation、quarantine-before-DB-reset behavior、credential path protection に対応します
-- Reddit foundation は実装済みです。OAuth config/auth tools、saved-listing collector、image/gallery/video/direct media shapes の media parser、CLI examples、credential path safety、cursor path safety、fake-client tests を含みます
+- Phase 19 live verification は public `mediagent link sync <url>` entry point、Redgifs direct/watch links、Reddit-to-Redgifs delegation、anonymous Reddit single-file photo/GIF links、preview fallback で解決した Reddit multi-image gallery 1 件で完了済みです。Latest compatibility wrapper rerun は 13 inbox links 中 12 件を resolve し、1 件の expected X/auth link を skip し、2 件の新規 delegated Redgifs MP4 files を download し、failed/partial downloads は 0 でした。Phase19 live-test library には現在 5 件の Redgifs MP4 files と 6 件の Reddit photo/GIF/JPEG files があります
+- Reddit foundation は実装済みです。OAuth config/auth tools、saved-listing collector、image/gallery/video/direct media shapes の media parser、CLI examples、credential path safety、cursor path safety、fake-client tests を含みます。User が明示的に auth-assisted account collection を再開しない限り、deferred legacy/advanced capability として扱います
 
 完了済み phase の詳細をここに展開しないでください。今後の作業に直接影響する場合だけ短い baseline note を追加します。
 
-## 現在の焦点：Phase 18 Link Resolver Hardening And Multi-File Readiness
+## 完了済み焦点：Phase 19 Link-First Resolver Hardening
 
-Goal: 最初の Reddit live test が成功した後、link-first resolver path を harden します。ただし unrestricted crawler にはしません。
+Phase 19 の operational slice は完了済みです。この section 内の未チェック項目は post-19 promotion、future provider planning、または deferred policy/test follow-ups であり、現在の stable link-first baseline の blocker ではありません。
 
-現在の resolver path は次の形を実証済みです。
+Goal: user が明示的に提供した link を Mediagent の主要な product path にします。
+
+従来の auth-first path は主方向ではありません。
 
 ```text
-explicit user-provided link
--> URL normalization and uniqueness check
--> resolver registry
--> normalized media item
--> existing sync/download/storage pipeline
+auth
+-> account bookmarks / saved items / feeds
+-> automatic discovery
+-> download
 ```
 
-### 18A. Reddit Single-Media Coverage を完了する
+新しい primary path は次の形です。
 
-- [ ] `redd.it/<post_id>` short URLs が post pages へ安全に redirect する fake-client coverage を追加する。
-- [ ] Direct `old.reddit.com` input links の fake-client coverage を追加する。
-- [ ] `shreddit-screenview-data` JSON extraction の fake-client coverage を追加する。
-- [ ] Clear original `i.redd.it` image が存在する場合、Reddit preview/thumbnail URLs を無視することを tests で証明する。
-- [ ] No-media pages、blocked pages、deleted/removed pages、login-required pages、quarantined pages、ambiguous multi-image pages の structured skip tests を追加する。
-- [x] Reddit links が `library/reddit/...` に download され、Telegram は `ingested_from` としてのみ残ることを確認する Telegram inbox sync fake-client coverage を追加しました。
-- [x] Generic direct-media fallback の前に direct `v.redd.it` MP4 support を追加しました。
-- [x] Reddit post/legacy-page から explicit `v.redd.it/...DASH_*.mp4` candidates を抽出できるようにしました。
-- [x] Reddit MP4 links が `video`、`v0`、`library/reddit/video/...` に map されることを tests で確認しました。
+```text
+explicit URL source
+-> URL normalization and uniqueness check
+-> link queue lifecycle control
+-> safe resolver chain
+-> normalized media candidates
+-> deterministic candidate selection
+-> existing media/download/storage pipeline
+```
 
-### 18B. Multi-File Resolver Contract を準備する
+Pixiv bookmark sync はすでに実装済みで有用なため、例外として維持します。新しい platform work は account collection より先に explicit-link resolution から始めます。
 
-- [ ] 現在の public result shape は one resolved media item と互換のまま維持する。
-- [ ] One input link から multiple files を返せる internal resolver result shape を draft する。
-- [ ] Future multi-file result を既存 media item `metadata.files` format に map する。
-- [ ] Multi-file shape が unit tests で覆われるまで Reddit galleries や multi-stream video muxing は enable しない。
-- [ ] Storage layout は変更しない：`<platform>/<media_type>/<yyyy>/<mm>/<filename>`。
+### 19A. Public Link Tool Surface
 
-### 18C. 次の Provider Link Resolvers
+- [x] 現在 hidden になっている link resolver work を Telegram-only secret feature から first-class core link workflow へ昇格する。
+- [x] 安定するまでは CLI surface を conservative に保つ。実装は Telegram-only code ではなく core link tools に置く。
+- [x] URL intake と normalized-URL dedupe のために `link.queue.upsert` を追加する。
+- [x] Lifecycle、retry metadata、source provenance、future leases のために schema-v7 queue fields を追加する。
+- [x] Permanent skips と retryable failures を分ける。Login wall、unsupported domain、unsafe URL、ambiguous page は無期限に retry しない。
+- [x] CLI、Telegram inbox、workflow、future Agent/SKILL calls など複数 source から同じ URL が投入された場合、source provenance を merge する。
+- [x] Deterministic orchestration tool として `link.media.sync` を追加する。Queued URLs の読み取り、resolve、media item upsert、known item filter、storage path planning、file download、metadata write、file state record を行う。
+- [x] CLI JSON、queued `link_id` records、Telegram inbox links、future workflow steps、future Agent/SKILL calls を URL input として受け付ける。
+- [x] Dry-run mode は files を書かず、DB state を変更せず、media-file records も作成しない。
+- [x] 現在の single-worker path では、JSON output は cron、workflows、future agents が利用できる程度に安定している。
+- [x] Queue claim/lease behavior を有効化し、concurrent cron または daemon runs が同じ queued link を処理しないようにする。
+- [x] `next_attempt_at`、bounded attempts、retryable skip handling による retry scheduling を追加する。
+- [ ] Public preview/debug API が決まった後、`link.resolve.preview` と `link.resolve.to_media_item` を promote または置き換える。
 
-- [ ] Bookmark access に依存せず既存 Pixiv auth と artwork parsing を再利用する explicit Pixiv artwork-link resolver を計画する。
-- [ ] Explicit X post-link resolver は X bookmark APIs と分けて計画し、login walls と anti-bot limits の扱いを明確にする。
-- [ ] Generic HTML resolver は conservative に保つ：single clear public media file のみ、JavaScript 実行なし、credential scraping なし、page dumps 保存なし。
+### 19B. Resolver Contract
 
-### 18D. Reddit Deferred Scope
+- [x] `MediaCandidate` を定義する。JSON-compatible fields は `url`、`media_type`、`mime_type`、`extension`、`size_bytes`、`source`、`quality_rank`、`file_index`、`content_identity`、`persistable_headers`、`download_context_ref`、`details`。
+- [x] `persistable_headers` は allowlisted、non-secret set として扱う。Public media delivery に必要な場合は `Referer` を保存できるが、`Authorization`、`Cookie`、bearer tokens、signed URL secrets、session headers、CSRF headers は runtime-only とし、SQLite、sidecar metadata、log、snapshot へ保存しない。
+- [x] Link resolution state を永続化する前に credential-bearing candidate headers を strip する。
+- [x] `LinkResolution` を定義する。`status`、`skip_reason`、`original_url`、`normalized_url`、`canonical_url`、`aliases`、`final_url`、`origin_source`、`resolver_chain`、`auth_used`、`media_candidates`、`selected_candidate`、`warnings`、`details` を含める。
+- [x] Resolver は可能な場合に canonical source identity を出す。例：`platform + remote_id`、provider media id、canonical post URL、direct content URL。
+- [x] Simple static file groups では multiple internal candidates に対応する。
+- [x] Simple static file groups の multi-candidate group semantics を定義する：group id、required files、optional files、candidate ordering、partial-success status、`metadata.files` mapping。
+- [x] `requires_auth`、`login_wall`、`unsupported_domain`、`unsupported_media_type`、`unsupported_multi_media`、`javascript_required`、`blocked`、`unsafe_url`、`too_large`、`ambiguous_candidates` などの structured skip reasons を使う。
+- [x] Debugging と indexing に必要な metadata は保持するが、raw HTML dumps、raw Telegram message text、cookies、tokens、credential-bearing headers は保存しない。
+- [x] Storage layout は変更しない：`<platform>/<media_type>/<yyyy>/<mm>/<filename>`。
 
-- [ ] Reddit OAuth live verification は credentials が利用できない間 pending のままにする。
-- [ ] Explicit-link behavior と collector output shape が安定してから `reddit.saved.sync` を検討する。
-- [ ] Resolver contract が one link -> multiple files をきれいに扱えるようになってから Reddit galleries を実装する。
-- [ ] ffmpeg/dependency strategy と multi-file resolver contract が安定してから Reddit audio muxing、DASH/HLS manifest handling、full multi-file `v.redd.it` support を実装する。
-- [ ] Reddit posting、commenting、voting、save/unsave、moderation、chat-management features は追加しない。
+### 19C. Canonical Dedupe
 
-### 18E. Reddit Video Mux と Managed FFmpeg 計画
+- [x] `link_queue.normalized_url` は最初の intake dedupe layer として扱い、final media identity とは見なさない。
+- [x] First link alias strategy を追加し、`redd.it/<id>`、`reddit.com/r/.../comments/<id>/...`、`old.reddit.com/...`、provider watch URL、direct media URL が同じ queued link または resolved source を指せるようにする。
+- [x] Resolver output を使い、link aliases と `platform + remote_id` media item layers で dedupe する。Known file records と checksums は既存 target の re-download を防ぐ。
+- [x] すべての known source URLs を provenance として保持するが、duplicate download work は作らない。
+- [x] Rerun は既存 link の resolution metadata を更新できるが、completed media-file state を reset しない。
 
-- [ ] Mediagent が project-local ffmpeg binary を管理するか、明示的な `MEDIAGENT_FFMPEG_PATH` を受け付けるか、または両方に対応するか決める。
-- [ ] PATH を変更せず、version と supported codecs を報告する tool-safe ffmpeg capability check を追加する。
-- [ ] Reddit video/audio tracks を別々に download して 1 つの final file に mux できるよう、one media item with multiple source files を計画する。
-- [ ] Muxing が未実装の間も direct single MP4 video-only downloads support は維持する。
-- [ ] Audio-only MP4 candidates が user-facing video files として保存されないことを tests で確認する。
+### 19D. Generic Resolver
 
-## Side Decisions
+- [x] Full HTML を取得する前に direct public media URLs を resolve する。
+- [x] `.mov` / `video/quicktime` を含む bounded image/video/audio MIME checks を支援する。
+- [x] HEAD、range GET、または bounded GET fallback で redirects、final URL、MIME type、size を再検証する。
+- [x] Bounded public HTML から `og:image`、`og:video`、`twitter:image`、`twitter:player:stream`、`<video>`、`<source>`、direct media anchors、simple JSON-LD/media URL fields を parse する。
+- [x] Candidate scoring により、明らかな original/full-size media を thumbnails、icons、avatars、decorative images より優先する。
+- [x] Deterministic に clear media candidate を 1 件選べる場合だけ download する。
+- [x] Page が複数の plausible media files を出す場合、download せず `ambiguous_candidates` または `unsupported_multi_media` を返す。
+- [x] JavaScript 実行、CAPTCHA 解決、DRM 回避、credential scraping、page dumps 保存は行わない。
 
+### 19E. Reddit Resolver
+
+- [x] Anonymous resolution を優先する。Direct `i.redd.it`、direct `v.redd.it` MP4、Reddit post/share links、`redd.it/<id>`、`old.reddit.com` fallback を扱う。
+- [x] Login walls、blocked pages、no-media pages を structured skip reasons で検出する。
+- [ ] Real examples または fixtures が利用可能になったら、deleted/removed/quarantined pages の structured skip coverage を拡張する。
+- [x] 現在 phase では Reddit auth fallback を実装しない。Resolve できない login-wall posts は `login_wall` または `external_source_hidden` で skip する。
+- [x] Publicly visible な Reddit metadata fields がある場合だけ parse する。例：`url_overridden_by_dest`、`secure_media`、`media_embed`、`preview`、`reddit_video`、static gallery metadata。
+- [x] Publicly visible な Reddit metadata が external URL を指す場合、Reddit resolver 内に one-off domain logic を書かず、その URL を resolver chain に戻す。
+- [x] Live test で Reddit rich-video posts が Redgifs に delegate することを確認したため、Redgifs を priority provider adapter として扱う。
+- [x] Unknown external providers は Generic Resolver に fallback する。
+- [x] Public HTML が direct `i.redd.it` candidates を公開している場合、static Reddit image galleries を支援する。
+- [x] DASH/HLS muxing、multi-file `v.redd.it` support は multi-candidate contract が test されるまで deferred にする。
+- [x] Reddit posting、commenting、voting、save/unsave、moderation、chat-management features は追加しない。
+
+### 19F. Redgifs Foundation
+
+Goal: Redgifs を stable no-auth provider adapter にします。Direct Redgifs links は今 download できるようにし、将来 `reddit link -> Redgifs link` がつながった場合も同じ downstream path を再利用できるようにします。
+
+- [x] Public `redgifs.com/watch/<id>` と known Redgifs host variants 向けの dedicated Redgifs resolver を追加する。
+- [x] Redgifs URLs を canonical watch URL と stable remote id に normalize する。
+- [x] Bounded public Redgifs watch-page HTML から direct MP4 candidates を抽出する。
+- [x] Preview images や decorative assets より、`media.redgifs.com/<Id>.mp4` または `media.redgifs.com/<Id>-silent.mp4` のような clear video candidates を優先する。
+- [x] `audio_status` を `unknown`、`silent`、`not_detected` として記録する。ただし muxed audio は約束しない。
+- [x] Generic Resolver と `download.http` と同じ redirect、MIME、size、URL safety checks で direct Redgifs media を validate する。
+- [x] Resolved items を `origin_source: "redgifs"`、`media_type: "video"`、file key `v0`、storage path `library/redgifs/video/<yyyy>/<mm>/...` に map する。
+- [x] Redgifs が別 resolver から到達された場合、Telegram inbox や future Reddit delegation などの upstream provenance を保持する。
+- [x] Unavailable videos、region blocks、login/age gates、JavaScript-only pages、ambiguous multi-media pages、unsupported MIME、oversized media には structured skips を返す。
+- [x] この phase では Redgifs API credentials や third-party API access を使わない。
+- [x] Creator profiles、searches、feeds、related videos、comments、account data は scrape しない。
+- [x] Telegram inbox 内の direct と Reddit-delegated Redgifs links で live-test する。5 件の Redgifs watch links は resolve され、MP4 files が phase19 live-test library に download されました。
+
+### 19G. Post-19 Connected Provider Adapters
+
+- [ ] Imgur single-media support は維持しつつ、同じ provider-adapter pattern に移行する。
+- [ ] Pixiv artwork-link resolution は Pixiv bookmark sync と分けて計画する。
+- [ ] X post-link resolution は X bookmark APIs と分けて計画し、login wall / anti-bot failures が normal skip states になり得る前提で扱う。
+- [ ] Generic、Redgifs、Reddit resolver contracts が安定するまで Instagram は deferred にする。
+
+### 19H. Deferred Auth Fallback Policy
+
+- [ ] 現在 phase では Reddit app-only auth を実装しない。
+- [ ] Reddit user OAuth と script password grant は later optional local-only fallbacks として残し、primary project direction にはしない。
+- [ ] Reddit API approval が将来利用可能になった場合、explicit Reddit links の optional metadata-only fallback を再検討する。
+- [ ] 将来の Reddit auth fallback は user-provided explicit links の metadata だけを読み、saved items、feeds、subreddits、comments、votes、account history は読まない。
+- [ ] 将来 Reddit Data API を使う場合は、registered OAuth token、unique descriptive `REDDIT_USER_AGENT` を必須にし、`X-Ratelimit-Used`、`X-Ratelimit-Remaining`、`X-Ratelimit-Reset` から rate-limit backoff を行う。
+- [ ] Official policy が変わらない限り、現在の Reddit free Data API guidance である OAuth client id ごと 100 QPM、10 分 window 平均を守る。
+- [ ] Reddit API limits、login walls、deleted content、removed content、access controls の bypass を試みない。
+- [ ] API fallback で Reddit metadata を保存する場合、feature promotion 前に deleted Reddit user content の retention/deletion strategy を追加する。
+
+References:
+
+- Reddit Data API Wiki: <https://support.reddithelp.com/hc/en-us/articles/16160319875092-Reddit-Data-API-Wiki>
+- Reddit Data API Terms: <https://redditinc.com/policies/data-api-terms>
+
+### 19I. Promotion And Compatibility
+
+- [x] Queue intake と sync orchestration の stable public tool names を決定する：`link.queue.upsert` と `link.media.sync`。
+- [x] `telegram.inbox.sync_links` は wrapper として残し、既存 live-test commands を壊さない。
+- [x] `link.queue.upsert` と `link.media.sync` の examples を追加する。
+- [x] Stable core link tools に合わせて `TOOL_CATALOG.md`、`RUNBOOK.md`、`ARCHITECTURE.md`、localized handoff files を更新する。
+- [x] Normal tool listing は conservative に保つ。Stable link tools は public、experimental Telegram inbox と preview helpers は引き続き explicit opt-in flags を要求する。
+- [x] Promoted link tools の exit codes、JSON result shape、dry-run behavior、queue behavior、structured skip reasons を文書化する。
+
+### 19J. Verification And Post-19 Test Follow-Ups
+
+- [x] URL normalization、canonicalization、normalized URL uniqueness を unit-test する。
+- [x] Initial link queue lifecycle metadata、retryable vs permanent skips、source provenance merge、batch limits を unit-test する。
+- [x] Claim/lease execution の実装後に active retry scheduling と concurrent claim behavior を unit-test する。
+- [x] Distinct Reddit links と provider/direct media identities で alias/canonical/media-item dedupe を unit-test する。
+- [x] Credential-bearing headers が link resolution state を通じて SQLite に保存されないことを unit-test する。
+- [ ] Runtime-only download contexts ができた後、metadata sidecars、logs、snapshots、signed runtime download data、`download_context_ref` まで secret persistence tests を拡張する。
+- [x] SSRF protections を unit-test する：unsafe schemes、userinfo、localhost/private IPs、unresolved hosts、redirect limits、redirect-to-private-target。
+- [x] Direct media resolution を unit-test する：images、GIF、MP4、WebM、MOV、audio MIME types。
+- [x] Generic HTML candidate parsing、thumbnail rejection、ambiguous candidate skip、no-JS behavior を unit-test する。
+- [x] Redgifs URL normalization、watch-page extraction、direct MP4 candidate selection、preview rejection、unavailable video skip、live-test fixture parsing を unit-test する。
+- [x] Reddit external URL delegation to Redgifs の実装後に対応する unit test を追加する。
+- [x] Reddit anonymous fallback、login-wall detection、static gallery resolution、structured skips を unit-test する。
+- [x] Static file groups について、multi-candidate planning fixtures で partial success、required-file failure、`metadata.files` mapping を unit-test する。
+- [ ] Reddit API fallback を promote する前に、Reddit rate-limit metadata parsing と backoff behavior を unit-test する。
+- [x] `link.media.sync` の dry-run no writes と rerun dedupe を unit-test する。
+- [x] Live-test は user-provided explicit URLs のみを使い、output paths は `${MEDIAGENT_DATA_DIR}` 配下に限定する。
+
+## Side Decisions And Post-19 Guidance
+
+これらの items は future work の guidance であり、Phase 19 の未完了 implementation として扱わないでください。
+
+- [ ] Auth-assisted account collection は optional legacy/advanced behavior として扱う。Pixiv bookmark sync が現時点の唯一の例外。
+- [ ] Reddit、X、Instagram、future platforms は saved/bookmark/feed collectors より explicit-link resolvers を優先する。
+- [ ] No-auth Generic Resolver、Redgifs foundation、Reddit anonymous resolver が安定するまで Reddit auth fallback は deferred にする。
 - [ ] X live OAuth verification は未実施。API access に paid credits が必要な可能性がある。
-- [ ] Phase 18 hardening の完了後に X と Pixiv の explicit-link resolvers を計画し、inbox automation が bookmark/feed access に依存せず explicit post/artwork links から download できるようにする。
+- [ ] Phase 19 core link tools の後に X と Pixiv の explicit-link resolvers を計画し、inbox automation が bookmark/feed access に依存せず explicit post/artwork links から download できるようにする。
 - [ ] Pixiv に bookmarks 以外の source tools が必要か議論する。例：following-user works、explicit artwork IDs。
-- [ ] User が明示的に promote を決めるまで Telegram link resolver behavior は undocumented のままにする。
+- [ ] Core link tools ができてから、Telegram inbox link behavior は URL input source の一種として promote する。
 - [ ] Pixiv、Telegram、Reddit、X の boundaries が安定するまで Instagram は deferred にする。
 
 ## 設計決定: Option B Hidden Telegram Link Resolver
@@ -113,7 +223,7 @@ Telegram inbox message
 Implementation boundaries:
 
 - Telegram は ingest source と provenance のみとして扱い、storage platform は解決後の `origin_source` で決めます。
-- `link_queue.normalized_url` を uniqueness key にし、同じ link の重複投入で duplicate work が発生しないようにします。
+- `link_queue.normalized_url` は最初の intake uniqueness key として扱います。Resolver canonical aliases と final media identity により、異なる URL が同じ content を指す場合の duplicate downloads を防ぎます。
 - Resolver behavior は明示的に promote するまで experimental/undocumented tool boundaries の後ろに置きます。
 - Public HTML pages には domain allowlist を要求しません。
 - First-version resolvers は public HTTPS direct media URLs、bounded public HTML parsing で見つかる明確な単一 media target、必要な場合だけ追加する少数の explicit provider adapters に限定します。
@@ -164,7 +274,7 @@ Goal: 各 platform の curation model を hard-code せず、user が source sel
 Proposed flow:
 
 ```text
-platform collector
+explicit URL source or collector
 -> candidate media items
 -> deterministic RuleSpec policy
 -> sync/download pipeline

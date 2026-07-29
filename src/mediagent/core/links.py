@@ -43,6 +43,8 @@ URL_PATTERN = re.compile(r"https?://[^\s<>()\"']+", re.IGNORECASE)
 TELEGRAM_HOSTS = {"t.me", "telegram.me", "www.t.me", "www.telegram.me"}
 PIXIV_HOSTS = {"pixiv.net", "www.pixiv.net"}
 IMGUR_HOSTS = {"imgur.com", "www.imgur.com"}
+REDGIFS_HOSTS = {"redgifs.com", "www.redgifs.com"}
+REDGIFS_MEDIA_HOSTS = {"media.redgifs.com"}
 REDDIT_HOSTS = tuple(
     sorted(
         reddit_links.REDDIT_PAGE_HOSTS
@@ -86,6 +88,7 @@ X_REQUIRES_LOGIN_MARKERS = (
     "to view this media",
     "log in to x",
 )
+REDGIFS_MP4_RE = re.compile(r"https:\\?/\\?/media\.redgifs\.com/[^\"'<>\\\s]+?\.mp4", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -444,6 +447,19 @@ class RedditMediaLinkResolver(Resolver):
             )
 
         extraction = reddit_links.extract_single_media_from_html(response.content, base_url=final_url)
+        if extraction.media_urls and len(extraction.media_urls) > 1:
+            return self._resolve_media_urls(
+                media_urls=list(extraction.media_urls),
+                source_url=final_url,
+                request=request,
+                remote_id=extraction.remote_id,
+                reddit_metadata={**extraction.metadata, "source_kind": "post"},
+                details={
+                    **(extraction.details or {}),
+                    "html_source": "reddit",
+                    "resolved_page_url": final_url,
+                },
+            )
         if extraction.media_url:
             return self._resolve_media_url(
                 media_url=extraction.media_url,
@@ -457,6 +473,23 @@ class RedditMediaLinkResolver(Resolver):
                     "resolved_page_url": final_url,
                 },
             )
+        if extraction.external_urls:
+            delegated = self._delegate_external_urls(
+                external_urls=list(extraction.external_urls),
+                source_url=final_url,
+                request=request,
+                original_url=safe_url.original_url,
+                normalized_url=safe_url.normalized_url,
+                remote_id=extraction.remote_id,
+                reddit_metadata={**extraction.metadata, "source_kind": "post"},
+                details={
+                    **(extraction.details or {}),
+                    "html_source": "reddit",
+                    "resolved_page_url": final_url,
+                },
+            )
+            if delegated is not None:
+                return delegated
 
         legacy_url = reddit_links.legacy_post_url(final_url)
         if legacy_url and legacy_url != final_url:
@@ -543,6 +576,23 @@ class RedditMediaLinkResolver(Resolver):
             )
         extraction = reddit_links.extract_single_media_from_html(response.content, base_url=final_url)
         if not extraction.media_url:
+            if extraction.external_urls:
+                delegated = self._delegate_external_urls(
+                    external_urls=list(extraction.external_urls),
+                    source_url=final_url,
+                    request=request,
+                    original_url=original_url,
+                    normalized_url=normalized_url,
+                    remote_id=extraction.remote_id,
+                    reddit_metadata={**extraction.metadata, "source_kind": "post"},
+                    details={
+                        "legacy_url": legacy_url,
+                        "resolved_page_url": final_url,
+                        **(extraction.details or {}),
+                    },
+                )
+                if delegated is not None:
+                    return delegated
             return skipped_resolution(
                 original_url=original_url,
                 normalized_url=normalized_url,
@@ -554,6 +604,20 @@ class RedditMediaLinkResolver(Resolver):
                     "legacy_url": legacy_url,
                     "resolved_page_url": final_url,
                     **(extraction.details or {}),
+                },
+            )
+        if extraction.media_urls and len(extraction.media_urls) > 1:
+            return self._resolve_media_urls(
+                media_urls=list(extraction.media_urls),
+                source_url=final_url,
+                request=request,
+                remote_id=extraction.remote_id,
+                reddit_metadata={**extraction.metadata, "source_kind": "post"},
+                details={
+                    **(extraction.details or {}),
+                    "html_source": "old_reddit",
+                    "legacy_url": legacy_url,
+                    "resolved_page_url": final_url,
                 },
             )
         return self._resolve_media_url(
@@ -569,6 +633,140 @@ class RedditMediaLinkResolver(Resolver):
                 "resolved_page_url": final_url,
             },
         )
+
+    def _delegate_external_urls(
+        self,
+        *,
+        external_urls: list[str],
+        source_url: str,
+        request: ResolveRequest,
+        original_url: str,
+        normalized_url: str,
+        remote_id: str | None,
+        reddit_metadata: dict[str, Any],
+        details: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        unique_urls = list(dict.fromkeys(external_urls))
+        if not unique_urls:
+            return None
+        if len(unique_urls) > 1:
+            return skipped_resolution(
+                original_url=original_url,
+                normalized_url=normalized_url,
+                resolver=self.spec.name,
+                skip_reason="ambiguous_candidates",
+                origin_source="reddit",
+                remote_id=remote_id,
+                details={**details, "external_urls": unique_urls, "reason": "ambiguous_external_urls"},
+            )
+        external_url = unique_urls[0]
+        delegated = default_link_resolver_registry().resolve(external_url, request=request)
+        if delegated.get("status") != "resolved":
+            return skipped_resolution(
+                original_url=original_url,
+                normalized_url=normalized_url,
+                resolver=self.spec.name,
+                skip_reason=delegated.get("skip_reason") or "external_source_hidden",
+                origin_source="reddit",
+                remote_id=remote_id,
+                details={
+                    **details,
+                    "external_url": external_url,
+                    "delegated_resolution": delegated,
+                    "reason": "external_delegation_failed",
+                },
+            )
+        canonical_url = delegated.get("canonical_url") or delegated.get("normalized_url")
+        delegated["aliases"] = _merge_resolution_aliases(
+            delegated.get("aliases") or [],
+            _resolution_aliases(
+                canonical_url,
+                [source_url, original_url, normalized_url, external_url, delegated.get("resolved_media_url")],
+            ),
+        )
+        delegated["details"] = {
+            **(delegated.get("details") or {}),
+            "delegated_from": {
+                "resolver": self.spec.name,
+                "source_url": source_url,
+                "original_url": original_url,
+                "remote_id": remote_id,
+            },
+            "reddit": reddit_metadata,
+            "reddit_delegate": details,
+        }
+        return delegated
+
+    def _resolve_media_urls(
+        self,
+        *,
+        media_urls: list[str],
+        source_url: str,
+        request: ResolveRequest,
+        remote_id: str | None,
+        reddit_metadata: dict[str, Any],
+        details: dict[str, Any],
+    ) -> dict[str, Any]:
+        candidates: list[dict[str, Any]] = []
+        warnings: list[str] = []
+        for index, media_url in enumerate(media_urls):
+            direct = DirectMediaResolver().resolve_url(
+                media_url,
+                request=request,
+                source_url=source_url,
+                resolver_name=self.spec.name,
+                origin_source="reddit",
+                remote_id=remote_id,
+            )
+            if direct.get("status") != "resolved":
+                return skipped_resolution(
+                    original_url=source_url,
+                    normalized_url=normalize_url(source_url),
+                    resolver=self.spec.name,
+                    skip_reason=direct.get("skip_reason") or "resolver_error",
+                    origin_source="reddit",
+                    remote_id=remote_id,
+                    details={
+                        **details,
+                        "failed_candidate_url": media_url,
+                        "failed_candidate_index": index,
+                        "failed_candidate": direct,
+                    },
+                )
+            candidate = candidate_from_resolution(direct, file_index=index)
+            candidate["group_id"] = remote_id or normalized_url_hash(source_url)
+            candidate["required"] = True
+            candidates.append(candidate)
+            warnings.extend(direct.get("warnings") or [])
+        media_type = candidates[0]["media_type"] if candidates else "photo"
+        return {
+            "status": "resolved",
+            "original_url": source_url,
+            "normalized_url": normalize_url(source_url),
+            "canonical_url": reddit_links.legacy_post_url(source_url) or normalize_url(source_url),
+            "aliases": _resolution_aliases(source_url, [candidate["url"] for candidate in candidates]),
+            "source_url": source_url,
+            "resolved_media_url": candidates[0]["url"] if candidates else None,
+            "resolver": self.spec.name,
+            "origin_source": "reddit",
+            "remote_id": remote_id or normalized_url_hash(source_url),
+            "media_type": media_type,
+            "mime_type": candidates[0].get("mime_type") if candidates else None,
+            "extension": candidates[0].get("extension") if candidates else None,
+            "size_bytes": sum(
+                int(candidate["size_bytes"] or 0) for candidate in candidates if candidate.get("size_bytes") is not None
+            )
+            or None,
+            "media_count": len(candidates),
+            "media_candidates": candidates,
+            "selected_candidate": candidates[0] if candidates else None,
+            "warnings": warnings,
+            "details": {
+                **details,
+                "reddit": reddit_metadata,
+                "source_timestamp": reddit_metadata.get("created_at"),
+            },
+        }
 
     def _resolve_media_url(
         self,
@@ -716,6 +914,157 @@ class GenericHTMLMediaResolver(Resolver):
         return direct
 
 
+class RedgifsResolver(Resolver):
+    spec = ResolverSpec(
+        name="redgifs",
+        allowed_domains=tuple(sorted(REDGIFS_HOSTS | REDGIFS_MEDIA_HOSTS)),
+        matching_rules="Public Redgifs watch pages or direct media.redgifs.com MP4 files.",
+    )
+
+    def matches(self, safe_url: SafeURL) -> bool:
+        return safe_url.host in REDGIFS_HOSTS or safe_url.host in REDGIFS_MEDIA_HOSTS
+
+    def resolve(self, safe_url: SafeURL, request: ResolveRequest) -> dict[str, Any]:
+        if safe_url.host in REDGIFS_MEDIA_HOSTS:
+            return self._resolve_video_url(
+                media_url=safe_url.normalized_url,
+                source_url=safe_url.normalized_url,
+                request=request,
+                details={"html_source": "direct_media"},
+            )
+
+        redgifs_id = redgifs_watch_id(safe_url.normalized_url)
+        if redgifs_id is None:
+            return skipped_resolution(
+                original_url=safe_url.original_url,
+                normalized_url=safe_url.normalized_url,
+                resolver=self.spec.name,
+                skip_reason="unsupported_media_type",
+                origin_source="redgifs",
+                details={"reason": "unsupported_redgifs_url"},
+            )
+        try:
+            response, final_url = fetch_limited_follow_redirects(
+                safe_url.normalized_url,
+                request=request,
+                max_bytes=request.policy.max_html_bytes,
+            )
+        except URLSafetyError as exc:
+            return skipped_resolution(
+                original_url=safe_url.original_url,
+                normalized_url=safe_url.normalized_url,
+                resolver=self.spec.name,
+                skip_reason="unsafe_url",
+                origin_source="redgifs",
+                remote_id=redgifs_id,
+                details={"reason": exc.reason, **exc.details},
+            )
+        except Exception as exc:
+            return skipped_resolution(
+                original_url=safe_url.original_url,
+                normalized_url=safe_url.normalized_url,
+                resolver=self.spec.name,
+                skip_reason="resolver_error",
+                origin_source="redgifs",
+                remote_id=redgifs_id,
+                details={"exception_type": type(exc).__name__},
+            )
+        if response.status_code in (401, 403):
+            return skipped_resolution(
+                original_url=safe_url.original_url,
+                normalized_url=safe_url.normalized_url,
+                resolver=self.spec.name,
+                skip_reason="requires_auth",
+                origin_source="redgifs",
+                remote_id=redgifs_id,
+                details={"status_code": response.status_code},
+            )
+        if not 200 <= response.status_code < 300:
+            return skipped_resolution(
+                original_url=safe_url.original_url,
+                normalized_url=safe_url.normalized_url,
+                resolver=self.spec.name,
+                skip_reason="resolver_error",
+                origin_source="redgifs",
+                remote_id=redgifs_id,
+                details={"status_code": response.status_code},
+            )
+        media_urls = redgifs_media_urls(response.content, base_url=final_url)
+        media_url = choose_primary_redgifs_video_url(media_urls, redgifs_id=redgifs_id)
+        if media_url is None:
+            reason = "javascript_required" if not media_urls else "ambiguous_candidates"
+            return skipped_resolution(
+                original_url=safe_url.original_url,
+                normalized_url=safe_url.normalized_url,
+                resolver=self.spec.name,
+                skip_reason=reason,
+                origin_source="redgifs",
+                remote_id=redgifs_id,
+                details={
+                    "resolved_page_url": final_url,
+                    "candidate_count": len(media_urls),
+                    "reason": "no_static_mp4_candidate" if not media_urls else "ambiguous_redgifs_candidates",
+                },
+            )
+        result = self._resolve_video_url(
+            media_url=media_url,
+            source_url=safe_url.normalized_url,
+            request=request,
+            details={
+                "html_source": "redgifs",
+                "resolved_page_url": final_url,
+                "candidate_count": len(media_urls),
+            },
+        )
+        if result.get("status") == "resolved":
+            canonical_url = f"https://www.redgifs.com/watch/{redgifs_id}"
+            result["normalized_url"] = safe_url.normalized_url
+            result["canonical_url"] = canonical_url
+            result["aliases"] = _resolution_aliases(canonical_url, [safe_url.normalized_url, media_url])
+            result["source_url"] = canonical_url
+            result["remote_id"] = redgifs_id
+            result["details"] = {
+                **result.get("details", {}),
+                "redgifs": {
+                    "id": redgifs_id,
+                    "watch_url": canonical_url,
+                    "audio_status": redgifs_audio_status(media_url),
+                },
+            }
+        return result
+
+    def _resolve_video_url(
+        self,
+        *,
+        media_url: str,
+        source_url: str,
+        request: ResolveRequest,
+        details: dict[str, Any],
+    ) -> dict[str, Any]:
+        redgifs_id = redgifs_media_id(media_url) or redgifs_watch_id(source_url) or normalized_url_hash(media_url)
+        direct = DirectMediaResolver().resolve_url(
+            media_url,
+            request=request,
+            source_url=source_url,
+            resolver_name=self.spec.name,
+            origin_source="redgifs",
+            remote_id=redgifs_id,
+        )
+        if direct.get("status") == "resolved":
+            direct["canonical_url"] = f"https://www.redgifs.com/watch/{redgifs_id}"
+            direct["aliases"] = _resolution_aliases(direct["canonical_url"], [source_url, media_url])
+            direct["details"] = {
+                **direct.get("details", {}),
+                **details,
+                "redgifs": {
+                    "id": redgifs_id,
+                    "watch_url": f"https://www.redgifs.com/watch/{redgifs_id}",
+                    "audio_status": redgifs_audio_status(media_url),
+                },
+            }
+        return direct
+
+
 class DirectMediaResolver(Resolver):
     spec = ResolverSpec(
         name="direct_media",
@@ -849,10 +1198,12 @@ class DirectMediaResolver(Resolver):
             )
         extension = extension_from_mime(mime_type) or (".mov" if mime_type == "video/quicktime" else path_suffix)
         remote_id = remote_id or normalized_url_hash(safe_url.normalized_url)
-        return {
+        result = {
             "status": "resolved",
             "original_url": raw_url,
             "normalized_url": safe_url.normalized_url,
+            "canonical_url": safe_url.normalized_url,
+            "aliases": _resolution_aliases(safe_url.normalized_url, [source_url, final_url]),
             "source_url": source_url,
             "resolved_media_url": final_url,
             "resolver": resolver_name,
@@ -863,6 +1214,8 @@ class DirectMediaResolver(Resolver):
             "extension": extension,
             "size_bytes": size_bytes,
             "media_count": 1,
+            "media_candidates": [],
+            "selected_candidate": None,
             "warnings": warnings,
             "details": {
                 "content_type": content_type,
@@ -870,6 +1223,10 @@ class DirectMediaResolver(Resolver):
                 "validation": "extension_fallback" if warnings else "content_type",
             },
         }
+        candidate = candidate_from_resolution(result, file_index=0)
+        result["media_candidates"] = [candidate]
+        result["selected_candidate"] = candidate
+        return result
 
 
 def default_link_resolver_registry() -> LinkResolverRegistry:
@@ -877,6 +1234,7 @@ def default_link_resolver_registry() -> LinkResolverRegistry:
         [
             PixivArtworkLinkResolver(),
             ImgurSingleResolver(),
+            RedgifsResolver(),
             RedditMediaLinkResolver(),
             DirectMediaResolver(),
             GenericHTMLMediaResolver(),
@@ -1105,6 +1463,8 @@ def skipped_resolution(
         "status": "skipped",
         "original_url": original_url,
         "normalized_url": normalized_url,
+        "canonical_url": normalized_url,
+        "aliases": _resolution_aliases(normalized_url, [original_url]),
         "source_url": normalized_url,
         "resolved_media_url": None,
         "resolver": resolver,
@@ -1115,6 +1475,8 @@ def skipped_resolution(
         "extension": None,
         "size_bytes": None,
         "media_count": 0,
+        "media_candidates": [],
+        "selected_candidate": None,
         "skip_reason": skip_reason,
         "warnings": [],
         "details": details or {},
@@ -1138,19 +1500,67 @@ def resolution_to_media_item(
         or details.get("source_timestamp")
         or (ingest_provenance or {}).get("message_date")
     )
-    part = "v0" if media_type == "video" else "p0" if media_type == "photo" else "a0"
-    file_info = {
-        "url": resolution["resolved_media_url"],
-        "remote_url": resolution["resolved_media_url"],
-        "kind": media_type,
-        "page": 0,
-        "part": part,
-        "media_type": media_type,
-        "mime_type": resolution.get("mime_type"),
-        "extension": resolution.get("extension"),
-        "size_bytes": resolution.get("size_bytes"),
+    candidates = resolution_media_candidates(resolution)
+    files: list[dict[str, Any]] = []
+    group_id = None
+    required_files = 0
+    optional_files = 0
+    for index, candidate in enumerate(candidates):
+        candidate_media_type = str(candidate.get("media_type") or media_type)
+        part = candidate.get("part") or default_part(candidate_media_type, index)
+        candidate_group_id = candidate.get("group_id") or remote_id
+        group_id = group_id or candidate_group_id
+        required = bool(candidate.get("required", True))
+        if required:
+            required_files += 1
+        else:
+            optional_files += 1
+        files.append(
+            {
+                "url": candidate["url"],
+                "remote_url": candidate["url"],
+                "kind": candidate_media_type,
+                "page": index,
+                "part": part,
+                "media_type": candidate_media_type,
+                "mime_type": candidate.get("mime_type"),
+                "extension": candidate.get("extension"),
+                "size_bytes": candidate.get("size_bytes"),
+                "source_timestamp": candidate.get("source_timestamp") or source_timestamp,
+                "content_identity": candidate.get("content_identity"),
+                "quality_rank": candidate.get("quality_rank"),
+                "group_id": candidate_group_id,
+                "required": required,
+            }
+        )
+    metadata = {
+        "origin_source": origin_source,
         "source_timestamp": source_timestamp,
+        "resolved_media_url": resolution.get("resolved_media_url"),
+        "resolver": {
+            "name": resolution.get("resolver"),
+            "normalized_url": resolution.get("normalized_url"),
+            "canonical_url": resolution.get("canonical_url"),
+            "aliases": resolution.get("aliases") or [],
+            "media_count": resolution.get("media_count"),
+            "validation": (resolution.get("details") or {}).get("validation"),
+        },
+        origin_source: platform_details,
+        "ingested_from": ingest_provenance or {},
+        "files": files,
     }
+    if files:
+        metadata["candidate_group"] = {
+            "id": group_id,
+            "ordering": "file_index",
+            "required_files": required_files,
+            "optional_files": optional_files,
+            "partial_success": "item_status_partial_when_any_required_file_fails",
+        }
+    if isinstance(details.get("delegated_from"), dict):
+        metadata["delegated_from"] = details["delegated_from"]
+    if origin_source != "reddit" and isinstance(details.get("reddit"), dict):
+        metadata["reddit"] = details["reddit"]
     return {
         "platform": origin_source,
         "remote_id": remote_id,
@@ -1158,21 +1568,48 @@ def resolution_to_media_item(
         "source_url": resolution.get("source_url") or resolution.get("normalized_url"),
         "author_id": platform_details.get("author_id"),
         "author_name": platform_details.get("author"),
-        "metadata": {
-            "origin_source": origin_source,
-            "source_timestamp": source_timestamp,
-            "resolved_media_url": resolution.get("resolved_media_url"),
-            "resolver": {
-                "name": resolution.get("resolver"),
-                "normalized_url": resolution.get("normalized_url"),
-                "media_count": resolution.get("media_count"),
-                "validation": (resolution.get("details") or {}).get("validation"),
-            },
-            origin_source: platform_details,
-            "ingested_from": ingest_provenance or {},
-            "files": [file_info],
+        "metadata": metadata,
+    }
+
+
+def resolution_media_candidates(resolution: dict[str, Any]) -> list[dict[str, Any]]:
+    candidates = resolution.get("media_candidates")
+    if isinstance(candidates, list) and candidates:
+        return [candidate for candidate in candidates if isinstance(candidate, dict) and candidate.get("url")]
+    if not resolution.get("resolved_media_url"):
+        return []
+    return [candidate_from_resolution(resolution, file_index=0)]
+
+
+def candidate_from_resolution(resolution: dict[str, Any], *, file_index: int) -> dict[str, Any]:
+    url = str(resolution.get("resolved_media_url") or "")
+    media_type = str(resolution.get("media_type") or "")
+    return {
+        "url": url,
+        "media_type": media_type,
+        "mime_type": resolution.get("mime_type"),
+        "extension": resolution.get("extension"),
+        "size_bytes": resolution.get("size_bytes"),
+        "source": resolution.get("origin_source"),
+        "quality_rank": resolution.get("quality_rank", 0),
+        "file_index": file_index,
+        "part": default_part(media_type, file_index),
+        "content_identity": resolution.get("content_identity") or normalized_url_hash(url),
+        "persistable_headers": {},
+        "download_context_ref": None,
+        "details": {
+            "resolver": resolution.get("resolver"),
+            "source_url": resolution.get("source_url"),
         },
     }
+
+
+def default_part(media_type: str, index: int) -> str:
+    if media_type == "video":
+        return f"v{index}"
+    if media_type == "audio":
+        return f"a{index}"
+    return f"p{index}"
 
 
 def html_media_urls(content: bytes, *, base_url: str) -> list[str]:
@@ -1344,6 +1781,44 @@ def normalized_url_hash(normalized_url: str) -> str:
     return "url_" + hashlib.sha256(normalized_url.encode("utf-8")).hexdigest()[:24]
 
 
+def _resolution_aliases(canonical_url: str | None, urls: list[str]) -> list[dict[str, str]]:
+    aliases: list[dict[str, str]] = []
+    if canonical_url:
+        aliases.append({"kind": "canonical", "url": normalize_url(canonical_url)})
+    for url in urls:
+        if not url:
+            continue
+        aliases.append({"kind": "url", "url": normalize_url(url)})
+    seen: set[str] = set()
+    unique: list[dict[str, str]] = []
+    for alias in aliases:
+        key = f"{alias['kind']}:{alias['url']}"
+        if key in seen or not alias["url"]:
+            continue
+        seen.add(key)
+        unique.append(alias)
+    return unique
+
+
+def _merge_resolution_aliases(*groups: list[dict[str, str]]) -> list[dict[str, str]]:
+    merged: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for group in groups:
+        for alias in group:
+            if not isinstance(alias, dict):
+                continue
+            kind = str(alias.get("kind") or "url")
+            url = alias.get("url")
+            if not isinstance(url, str) or not url:
+                continue
+            key = f"{kind}:{url}"
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append({"kind": kind, "url": url})
+    return merged
+
+
 def pixiv_artwork_id(url: str) -> str | None:
     parsed = urlparse(url)
     parts = [part for part in parsed.path.split("/") if part]
@@ -1360,6 +1835,82 @@ def imgur_remote_id(page_url: str, media_url: str) -> str:
         return safe_storage_segment(page_path.split("/")[-1], max_length=80)
     media_stem = Path(urlparse(media_url).path).stem
     return safe_storage_segment(media_stem or normalized_url_hash(media_url), max_length=80)
+
+
+def redgifs_watch_id(url: str) -> str | None:
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
+    if host not in REDGIFS_HOSTS:
+        return None
+    parts = [part for part in parsed.path.split("/") if part]
+    if len(parts) >= 2 and parts[0].lower() == "watch":
+        return safe_storage_segment(parts[1], max_length=80)
+    return None
+
+
+def redgifs_media_id(url: str) -> str | None:
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
+    if host not in REDGIFS_MEDIA_HOSTS:
+        return None
+    stem = Path(parsed.path).stem
+    for suffix in ("-silent", "-mobile", "-hd", "-sd"):
+        if stem.lower().endswith(suffix):
+            stem = stem[: -len(suffix)]
+            break
+    return safe_storage_segment(stem, max_length=80) if stem else None
+
+
+def redgifs_audio_status(media_url: str) -> str:
+    stem = Path(urlparse(media_url).path).stem.lower()
+    if stem.endswith("-silent") or "-silent-" in stem:
+        return "silent"
+    return "unknown"
+
+
+def redgifs_media_urls(content: bytes, *, base_url: str) -> list[str]:
+    text = html.unescape(content.decode("utf-8", errors="replace")).replace("\\/", "/")
+    urls: list[str] = []
+    seen: set[str] = set()
+    for match in REDGIFS_MP4_RE.finditer(text):
+        normalized = normalize_url(urljoin(base_url, match.group(0).replace("\\/", "/")))
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            urls.append(normalized)
+    return urls
+
+
+def choose_primary_redgifs_video_url(urls: list[str], *, redgifs_id: str) -> str | None:
+    if not urls:
+        return None
+    scored = [(redgifs_video_score(url, redgifs_id=redgifs_id), url) for url in urls]
+    top_score = max(score for score, _url in scored)
+    top_urls = [url for score, url in scored if score == top_score]
+    if len(top_urls) == 1 and top_score >= 0:
+        return top_urls[0]
+    return None
+
+
+def redgifs_video_score(url: str, *, redgifs_id: str) -> int:
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
+    if host not in REDGIFS_MEDIA_HOSTS:
+        return -1000
+    stem = Path(parsed.path).stem
+    lower_stem = stem.lower()
+    lower_id = redgifs_id.lower()
+    score = 0
+    if lower_stem == lower_id:
+        score += 100
+    elif lower_stem.startswith(lower_id):
+        score += 60
+    if lower_stem.endswith("-silent"):
+        score -= 5
+    if "mobile" in lower_stem or "mini" in lower_stem:
+        score -= 20
+    if parsed.path.lower().endswith(".mp4"):
+        score += 10
+    return score
 
 
 def extension_for_mime_or_url(mime_type: str | None, url: str) -> str:

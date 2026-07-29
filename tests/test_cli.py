@@ -79,6 +79,26 @@ class CliTests(unittest.TestCase):
         self.assertEqual(payload["status"], "success")
         self.assertEqual(payload["tool"], "core.env.check")
 
+    def test_public_link_sync_entrypoint_uses_link_media_sync(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            completed = self.run_cli(
+                "link",
+                "sync",
+                "https://127.0.0.1/file.jpg",
+                "--db-path",
+                str(Path(temp_dir) / "mediagent.sqlite3"),
+                "--dry-run",
+                "--json",
+            )
+
+        self.assertEqual(completed.returncode, 0)
+        payload = json.loads(completed.stdout)
+        self.assertEqual(payload["status"], "success")
+        self.assertEqual(payload["tool"], "link.media.sync")
+        self.assertEqual(payload["data"]["summary"]["links_considered"], 1)
+        self.assertEqual(payload["data"]["summary"]["skipped_links"], 1)
+        self.assertEqual(payload["data"]["links"][0]["resolution"]["skip_reason"], "unsafe_url")
+
     def test_tools_run_json_runtime_failure(self) -> None:
         completed = self.run_cli(
             "tools",

@@ -355,7 +355,7 @@ class LinkResolverTests(unittest.TestCase):
         self.assertEqual(result["details"]["reddit"]["over_18"], True)
         self.assertIn(("GET_LIMITED", old_url), fake.calls)
 
-    def test_reddit_media_resolver_skips_gallery_for_phase_17(self) -> None:
+    def test_reddit_media_resolver_skips_gallery_without_public_candidates(self) -> None:
         page_url = "https://www.reddit.com/r/example/comments/abc123/gallery/"
         old_url = "https://old.reddit.com/r/example/comments/abc123/gallery/"
         fake = FakeLinkHttpClient()
@@ -384,6 +384,89 @@ class LinkResolverTests(unittest.TestCase):
         self.assertEqual(result["resolver"], "reddit_media_link")
         self.assertEqual(result["skip_reason"], "unsupported_media_type")
         self.assertEqual(result["details"]["reason"], "gallery_unsupported")
+
+    def test_reddit_media_resolver_accepts_static_gallery_images(self) -> None:
+        page_url = "https://www.reddit.com/r/example/comments/abc123/gallery/"
+        old_url = "https://old.reddit.com/r/example/comments/abc123/gallery/"
+        media_a = "https://i.redd.it/gallery_a.jpg"
+        media_b = "https://i.redd.it/gallery_b.png"
+        fake = FakeLinkHttpClient()
+        fake.gets[page_url] = HttpResponse(
+            200,
+            {"Content-Type": "text/html"},
+            b"<title>Reddit - Please wait for verification</title><form id='js_challenge'></form>",
+            page_url,
+        )
+        fake.gets[old_url] = HttpResponse(
+            200,
+            {"Content-Type": "text/html"},
+            (
+                b'<div class="thing" data-fullname="t3_abc123" data-is-gallery="true" '
+                b'data-author="alice" data-subreddit="example" '
+                b'data-url="https://www.reddit.com/gallery/abc123"></div>'
+                b'<script>{"media_metadata":{"a":{"s":{"u":"https://i.redd.it/gallery_a.jpg"}},'
+                b'"b":{"s":{"u":"https://i.redd.it/gallery_b.png"}}}}</script>'
+            ),
+            old_url,
+        )
+        fake.heads[media_a] = HttpResponse(200, {"Content-Type": "image/jpeg", "Content-Length": "10"}, b"")
+        fake.heads[media_b] = HttpResponse(200, {"Content-Type": "image/png", "Content-Length": "20"}, b"")
+
+        result = default_link_resolver_registry().resolve(
+            page_url,
+            request=ResolveRequest(http_client=fake, host_resolver=lambda host: ["151.101.1.140"]),
+        )
+        item = resolution_to_media_item(result, ingest_provenance={"platform": "telegram", "message_id": "9"})
+
+        self.assertEqual(result["status"], "resolved")
+        self.assertEqual(result["resolver"], "reddit_media_link")
+        self.assertEqual(result["remote_id"], "t3_abc123")
+        self.assertEqual(result["media_count"], 2)
+        self.assertEqual([candidate["url"] for candidate in result["media_candidates"]], [media_a, media_b])
+        self.assertEqual([file_info["part"] for file_info in item["metadata"]["files"]], ["p0", "p1"])
+        self.assertEqual(item["metadata"]["reddit"]["source_kind"], "post")
+
+    def test_reddit_media_resolver_uses_gallery_preview_fallback(self) -> None:
+        page_url = "https://www.reddit.com/r/example/comments/abc123/gallery/"
+        old_url = "https://old.reddit.com/r/example/comments/abc123/gallery/"
+        media_a = "https://preview.redd.it/gallery_a.jpg?width=1291&format=pjpg&auto=webp&s=a"
+        media_b = "https://preview.redd.it/gallery_b.jpg?width=925&format=pjpg&auto=webp&s=b"
+        fake = FakeLinkHttpClient()
+        fake.gets[page_url] = HttpResponse(
+            200,
+            {"Content-Type": "text/html"},
+            b"<title>Reddit - Please wait for verification</title><form id='js_challenge'></form>",
+            page_url,
+        )
+        fake.gets[old_url] = HttpResponse(
+            200,
+            {"Content-Type": "text/html"},
+            (
+                b'<div class="thing" data-fullname="t3_abc123" data-is-gallery="true" '
+                b'data-author="alice" data-subreddit="example" '
+                b'data-url="https://www.reddit.com/gallery/abc123"></div>'
+                b'<img src="https://preview.redd.it/gallery_a.jpg?width=108&amp;crop=smart&amp;auto=webp&amp;s=thumb">'
+                b'<img src="https://preview.redd.it/gallery_a.jpg?width=1291&amp;format=pjpg&amp;auto=webp&amp;s=a">'
+                b'<img src="https://preview.redd.it/gallery_b.jpg?width=640&amp;blur=40&amp;format=pjpg&amp;auto=webp&amp;s=blur">'
+                b'<img src="https://preview.redd.it/gallery_b.jpg?width=925&amp;format=pjpg&amp;auto=webp&amp;s=b">'
+            ),
+            old_url,
+        )
+        fake.heads[media_a] = HttpResponse(200, {"Content-Type": "image/jpeg", "Content-Length": "10"}, b"")
+        fake.heads[media_b] = HttpResponse(200, {"Content-Type": "image/jpeg", "Content-Length": "20"}, b"")
+
+        result = default_link_resolver_registry().resolve(
+            page_url,
+            request=ResolveRequest(http_client=fake, host_resolver=lambda host: ["151.101.1.140"]),
+        )
+
+        self.assertEqual(result["status"], "resolved")
+        self.assertEqual(result["resolver"], "reddit_media_link")
+        self.assertEqual(result["remote_id"], "t3_abc123")
+        self.assertEqual(result["media_count"], 2)
+        self.assertEqual([candidate["url"] for candidate in result["media_candidates"]], [media_a, media_b])
+        self.assertEqual(result["details"]["media_quality"], "preview_fallback")
+        self.assertEqual(result["details"]["preview_fallback_count"], 2)
 
     def test_reddit_media_resolver_accepts_direct_v_redd_it_mp4_before_generic_direct_media(self) -> None:
         url = "https://v.redd.it/video/DASH_720.mp4"
@@ -489,6 +572,74 @@ class LinkResolverTests(unittest.TestCase):
         self.assertEqual(result["status"], "resolved")
         self.assertEqual(result["resolver"], "reddit_media_link")
         self.assertEqual(result["resolved_media_url"], media_url)
+
+    def test_redgifs_resolver_extracts_static_mp4_from_watch_page(self) -> None:
+        page_url = "https://www.redgifs.com/watch/ExampleClip"
+        media_url = "https://media.redgifs.com/ExampleClip.mp4"
+        fake = FakeLinkHttpClient()
+        fake.gets[page_url] = HttpResponse(
+            200,
+            {"Content-Type": "text/html"},
+            b'<script>{"hd":"https:\\/\\/media.redgifs.com\\/ExampleClip.mp4"}</script>',
+            page_url,
+        )
+        fake.heads[media_url] = HttpResponse(200, {"Content-Type": "video/mp4", "Content-Length": "12"}, b"")
+
+        result = default_link_resolver_registry().resolve(
+            page_url,
+            request=ResolveRequest(http_client=fake, host_resolver=lambda host: ["151.101.1.140"]),
+        )
+        item = resolution_to_media_item(result, ingest_provenance={"platform": "telegram", "message_id": "10"})
+
+        self.assertEqual(result["status"], "resolved")
+        self.assertEqual(result["resolver"], "redgifs")
+        self.assertEqual(result["origin_source"], "redgifs")
+        self.assertEqual(result["remote_id"], "ExampleClip")
+        self.assertEqual(result["resolved_media_url"], media_url)
+        self.assertEqual(item["metadata"]["redgifs"]["audio_status"], "unknown")
+        self.assertEqual(item["metadata"]["files"][0]["part"], "v0")
+
+    def test_reddit_media_resolver_delegates_external_redgifs_link(self) -> None:
+        page_url = "https://old.reddit.com/r/example/comments/abc123/redgifs/"
+        redgifs_url = "https://www.redgifs.com/watch/ExampleClip"
+        media_url = "https://media.redgifs.com/ExampleClip.mp4"
+        fake = FakeLinkHttpClient()
+        fake.gets[page_url] = HttpResponse(
+            200,
+            {"Content-Type": "text/html"},
+            (
+                b'<div class="thing" data-fullname="t3_abc123" data-domain="redgifs.com" '
+                b'data-author="alice" data-subreddit="example" '
+                b'data-timestamp="1780000000" '
+                b'data-url="https://www.redgifs.com/watch/ExampleClip"></div>'
+            ),
+            page_url,
+        )
+        fake.gets[redgifs_url] = HttpResponse(
+            200,
+            {"Content-Type": "text/html"},
+            b'<script>{"hd":"https:\\/\\/media.redgifs.com\\/ExampleClip.mp4"}</script>',
+            redgifs_url,
+        )
+        fake.heads[media_url] = HttpResponse(200, {"Content-Type": "video/mp4", "Content-Length": "12"}, b"")
+
+        result = default_link_resolver_registry().resolve(
+            page_url,
+            request=ResolveRequest(http_client=fake, host_resolver=lambda host: ["151.101.1.140"]),
+        )
+        item = resolution_to_media_item(result, ingest_provenance={"platform": "telegram", "message_id": "11"})
+
+        self.assertEqual(result["status"], "resolved")
+        self.assertEqual(result["resolver"], "redgifs")
+        self.assertEqual(result["origin_source"], "redgifs")
+        self.assertEqual(result["remote_id"], "ExampleClip")
+        self.assertEqual(result["resolved_media_url"], media_url)
+        self.assertEqual(result["details"]["delegated_from"]["resolver"], "reddit_media_link")
+        self.assertEqual(result["details"]["reddit"]["id"], "t3_abc123")
+        self.assertIn({"kind": "url", "url": page_url}, result["aliases"])
+        self.assertEqual(item["platform"], "redgifs")
+        self.assertEqual(item["metadata"]["reddit"]["id"], "t3_abc123")
+        self.assertEqual(item["metadata"]["delegated_from"]["resolver"], "reddit_media_link")
 
     def test_generic_html_resolver_finds_single_media_without_domain_allowlist(self) -> None:
         page_url = "https://example.com/post/one"
@@ -653,6 +804,30 @@ class LinkResolverTests(unittest.TestCase):
 
 
 class LinkQueueAndSyncTests(unittest.TestCase):
+    def test_link_queue_upsert_tool_queues_urls_without_experimental_flag(self) -> None:
+        registry = create_default_registry()
+        url = f"https://{PUBLIC_TEST_IP}/photo.jpg#one"
+        with TemporaryDirectory() as temp_dir:
+            context = ToolContext.from_env(
+                env={"MEDIAGENT_DATA_DIR": str(Path(temp_dir) / "data")},
+                cwd=Path(temp_dir),
+            )
+            db_path = Path(temp_dir) / "mediagent.sqlite3"
+
+            result = asyncio.run(
+                registry.run(
+                    "link.queue.upsert",
+                    {"db_path": str(db_path), "url": url, "ingest_platform": "cli"},
+                    context,
+                )
+            )
+            rows = db.list_links(db_path)
+
+        self.assertTrue(result.is_success)
+        self.assertEqual(result.data["summary"]["queued"], 1)
+        self.assertEqual(rows[0]["normalized_url"], f"https://{PUBLIC_TEST_IP}/photo.jpg")
+        self.assertEqual(rows[0]["source_provenance"][0]["ingest_platform"], "cli")
+
     def test_telegram_inbox_collect_links_queues_unique_normalized_urls(self) -> None:
         registry = create_default_registry()
         fake = FakeTelegramClient(
@@ -805,6 +980,140 @@ class LinkQueueAndSyncTests(unittest.TestCase):
         self.assertTrue(metadata["reddit"]["mux_required"])
         self.assertEqual(metadata["files"][0]["part"], "v0")
         self.assertEqual(len(sidecars), 1)
+
+    def test_telegram_inbox_sync_links_downloads_reddit_gallery_files(self) -> None:
+        registry = create_default_registry()
+        page_url = "https://www.reddit.com/r/example/comments/abc123/gallery/"
+        old_url = "https://old.reddit.com/r/example/comments/abc123/gallery/"
+        media_a = "https://i.redd.it/gallery_a.jpg"
+        media_b = "https://i.redd.it/gallery_b.png"
+        http = FakeLinkHttpClient()
+        http.gets[page_url] = HttpResponse(
+            200,
+            {"Content-Type": "text/html"},
+            b"<title>Reddit - Please wait for verification</title><form id='js_challenge'></form>",
+            page_url,
+        )
+        http.gets[old_url] = HttpResponse(
+            200,
+            {"Content-Type": "text/html"},
+            (
+                b'<div class="thing" data-fullname="t3_abc123" data-is-gallery="true" '
+                b'data-author="alice" data-subreddit="example" '
+                b'data-url="https://www.reddit.com/gallery/abc123"></div>'
+                b'<script>{"media_metadata":{"a":{"s":{"u":"https://i.redd.it/gallery_a.jpg"}},'
+                b'"b":{"s":{"u":"https://i.redd.it/gallery_b.png"}}}}</script>'
+            ),
+            old_url,
+        )
+        http.heads[media_a] = HttpResponse(200, {"Content-Type": "image/jpeg", "Content-Length": "7"}, b"")
+        http.heads[media_b] = HttpResponse(200, {"Content-Type": "image/png", "Content-Length": "8"}, b"")
+        http.gets[media_a] = HttpResponse(200, {"Content-Type": "image/jpeg", "Content-Length": "7"}, b"jpgdata")
+        http.gets[media_b] = HttpResponse(200, {"Content-Type": "image/png", "Content-Length": "8"}, b"png-data")
+        fake = CombinedTelegramLinkClient(
+            messages={
+                "curated": [
+                    {
+                        "id": 11,
+                        "date": "2026-07-28T11:00:00+00:00",
+                        "chat": {"id": "curated", "title": "Inbox", "type": "channel"},
+                        "text": f"save this {page_url}",
+                        "media": [],
+                    }
+                ]
+            },
+            http=http,
+        )
+        with TemporaryDirectory() as temp_dir:
+            context, data_dir, db_path = _telegram_context(temp_dir, fake)
+
+            with patch("mediagent.core.links.resolve_host_ips", return_value=["151.101.1.140"]):
+                result = asyncio.run(
+                    registry.run(
+                        "telegram.inbox.sync_links",
+                        {
+                            "db_path": str(db_path),
+                            "chat": "curated",
+                            "write_sidecar_metadata": True,
+                        },
+                        context,
+                        allow_experimental=True,
+                    )
+                )
+            files = db.list_media_files(db_path, platform="reddit")
+            with db.connect(db_path) as connection:
+                item_row = connection.execute(
+                    "SELECT metadata_json FROM media_items WHERE platform = ?",
+                    ("reddit",),
+                ).fetchone()
+            metadata = json.loads(item_row["metadata_json"])
+            written_files = list((data_dir / "library" / "reddit" / "photo").rglob("*.*"))
+
+        self.assertTrue(result.is_success)
+        self.assertEqual(result.data["summary"]["downloaded"], 1)
+        self.assertEqual(result.data["summary"]["files_downloaded"], 2)
+        self.assertEqual(len(files), 2)
+        self.assertEqual({file["status"] for file in files}, {"downloaded"})
+        self.assertEqual([file_info["part"] for file_info in metadata["files"]], ["p0", "p1"])
+        self.assertEqual(len([path for path in written_files if path.suffix in {".jpg", ".png"}]), 2)
+
+    def test_link_media_sync_downloads_reddit_gallery_without_telegram(self) -> None:
+        registry = create_default_registry()
+        page_url = "https://www.reddit.com/r/example/comments/abc123/gallery/"
+        old_url = "https://old.reddit.com/r/example/comments/abc123/gallery/"
+        media_a = "https://i.redd.it/gallery_a.jpg"
+        media_b = "https://i.redd.it/gallery_b.png"
+        http = FakeLinkHttpClient()
+        http.gets[page_url] = HttpResponse(
+            200,
+            {"Content-Type": "text/html"},
+            b"<title>Reddit - Please wait for verification</title><form id='js_challenge'></form>",
+            page_url,
+        )
+        http.gets[old_url] = HttpResponse(
+            200,
+            {"Content-Type": "text/html"},
+            (
+                b'<div class="thing" data-fullname="t3_abc123" data-is-gallery="true" '
+                b'data-author="alice" data-subreddit="example" '
+                b'data-url="https://www.reddit.com/gallery/abc123"></div>'
+                b'<script>{"media_metadata":{"a":{"s":{"u":"https://i.redd.it/gallery_a.jpg"}},'
+                b'"b":{"s":{"u":"https://i.redd.it/gallery_b.png"}}}}</script>'
+            ),
+            old_url,
+        )
+        http.heads[media_a] = HttpResponse(200, {"Content-Type": "image/jpeg", "Content-Length": "7"}, b"")
+        http.heads[media_b] = HttpResponse(200, {"Content-Type": "image/png", "Content-Length": "8"}, b"")
+        http.gets[media_a] = HttpResponse(200, {"Content-Type": "image/jpeg", "Content-Length": "7"}, b"jpgdata")
+        http.gets[media_b] = HttpResponse(200, {"Content-Type": "image/png", "Content-Length": "8"}, b"png-data")
+        with TemporaryDirectory() as temp_dir:
+            context = ToolContext.from_env(
+                env={"MEDIAGENT_DATA_DIR": str(Path(temp_dir) / "data")},
+                cwd=Path(temp_dir),
+                http_client=http,
+            )
+            db_path = Path(temp_dir) / "mediagent.sqlite3"
+
+            with patch("mediagent.core.links.resolve_host_ips", return_value=["151.101.1.140"]):
+                result = asyncio.run(
+                    registry.run(
+                        "link.media.sync",
+                        {
+                            "db_path": str(db_path),
+                            "url": page_url,
+                            "write_sidecar_metadata": True,
+                        },
+                        context,
+                    )
+                )
+            files = db.list_media_files(db_path, platform="reddit")
+            written_files = list((Path(temp_dir) / "data" / "library" / "reddit" / "photo").rglob("*.*"))
+
+        self.assertTrue(result.is_success)
+        self.assertEqual(result.data["summary"]["downloaded"], 1)
+        self.assertEqual(result.data["summary"]["files_downloaded"], 2)
+        self.assertEqual(len(files), 2)
+        self.assertEqual(len([path for path in written_files if path.suffix in {".jpg", ".png"}]), 2)
 
     def test_telegram_inbox_sync_links_dry_run_does_not_write(self) -> None:
         registry = create_default_registry()
@@ -975,6 +1284,8 @@ class LinkQueueAndSyncTests(unittest.TestCase):
                     "ingest_platform": "telegram",
                     "original_url": "HTTPS://1.1.1.1/photo.jpg#one",
                     "normalized_url": normalize_url("HTTPS://1.1.1.1/photo.jpg#one"),
+                    "source_chat_id": "inbox",
+                    "source_message_id": "1",
                 },
             )
             second = db.upsert_link(
@@ -983,7 +1294,22 @@ class LinkQueueAndSyncTests(unittest.TestCase):
                     "ingest_platform": "telegram",
                     "original_url": "https://1.1.1.1/photo.jpg#two",
                     "normalized_url": normalize_url("https://1.1.1.1/photo.jpg#two"),
+                    "source_chat_id": "inbox",
+                    "source_message_id": "2",
                 },
+            )
+            updated = db.update_link_resolution(
+                db_path,
+                link_id=first["id"],
+                status="skipped",
+                resolution={
+                    "status": "skipped",
+                    "original_url": "https://1.1.1.1/photo.jpg#one",
+                    "normalized_url": "https://1.1.1.1/photo.jpg",
+                    "skip_reason": "requires_auth",
+                    "details": {"reason": "login_wall"},
+                },
+                skip_reason="requires_auth",
             )
             with sqlite3.connect(db_path) as connection:
                 count = connection.execute("SELECT COUNT(*) FROM link_queue").fetchone()[0]
@@ -992,3 +1318,292 @@ class LinkQueueAndSyncTests(unittest.TestCase):
         self.assertFalse(second["is_new"])
         self.assertEqual(first["id"], second["id"])
         self.assertEqual(count, 1)
+        self.assertEqual(len(second["source_provenance"]), 2)
+        self.assertEqual(updated["attempt_count"], 1)
+        self.assertFalse(updated["retryable"])
+        self.assertEqual(updated["last_error_code"], "requires_auth")
+
+    def test_link_queue_claims_ready_links_and_respects_lease(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "mediagent.sqlite3"
+            db.initialize_database(db_path)
+            link = db.upsert_link(
+                db_path,
+                {
+                    "ingest_platform": "cli",
+                    "original_url": f"https://{PUBLIC_TEST_IP}/photo.jpg",
+                    "normalized_url": f"https://{PUBLIC_TEST_IP}/photo.jpg",
+                },
+            )
+
+            claimed = db.claim_links(
+                db_path,
+                lease_owner="worker-a",
+                lease_seconds=60,
+                now="2026-07-29T00:00:00+00:00",
+            )
+            blocked = db.claim_links(
+                db_path,
+                lease_owner="worker-b",
+                lease_seconds=60,
+                now="2026-07-29T00:00:30+00:00",
+            )
+            reclaimed = db.claim_links(
+                db_path,
+                lease_owner="worker-b",
+                lease_seconds=60,
+                now="2026-07-29T00:01:01+00:00",
+            )
+
+        self.assertEqual([row["id"] for row in claimed], [link["id"]])
+        self.assertEqual(claimed[0]["lease_owner"], "worker-a")
+        self.assertEqual(blocked, [])
+        self.assertEqual([row["id"] for row in reclaimed], [link["id"]])
+        self.assertEqual(reclaimed[0]["lease_owner"], "worker-b")
+
+    def test_link_retryable_resolution_is_deferred_until_next_attempt(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "mediagent.sqlite3"
+            db.initialize_database(db_path)
+            link = db.upsert_link(
+                db_path,
+                {
+                    "ingest_platform": "cli",
+                    "original_url": f"https://{PUBLIC_TEST_IP}/temporary.jpg",
+                    "normalized_url": f"https://{PUBLIC_TEST_IP}/temporary.jpg",
+                },
+            )
+            claimed = db.claim_links(
+                db_path,
+                lease_owner="worker-a",
+                lease_seconds=60,
+                now="2026-07-29T00:00:00+00:00",
+            )
+            updated = db.update_link_resolution(
+                db_path,
+                link_id=link["id"],
+                status="skipped",
+                skip_reason="resolver_error",
+                resolution={
+                    "status": "skipped",
+                    "skip_reason": "resolver_error",
+                    "normalized_url": f"https://{PUBLIC_TEST_IP}/temporary.jpg",
+                    "details": {"reason": "temporary_network_error"},
+                },
+            )
+            not_ready = db.list_ready_links(db_path, now=updated["last_attempt_at"])
+            ready_later = db.list_ready_links(db_path, now="2999-01-01T00:00:00+00:00")
+
+        self.assertEqual([row["id"] for row in claimed], [link["id"]])
+        self.assertEqual(updated["status"], "deferred")
+        self.assertEqual(updated["attempt_count"], 1)
+        self.assertTrue(updated["retryable"])
+        self.assertIsNotNone(updated["next_attempt_at"])
+        self.assertIsNone(updated["lease_owner"])
+        self.assertEqual(not_ready, [])
+        self.assertEqual([row["id"] for row in ready_later], [link["id"]])
+
+    def test_link_retryable_resolution_fails_after_max_attempts(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "mediagent.sqlite3"
+            db.initialize_database(db_path)
+            link = db.upsert_link(
+                db_path,
+                {
+                    "ingest_platform": "cli",
+                    "original_url": f"https://{PUBLIC_TEST_IP}/temporary.jpg",
+                    "normalized_url": f"https://{PUBLIC_TEST_IP}/temporary.jpg",
+                    "max_attempts": 1,
+                },
+            )
+            updated = db.update_link_resolution(
+                db_path,
+                link_id=link["id"],
+                status="skipped",
+                skip_reason="resolver_error",
+                resolution={
+                    "status": "skipped",
+                    "skip_reason": "resolver_error",
+                    "normalized_url": f"https://{PUBLIC_TEST_IP}/temporary.jpg",
+                },
+            )
+
+        self.assertEqual(updated["status"], "failed")
+        self.assertFalse(updated["retryable"])
+        self.assertIsNone(updated["next_attempt_at"])
+
+    def test_link_media_sync_claims_queued_links_and_clears_lease(self) -> None:
+        registry = create_default_registry()
+        url = f"https://{PUBLIC_TEST_IP}/queued.jpg"
+        http = FakeLinkHttpClient()
+        http.heads[url] = HttpResponse(200, {"Content-Type": "image/jpeg", "Content-Length": "4"}, b"")
+        http.gets[url] = HttpResponse(200, {"Content-Type": "image/jpeg", "Content-Length": "4"}, b"test")
+        with TemporaryDirectory() as temp_dir:
+            data_dir = Path(temp_dir) / "data"
+            db_path = data_dir / "mediagent.sqlite3"
+            context = ToolContext.from_env(
+                env={"MEDIAGENT_DATA_DIR": str(data_dir), "MEDIAGENT_DB_PATH": str(db_path)},
+                cwd=Path(temp_dir),
+                http_client=http,
+            )
+            db.initialize_database(db_path)
+            link = db.upsert_link(
+                db_path,
+                {"ingest_platform": "cli", "original_url": url, "normalized_url": normalize_url(url)},
+            )
+
+            result = asyncio.run(registry.run("link.media.sync", {"db_path": str(db_path)}, context))
+            stored_link = db.get_link(db_path, link_id=link["id"])
+            files = db.list_media_files(db_path, platform=PUBLIC_TEST_IP.replace(".", "_"))
+
+        self.assertTrue(result.is_success)
+        self.assertEqual(result.data["summary"]["links_considered"], 1)
+        self.assertEqual(result.data["summary"]["downloaded"], 1)
+        self.assertEqual(stored_link["status"], "resolved")
+        self.assertEqual(stored_link["attempt_count"], 1)
+        self.assertIsNone(stored_link["lease_owner"])
+        self.assertIsNone(stored_link["lease_expires_at"])
+        self.assertEqual(len(files), 1)
+        self.assertEqual(files[0]["status"], "downloaded")
+
+    def test_link_media_sync_dedupes_resolved_media_items_from_distinct_links(self) -> None:
+        registry = create_default_registry()
+        page_url = "https://www.reddit.com/r/example/comments/abc123/photo/"
+        old_url = "https://old.reddit.com/r/example/comments/abc123/photo/"
+        media_url = "https://i.redd.it/abc123.jpeg"
+        http = FakeLinkHttpClient()
+        page_html = (
+            b'<shreddit-post id="t3_abc123" post-title="Photo" author="alice" '
+            b'content-href="https://i.redd.it/abc123.jpeg"></shreddit-post>'
+        )
+        old_html = (
+            b'<div class="thing" data-fullname="t3_abc123" data-domain="i.redd.it" '
+            b'data-url="https://i.redd.it/abc123.jpeg"></div>'
+        )
+        http.gets[page_url] = HttpResponse(200, {"Content-Type": "text/html"}, page_html, page_url)
+        http.gets[old_url] = HttpResponse(200, {"Content-Type": "text/html"}, old_html, old_url)
+        http.heads[media_url] = HttpResponse(200, {"Content-Type": "image/jpeg", "Content-Length": "4"}, b"")
+        http.gets[media_url] = HttpResponse(200, {"Content-Type": "image/jpeg", "Content-Length": "4"}, b"test")
+        with TemporaryDirectory() as temp_dir:
+            data_dir = Path(temp_dir) / "data"
+            db_path = data_dir / "mediagent.sqlite3"
+            context = ToolContext.from_env(
+                env={"MEDIAGENT_DATA_DIR": str(data_dir), "MEDIAGENT_DB_PATH": str(db_path)},
+                cwd=Path(temp_dir),
+                http_client=http,
+            )
+
+            result = asyncio.run(
+                registry.run(
+                    "link.media.sync",
+                    {"db_path": str(db_path), "urls": [page_url, old_url]},
+                    context,
+                )
+            )
+            files = db.list_media_files(db_path, platform="reddit")
+            media_get_calls = [call for call in http.calls if call == ("GET_LIMITED", media_url)]
+            with sqlite3.connect(db_path) as connection:
+                item_count = connection.execute(
+                    "SELECT COUNT(*) FROM media_items WHERE platform = 'reddit'"
+                ).fetchone()[0]
+
+        self.assertTrue(result.is_success)
+        self.assertEqual(result.data["summary"]["links_considered"], 2)
+        self.assertEqual(result.data["summary"]["resolved"], 2)
+        self.assertEqual(result.data["summary"]["queued"], 1)
+        self.assertEqual(result.data["summary"]["downloaded"], 1)
+        self.assertEqual(item_count, 1)
+        self.assertEqual(len(files), 1)
+        self.assertEqual(len(media_get_calls), 1)
+
+    def test_link_media_sync_marks_multi_file_item_partial_when_required_file_fails(self) -> None:
+        registry = create_default_registry()
+        page_url = "https://old.reddit.com/r/example/comments/abc123/gallery/"
+        first_media = "https://i.redd.it/abc123a.jpeg"
+        second_media = "https://i.redd.it/abc123b.jpeg"
+        http = FakeLinkHttpClient()
+        http.gets[page_url] = HttpResponse(
+            200,
+            {"Content-Type": "text/html"},
+            (
+                b'<div class="thing" data-fullname="t3_abc123" data-domain="reddit.com" '
+                b'data-url="https://www.reddit.com/gallery/abc123"></div>'
+                b'<a href="https://i.redd.it/abc123a.jpeg"></a>'
+                b'<a href="https://i.redd.it/abc123b.jpeg"></a>'
+            ),
+            page_url,
+        )
+        http.heads[first_media] = HttpResponse(200, {"Content-Type": "image/jpeg", "Content-Length": "4"}, b"")
+        http.heads[second_media] = HttpResponse(200, {"Content-Type": "image/jpeg", "Content-Length": "4"}, b"")
+        http.gets[first_media] = HttpResponse(200, {"Content-Type": "image/jpeg", "Content-Length": "4"}, b"test")
+        http.gets[second_media] = HttpResponse(500, {"Content-Type": "text/plain"}, b"fail")
+        with TemporaryDirectory() as temp_dir:
+            data_dir = Path(temp_dir) / "data"
+            db_path = data_dir / "mediagent.sqlite3"
+            context = ToolContext.from_env(
+                env={"MEDIAGENT_DATA_DIR": str(data_dir), "MEDIAGENT_DB_PATH": str(db_path)},
+                cwd=Path(temp_dir),
+                http_client=http,
+            )
+
+            result = asyncio.run(registry.run("link.media.sync", {"db_path": str(db_path), "url": page_url}, context))
+            files = db.list_media_files(db_path, platform="reddit")
+            with sqlite3.connect(db_path) as connection:
+                row = connection.execute(
+                    "SELECT status, metadata_json FROM media_items WHERE platform = 'reddit' AND remote_id = 't3_abc123'"
+                ).fetchone()
+
+        metadata = json.loads(row[1])
+        self.assertFalse(result.is_success)
+        self.assertEqual(result.error.code, "link_media_sync_partial")
+        self.assertEqual(result.data["summary"]["partial"], 1)
+        self.assertEqual(row[0], "partial")
+        self.assertEqual(metadata["candidate_group"]["required_files"], 2)
+        self.assertEqual(metadata["candidate_group"]["optional_files"], 0)
+        self.assertTrue(all(file_info["required"] for file_info in metadata["files"]))
+        self.assertEqual({file["status"] for file in files}, {"downloaded", "failed"})
+
+    def test_link_resolution_storage_removes_credential_bearing_headers(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "mediagent.sqlite3"
+            db.initialize_database(db_path)
+            link = db.upsert_link(
+                db_path,
+                {
+                    "ingest_platform": "cli",
+                    "original_url": "https://1.1.1.1/photo.jpg",
+                    "normalized_url": "https://1.1.1.1/photo.jpg",
+                },
+            )
+            updated = db.update_link_resolution(
+                db_path,
+                link_id=link["id"],
+                status="resolved",
+                resolution={
+                    "status": "resolved",
+                    "normalized_url": "https://1.1.1.1/photo.jpg",
+                    "canonical_url": "https://1.1.1.1/photo.jpg",
+                    "media_candidates": [
+                        {
+                            "url": "https://1.1.1.1/photo.jpg",
+                            "persistable_headers": {
+                                "Referer": "https://example.com/",
+                                "Authorization": "Bearer secret",
+                                "Cookie": "session=secret",
+                            },
+                            "details": {
+                                "headers": {
+                                    "X-CSRF-Token": "secret",
+                                    "Accept": "image/*",
+                                },
+                                "download_context": {"headers": {"Cookie": "secret"}},
+                            },
+                        }
+                    ],
+                },
+            )
+
+        candidate = updated["resolution"]["media_candidates"][0]
+        self.assertEqual(candidate["persistable_headers"], {"Referer": "https://example.com/"})
+        self.assertEqual(candidate["details"]["headers"], {"Accept": "image/*"})
+        self.assertIsNone(candidate["details"]["download_context"])

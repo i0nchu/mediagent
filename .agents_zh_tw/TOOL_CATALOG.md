@@ -84,9 +84,39 @@ Curated Telegram 用法：把 `chat` 指向使用者自己的 private collection
 
 小型 curated media download、一小時 linked video download、scanner-friendly layout placement、`library.file.verify` 與重跑去重已於 2026-07-24 UTC 完成 live verification。
 
+## Core Link Tools
+
+這些工具是 Phase 19 link-first 產品路徑的穩定入口。
+
+- `link.queue.upsert`：queue 一個或多個 explicit URLs，使用 normalized URL dedupe，並合併 source provenance。它不解析也不下載媒體。
+- `link.media.sync`：解析 explicit URLs 或 queued link records，會為 cron/daemon runs claim ready queued records、排程 retryable deferred records，將明確的 media candidates 轉成 normalized media items、dedupe known items、規劃 storage paths、下載 files、寫入 optional sidecar metadata、記錄 media-file state，並更新 parent item status。
+
+Public CLI shortcut:
+
+```bash
+mediagent link sync <url> --json
+```
+
+這個 shortcut 會 delegate 到 `link.media.sync`；它是 user-provided links 的 stable non-Telegram entry point。
+
+`link.media.sync` 是 deterministic，可由 Python、CLI、cron、workflows 與未來 Agent/SKILL integrations 呼叫。它必須把寫入限制在 configured project-local roots 內，且不得持久化 resolver candidates 內帶 credential 的 headers。
+
+## Experimental Link Tools
+
+這些工具在 public preview/compatibility story 確定前，仍屬 hidden/experimental helper surfaces。列出時使用 `--include-experimental`，inspect/run 時使用 `--allow-experimental`。
+
+- `link.resolve.preview`：安全 preview 一個 explicit URL，不下載。已支援 direct media、bounded single-media HTML，以及已實作的小型 provider-specific resolver behavior。
+- `link.resolve.to_media_item`：將 resolved link candidate 轉成 normalized media item，供既有 storage/download pipeline 使用。
+- `telegram.inbox.collect_links`：從 curated Telegram inbox 擷取 unique external URLs，不保存 raw message text。
+- `telegram.inbox.sync_links`：experimental wrapper。Telegram 只作為 URL ingest provenance；工具會解析 external links、下載明確 media results，並依 resolved origin platform 儲存檔案。
+
+目前不要把這些 experimental names 視為 stable public API。Promotion 必須保留既有 live-test commands 的 aliases，並同步更新 examples、本 catalog、`RUNBOOK.md` 與 localized handoff files。
+
 ## Reddit Tools
 
-Reddit 被視為透過 authenticated user's saved listing curated 的 media source。第一版只讀 OAuth identity/history 資料並收集 direct media candidates；不做 posting、commenting、voting、save/unsave、moderation、chat、subreddit scanning、HTML scraping 或 third-party extractors。
+Reddit auth/saved tools 已存在，但目前是 deferred legacy/advanced capability。當前產品方向是 explicit-link resolution，優先使用 anonymous/bounded behavior，並把 Redgifs 作為下一個 no-auth provider foundation。除非使用者明確恢復 auth-assisted account collection，否則不要基於 saved collection 繼續開發。
+
+Saved-collection slice 只讀 OAuth identity/history 資料並收集 direct media candidates；不做 posting、commenting、voting、save/unsave、moderation、chat、subreddit scanning、HTML scraping 或 third-party extractors。
 
 - `reddit.auth.start`：產生 Reddit OAuth authorization URL，預設 scopes 為 `identity` 與 `history`。
 - `reddit.auth.exchange`：用 Reddit OAuth callback code 交換 tokens，並可把 credential JSON 寫入 configured write roots。輸出不包含 raw tokens、client secrets 或 authorization codes。
@@ -109,7 +139,7 @@ Reddit 被視為透過 authenticated user's saved listing curated 的 media sour
 - X credentials 可來自 `X_ACCESS_TOKEN` / `X_REFRESH_TOKEN`，或 `X_CREDENTIALS_FILE`。
 - Pixiv credentials 可來自 `PIXIV_CREDENTIALS_FILE`、`PIXIV_REFRESH_TOKEN` 或 `PIXIV_ACCESS_TOKEN`。第一次本機 setup 優先使用 `pixiv.auth.login`。
 - Telegram credentials 來自 `TELEGRAM_API_ID`、`TELEGRAM_API_HASH` 與 `TELEGRAM_SESSION_FILE`；session file 是 credential，應放在 `${MEDIAGENT_DATA_DIR}/credentials/` 底下。第一次本機 setup 優先使用 `telegram.auth.login`。
-- Reddit credentials 可來自 `REDDIT_CREDENTIALS_FILE` 或 token 環境變數。第一次 setup 優先使用 `reddit.auth.start` + `reddit.auth.exchange`，且一定要使用 unique descriptive `REDDIT_USER_AGENT`。
+- Reddit credentials 可來自 `REDDIT_CREDENTIALS_FILE` 或 token 環境變數。只有在明確驗證 deferred auth-assisted path 時才使用 `reddit.auth.start` + `reddit.auth.exchange`，且一定要使用 unique descriptive `REDDIT_USER_AGENT`。
 - `X_CREDENTIALS_FILE`、`PIXIV_CREDENTIALS_FILE`、`TELEGRAM_SESSION_FILE` 與 `REDDIT_CREDENTIALS_FILE` 應指向使用者明確管理的檔案。
 - token exchange 與 refresh 的輸出不包含 raw tokens。
 - SQLite run records 不得保存 raw access tokens、refresh tokens、cookies、sessions 或 bot tokens。

@@ -8,20 +8,20 @@
 - Tool contract 位於 `src/mediagent/core/tooling.py`。
 - Tool registry 位於 `src/mediagent/tools/defaults.py`。
 - CLI bridge 位於 `src/mediagent/cli.py`。
-- SQLite 初始化位於 `src/mediagent/core/db.py`，目前 schema version 是 `6`，並支援舊 media item/file table 與 experimental `link_queue` table 的 idempotent migration。
+- SQLite 初始化位於 `src/mediagent/core/db.py`，目前 schema version 是 `7`，並支援舊 media item/file table 與 stable `link_queue` lifecycle/retry/provenance fields 的 idempotent migration。
 - 檔案安全 helper 位於 `src/mediagent/core/filesystem.py`。
 - credential/auth primitives 位於 `src/mediagent/core/auth.py`。
 - rate-limit metadata parsing 位於 `src/mediagent/core/rate_limit.py`。
 - secret redaction helper 位於 `src/mediagent/core/redaction.py`。
 - HTTP abstraction 位於 `src/mediagent/core/http.py`，`download.http` 支援 custom request headers。
-- Experimental URL intake 與 resolver helpers 位於 `src/mediagent/core/links.py`。
+- Core URL intake 與 resolver helpers 位於 `src/mediagent/core/links.py`。
 - Reddit public-link parsing helpers 位於 `src/mediagent/platforms/reddit/links.py`。
 - X platform support 位於 `src/mediagent/platforms/x/`。
 - Pixiv platform support 位於 `src/mediagent/platforms/pixiv/`，包含 local OAuth/PKCE setup、explicit refresh-token auth、token refresh、bookmark API calls、多頁作品 parsing 與 ugoira metadata preservation。
 - Telegram platform support 位於 `src/mediagent/platforms/telegram/`，包含 Telethon-backed user-session configuration、explicit login boundaries、session status boundaries、dialog listing、message collection/link-inbox boundaries、media normalization 與 Telegram-specific media download。
 - `telegram.dialogs.list` 回傳的 Telegram numeric dialog selectors 可以用字串或 explicit object ID 形式傳回 collect/sync tools。
 - Reddit platform support 位於 `src/mediagent/platforms/reddit/`，包含 OAuth config/auth helpers、saved-listing API calls，以及第一版 image/gallery/video/direct-media shapes parsing。
-- Reddit explicit-link support 已透過 `reddit_media_link` resolver 建立，支援 direct `i.redd.it` image URLs、direct `v.redd.it` MP4 video-only URLs、Reddit post/share links、bounded anonymous HTML、搭配靜態非敏感 `over18=1` 的 `old.reddit.com` fallback，以及 gallery/manifest cases 的 structured skips。
+- Reddit explicit-link support 已透過 `reddit_media_link` resolver 建立，支援 direct `i.redd.it` image URLs、direct `v.redd.it` MP4 video-only URLs、Reddit post/share links、bounded anonymous HTML、搭配靜態非敏感 `over18=1` 的 `old.reddit.com` fallback、static galleries、preview-fallback galleries，以及 manifest/login-wall cases 的 structured skips。
 - Deterministic sync helpers 位於 `src/mediagent/core/sync.py`。
 - Universal storage planning 位於 `src/mediagent/core/storage.py`。
 - 預設 shared-root storage layout 是 `scanner-friendly-v2`：`<platform>/<media_type>/<yyyy>/<mm>/<filename>`。
@@ -52,6 +52,8 @@
 - `core.sync_cursor.set`
 - `download.http`
 - `library.file.verify`
+- `link.queue.upsert`
+- `link.media.sync`
 - `link.resolve.preview`（experimental）
 - `link.resolve.to_media_item`（experimental）
 - `media.file.upsert`
@@ -106,7 +108,7 @@ uv run --locked mediagent tools run reddit.saved.collect --input examples/tools/
 uv run --locked mediagent tools run x.auth.start --input examples/tools/x.auth.start.json --json
 ```
 
-最新本機完整測試狀態是 160 個測試通過。
+最新本機完整測試狀態是 176 個測試通過。
 
 Phase 16 Telegram inbox link resolver verification：
 
@@ -130,13 +132,27 @@ Phase 17/18 Reddit explicit-link resolver verification：
 - 第二次執行去重成功：queued downloads 0、bytes written 0。
 - `library.file.verify` 檢查 4 個 live-test files：4 valid、0 missing、0 corrupt、0 unknown。
 
+Phase 19 link-first live verification：
+
+- Stable core link tools `link.queue.upsert` 與 `link.media.sync` 已實作，且不用 experimental flags 即可 discovery。
+- Public CLI entry point `mediagent link sync <url>` 會 delegate 到 `link.media.sync`，因此 non-Telegram link automation 會使用與 Telegram inbox compatibility wrapper 相同的 resolver/download/storage pipeline。
+- Public CLI live smoke 已用已知 Redgifs URL 重跑 `mediagent link sync <url>`；它走同一條 pipeline 成功解析，跳過已下載項目，重複寫入 bytes 為 0。
+- Queued `link.media.sync` runs 會用 `lease_owner` / `lease_expires_at` claim ready links、忽略其他 worker 尚未過期的 leases，並將 retryable failures 排成有 bounded `next_attempt_at` backoff 的 `deferred` records。
+- Reddit explicit links 可以把單一 publicly visible external post URL delegate 回 resolver chain。Redgifs delegated results 會保留 Redgifs storage/layout，同時保存 Reddit upstream metadata。
+- Telegram inbox compatibility wrapper `telegram.inbox.sync_links` 已於 2026-07-29 UTC 對 chat selector `3779502941` 做 live run，設定 `store_cursor:false`，output root 是 `/home/ion/projects/mediagent/mediagent-data/live-test-phase19/library`。
+- 第一次執行收集 13 個 external links、解析 9 個、queue/download 6 個新 media items、以 structured reasons skip 4 個 links，且 failed/partial downloads 為 0。
+- 先前 skipped 的 Reddit gallery link 已透過 `link.media.sync` 重跑；anonymous `old.reddit.com` public HTML 暴露 `preview.redd.it` candidates，preview fallback 已為 `t3_1v8boac` 下載 3 個 JPEG files。
+- 最新一次 compatibility-wrapper 重跑收集 13 個 links、解析 12 個、skip 1 個預期中的 X/auth link，下載 2 個新的 Reddit-delegated Redgifs MP4 files，skip 10 個已知 items，且 failed/partial downloads 為 0。
+- Phase 19 live-test library 內的下載內容包含 5 個 Redgifs MP4 videos 與 6 個 Reddit photo/GIF/JPEG files，位於 `library/redgifs/video/2026/07/...` 與 `library/reddit/photo/2026/07/...`，總計 211178527 bytes。
+- 使用 platform selectors 做 `library.file.verify`，確認 Redgifs 5/5 valid、Reddit 6/6 valid；沒有 `.partial` 或 `.tmp` 殘留。
+
 Reddit foundation verification：
 
 - `reddit.auth.start`、`reddit.auth.exchange`、`reddit.auth.refresh`、`reddit.auth.status` 已實作，且可透過 CLI discovery。
 - `reddit.saved.collect` 已實作，且可透過 CLI discovery。
 - Fake-client tests 覆蓋 auth URL generation、token exchange credential-file writing、refresh token preservation、status checks、redaction、generic user-agent rejection、unsafe credential paths、saved-listing normalization、cursor storage、dry-run no DB writes、unsafe collector DB paths、media-type filtering、saved comment skip 與 unsupported embed skip。
 - `reddit.saved.collect` 只回傳 normalized media items，不寫入 `media_files`。
-- Reddit live verification 仍待使用者提供 Reddit app credentials。
+- Reddit auth/saved live verification 目前 deferred，除非明確恢復 auth-assisted account collection。
 
 Cleanup/recovery foundation verification：
 
@@ -219,9 +235,9 @@ Phase 13 Telegram + Pixiv layout live verification 已於 2026-07-24 UTC 執行�
 - 內建 scheduler
 - cron examples
 - 真實 X OAuth 帳號現場驗證
-- 真實 Reddit OAuth / saved-collection 現場驗證
-- Reddit audio muxing、DASH/HLS manifest handling 與 gallery multi-file resolution
-- `reddit.saved.sync`
+- 真實 Reddit OAuth / saved-collection 現場驗證，目前 deferred，除非明確恢復 auth-assisted collection
+- Reddit audio muxing、DASH/HLS manifest handling 與複雜 multi-file `v.redd.it` support
+- `reddit.saved.sync`，目前 deferred，除非明確恢復 auth-assisted collection
 - Pixiv localhost callback server
 - Instagram support
 - LLM Agent Core
@@ -229,6 +245,6 @@ Phase 13 Telegram + Pixiv layout live verification 已於 2026-07-24 UTC 執行�
 
 ## 下一個建議任務
 
-先硬化 explicit-link resolver path，再開始 Workflow V1：補齊剩餘 Reddit 單一媒體 fake-client coverage、準備 internal multi-file resolver contract，接著規劃 explicit Pixiv artwork-link 與 X post-link resolvers。
+Phase 19 第一版 stable link layer 與 Telegram inbox live verification 已完成。開始 Workflow V1 前，先 harden queue claim/retry scheduling、canonical/media identity dedupe、Reddit external-provider delegation 與 multi-candidate partial-success semantics。
 
-Reddit OAuth/saved live verification 維持等待 credentials。除非使用者明確要求，否則不要先做 Workflow V1。
+Reddit OAuth/saved collection 與 X live auth verification 都視為 deferred legacy/advanced paths。除非使用者明確要求，否則不要先做 Workflow V1。

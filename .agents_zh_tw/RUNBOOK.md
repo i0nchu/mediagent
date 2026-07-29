@@ -404,9 +404,81 @@ $MEDIAGENT_DATA_DIR/telegram/video/2026/07/20260722__telegram__trusted-12345-vid
 
 Telegram cursors 會依 source 與 media-type scope 儲存，例如 `messages:saved_messages:photo-video`。只有 durable sync processing 成功後才會前進。
 
-## Reddit OAuth 與 Saved Collection
+## Link-First Resolver Smoke Checks
 
-Reddit V1 foundation 已有 fake-client coverage，但在使用者提供 Reddit app credentials 前不做真實 live verification。第一版把 saved posts 當作 curated source；不做 posting、commenting、voting、save/unsave、moderation、chat、subreddit scanning、HTML scraping 或 third-party extractors。
+目前主要路徑是 explicit URL resolution，而不是 account saved/bookmark collection。開發 Phase 19 link-first tools 時，優先使用以下檢查。
+
+列出 experimental link tools：
+
+```bash
+uv run --locked mediagent tools list --json --include-experimental
+```
+
+檢查 stable link tools：
+
+```bash
+uv run --locked mediagent tools inspect link.queue.upsert --json
+uv run --locked mediagent tools inspect link.media.sync --json
+```
+
+Queue 一個 explicit URL，但不下載：
+
+```bash
+printf '%s\n' '{"url":"https://example.com/path/to/media.jpg","ingest_platform":"cli"}' \
+  | uv run --locked mediagent tools run link.queue.upsert --input - --json
+```
+
+透過 core link pipeline 解析並下載 explicit URL：
+
+```bash
+printf '%s\n' '{"url":"https://example.com/path/to/media.jpg","write_sidecar_metadata":true}' \
+  | uv run --locked mediagent tools run link.media.sync --input - --json
+```
+
+使用 public link entry point 執行同一條 workflow，且不需要撰寫 tool JSON：
+
+```bash
+uv run --locked mediagent link sync 'https://example.com/path/to/media.jpg' --write-sidecar-metadata --json
+```
+
+從 cron 或 daemon worker 執行 queued links：
+
+```bash
+uv run --locked mediagent tools run link.media.sync --json
+```
+
+Queued runs 會以短租約 claim ready links、跳過其他 worker 尚未過期的 leases，且只在 `next_attempt_at` 到期後納入 retryable `deferred` links。Login walls、unsafe URLs、unsupported media、deleted/removed content 與 access controls 等 permanent skips 不會重試。
+
+檢查目前 preview resolver：
+
+```bash
+uv run --locked mediagent tools inspect link.resolve.preview --json --allow-experimental
+```
+
+不下載，只 preview 一個 explicit URL：
+
+```bash
+printf '%s\n' '{"url":"https://example.com/path/to/media.jpg","record":false}' \
+  | uv run --locked mediagent tools run link.resolve.preview --input - --json --allow-experimental
+```
+
+預期行為：
+
+- direct public image/video/audio URLs 會在 full HTML fetch 前被解析
+- public single-media HTML 只有在存在單一明確 candidate 時才可解析
+- Reddit static galleries 可解析成多個 photo candidates；complex galleries、login-required、JavaScript-required、blocked、unsafe 或 ambiguous pages 會回傳 structured skip reasons
+- 下載步驟必須重新執行 URL safety、redirect、MIME 與 byte-limit checks，不可只信任 preview output
+- 如果使用 sync/download command，output files 必須留在 `${MEDIAGENT_DATA_DIR}` 底下
+
+Redgifs direct/watch links 已作為 no-auth provider foundation 實作。當 public HTML 暴露 direct MP4 candidate 時，direct `redgifs.com/watch/<id>` links 應解析為 `origin_source: "redgifs"`、`media_type: "video"`、file key `v0`，並落在 scanner-friendly storage：`library/redgifs/video/<yyyy>/<mm>/...`。
+
+Reddit explicit links 目前使用 anonymous/bounded behavior。如果 Reddit page 把外部媒體藏在 login wall 或 dynamic client data 後面，resolver 應以 `login_wall` 或 `external_source_hidden` 跳過。除非使用者明確重啟 auth-assisted collection，否則不要把 Reddit saved collection 當作下一個產品路徑。
+
+## Deferred Reddit OAuth 與 Saved Collection
+
+Reddit V1 auth/saved tooling 已有 fake-client coverage，但它是 deferred legacy/advanced capability。它不得 posting、commenting、voting、save/unsave、moderation、chat、subreddit scanning、HTML scraping 或使用 third-party extractors。
+
+只有在明確驗證 legacy auth-assisted path 時才使用本節。
 
 在 `.env` 加入本機專用值：
 
@@ -457,7 +529,7 @@ uv run --locked mediagent tools run reddit.saved.collect --input examples/tools/
 uv run --locked mediagent tools run reddit.saved.collect --input examples/tools/reddit.saved.collect.json --dry-run --json
 ```
 
-`reddit.saved.collect` 只回傳 normalized media items 與 optional cursor state。下載 orchestration 要等未來明確加入 `reddit.saved.sync`。
+`reddit.saved.collect` 只回傳 normalized media items 與 optional cursor state。下載 orchestration 不是目前方向；除非使用者明確選擇恢復 auth-assisted account collection，否則不要加入 `reddit.saved.sync`。
 
 ## 常見問題
 
@@ -469,8 +541,9 @@ uv run --locked mediagent tools run reddit.saved.collect --input examples/tools/
 - Pixiv auth failure：檢查 `PIXIV_CREDENTIALS_FILE`、token expiration、callback URL/code 是否過期，以及 credential file 是否在 `MEDIAGENT_DATA_DIR` 底下。若使用舊的 refresh-token 路徑，也檢查 `PIXIV_REFRESH_TOKEN`。
 - Pixiv download 403：在 `download.http` headers 加上 `{"Referer":"https://www.pixiv.net/"}`。
 - Telegram auth failure：檢查 `TELEGRAM_API_ID`、`TELEGRAM_API_HASH`、`TELEGRAM_SESSION_FILE`，以及 session file 是否在 `MEDIAGENT_DATA_DIR` 底下。
-- Reddit auth failure：檢查 `REDDIT_CLIENT_ID`、`REDDIT_REDIRECT_URI`、`REDDIT_USER_AGENT`、`REDDIT_CREDENTIALS_FILE`、callback code 是否過期，以及 credential file 是否在 `MEDIAGENT_DATA_DIR` 底下。
+- Reddit explicit link 回傳 `login_wall` 或 `external_source_hidden`：當 public HTML 沒暴露 media URL 時這是預期 skip。可用時優先使用 Redgifs 等 direct provider links。
+- Deferred saved-collection tooling 的 Reddit auth failure：檢查 `REDDIT_CLIENT_ID`、`REDDIT_REDIRECT_URI`、`REDDIT_USER_AGENT`、`REDDIT_CREDENTIALS_FILE`、callback code 是否過期，以及 credential file 是否在 `MEDIAGENT_DATA_DIR` 底下。
 
 ## 安全提醒
 
-X 與 Reddit 仍需要使用者提供 credentials 才能做 live verification。Pixiv 與 Telegram 已完成目前 deterministic sync slice 的使用者協助 live verification。未來 live runs 都仍需要使用者提供 credentials。
+目前擴展路徑是 explicit link resolution，優先使用 no-auth behavior。除非使用者明確恢復，X 與 Reddit auth-assisted collection 都維持 deferred。Pixiv 與 Telegram 已完成目前 deterministic sync slice 的使用者協助 live verification。若未來使用平台特定 login tool，live runs 仍需要使用者提供 credentials。

@@ -84,9 +84,39 @@ Curated Telegram usage では、`chat` を user の private collection channel �
 
 Small curated media download、1 時間 linked video download、scanner-friendly layout placement、`library.file.verify`、rerun dedupe は 2026-07-24 UTC に live-verified 済みです。
 
+## Core Link Tools
+
+これらの tools は Phase 19 link-first product path の stable entry points です。
+
+- `link.queue.upsert`: Explicit URLs を 1 件以上 queue し、normalized URL dedupe と source provenance merge を行います。Media の resolve や download は行いません。
+- `link.media.sync`: Explicit URLs または queued link records を resolve し、cron/daemon runs では ready queued records を claim し、retryable deferred records を schedule し、clear media candidates を normalized media items に変換し、known items を dedupe し、storage paths を plan し、files を download し、optional sidecar metadata を書き、media-file state を記録し、parent item status を更新します。
+
+Public CLI shortcut:
+
+```bash
+mediagent link sync <url> --json
+```
+
+この shortcut は `link.media.sync` に delegate します。User-provided links の stable non-Telegram entry point です。
+
+`link.media.sync` は deterministic で、Python、CLI、cron、workflows、future Agent/SKILL integrations から呼び出せます。Writes は configured project-local roots 配下に制限し、resolver candidates の credential-bearing headers を永続化してはいけません。
+
+## Experimental Link Tools
+
+これらの tools は public preview/compatibility story が決まるまで hidden/experimental helper surfaces として扱います。List には `--include-experimental`、inspect/run には `--allow-experimental` を使います。
+
+- `link.resolve.preview`: Explicit URL 1 件を download せず安全に preview します。Direct media、bounded single-media HTML、実装済みの小さな provider-specific resolver behavior に対応します。
+- `link.resolve.to_media_item`: Resolved link candidate を normalized media item に変換し、既存 storage/download pipeline に渡します。
+- `telegram.inbox.collect_links`: Curated Telegram inbox から unique external URLs を抽出します。Raw message text は保存しません。
+- `telegram.inbox.sync_links`: Experimental wrapper です。Telegram は URL ingest provenance のみとして扱い、external links を resolve し、clear media results を download し、resolved origin platform 配下に保存します。
+
+現時点ではこれらの experimental names を stable public API として扱わないでください。Promotion では既存 live-test commands の aliases を保持し、examples、この catalog、`RUNBOOK.md`、localized handoff files を同時に更新する必要があります。
+
 ## Reddit Tools
 
-Reddit は authenticated user's saved listing を使う curated media source として扱います。First slice は OAuth identity/history data を読み、direct media candidates を collect するだけです。Posting、commenting、voting、save/unsave、moderation、chat、subreddit scanning、HTML scraping、third-party extractors は実装しません。
+Reddit auth/saved tools は存在しますが、現在は deferred legacy/advanced capability です。現在の product direction は explicit-link resolution で、anonymous/bounded behavior を優先し、Redgifs を次の no-auth provider foundation として扱います。User が明示的に auth-assisted account collection を再開しない限り、saved collection を土台に開発しないでください。
+
+Saved-collection slice は OAuth identity/history data だけを読み、direct media candidates を collect します。Posting、commenting、voting、save/unsave、moderation、chat、subreddit scanning、HTML scraping、third-party extractors は実装しません。
 
 - `reddit.auth.start`: Reddit OAuth authorization URL を生成します。Default scopes は `identity` と `history` です。
 - `reddit.auth.exchange`: Reddit OAuth callback code を tokens に交換し、credential JSON を configured write roots 内に書けます。Raw tokens、client secrets、authorization codes は出力しません。
@@ -109,7 +139,7 @@ First-version parser は Reddit-hosted single images、Reddit gallery images、R
 - X credentials は `X_ACCESS_TOKEN` / `X_REFRESH_TOKEN`、または `X_CREDENTIALS_FILE` から読めます。
 - Pixiv credentials は `PIXIV_CREDENTIALS_FILE`、`PIXIV_REFRESH_TOKEN`、または `PIXIV_ACCESS_TOKEN` から読めます。初回 local setup では `pixiv.auth.login` を優先します。
 - Telegram credentials は `TELEGRAM_API_ID`、`TELEGRAM_API_HASH`、`TELEGRAM_SESSION_FILE` から読めます。Session file は credential であり、`${MEDIAGENT_DATA_DIR}/credentials/` の下に置くべきです。初回 local setup では `telegram.auth.login` を優先します。
-- Reddit credentials は `REDDIT_CREDENTIALS_FILE` または token environment variables から読めます。初回 setup では `reddit.auth.start` + `reddit.auth.exchange` を優先し、必ず unique descriptive `REDDIT_USER_AGENT` を使います。
+- Reddit credentials は `REDDIT_CREDENTIALS_FILE` または token environment variables から読めます。Deferred auth-assisted path を明示的に検証する場合だけ `reddit.auth.start` + `reddit.auth.exchange` を使い、必ず unique descriptive `REDDIT_USER_AGENT` を使います。
 - `X_CREDENTIALS_FILE`、`PIXIV_CREDENTIALS_FILE`、`TELEGRAM_SESSION_FILE`、`REDDIT_CREDENTIALS_FILE` はユーザーが明示的に管理する file を指すべきです。
 - token exchange と refresh の出力に raw tokens は含めません。
 - SQLite run records に raw access tokens、refresh tokens、cookies、sessions、bot tokens を保存してはいけません。

@@ -11,12 +11,12 @@ This file tracks known caveats that matter for the next handoff. Resolved histor
 - **Current behavior:** X OAuth PKCE, exchange, refresh, status, and bookmark collection are implemented and covered by fake HTTP / fixture tests. No real X OAuth client or user credentials are stored in the repository, so live authentication has not been verified.
 - **Expected next step:** With user-provided X app credentials, run `x.auth.start`, complete the browser authorization flow, run `x.auth.exchange`, then validate with `x.auth.status` and `x.bookmarks.collect`.
 
-### 2. Download orchestration is still manual for platforms without sync helpers
+### 2. Daemon/workflow orchestration is still deferred
 
 - **Status:** Open by design.
 - **Observed in:** `src/mediagent/tools/download_tools.py`, `src/mediagent/tools/metadata_tools.py`, `src/mediagent/workflows/`
-- **Current behavior:** Pixiv and Telegram now have deterministic sync helpers. Reddit explicit links can be synced through the experimental Telegram inbox resolver, but Reddit saved items and X remain collect-only. Workflow V1 does not exist yet.
-- **Expected next step:** Harden explicit-link resolver behavior, add the next platform sync helper, discuss additional Pixiv/Telegram source tools, or start Workflow V1 only after the sync contract remains stable.
+- **Current behavior:** Pixiv and Telegram have deterministic sync helpers. Explicit URLs can use stable core link tools through `link.queue.upsert` and `link.media.sync`, and Telegram inbox still has a compatibility wrapper. Reddit saved items and X remain collect-only legacy/advanced paths. Workflow V1 does not exist yet.
+- **Expected next step:** Keep Workflow V1 deferred until the link-first sync contract stays stable through more provider adapters and repeated cron-style runs.
 
 ### 3. Workflow V1 is intentionally deferred
 
@@ -25,14 +25,28 @@ This file tracks known caveats that matter for the next handoff. Resolved histor
 - **Current behavior:** Tools can be called from Python and CLI, but YAML workflow validation/execution does not exist yet.
 - **Expected next step:** Keep Workflow V1 deferred until deterministic sync behavior has stayed stable through cleanup/recovery tooling and the bottom/platform tool contracts remain stable.
 
+### 4. TODO states the link-first decision but does not name the next active slice
+
+- **Status:** Open planning handoff clarity.
+- **Observed in:** `.agents/TODO.md`, `.agents_zh_tw/TODO.md`, `.agents_jp/TODO.md`
+- **Current behavior:** TODO clearly says explicit user-provided links are now the primary product path and that Phase 19 is complete, but it does not define a current/next focus with ordered acceptance criteria. The remaining post-19 items mention Imgur provider migration, Pixiv artwork links, X post links, Telegram inbox promotion, Reddit auth fallback policy, RuleSpec, Workflow V1, and Agent Core. The later RuleSpec/Workflow gates still use the older Pixiv/Telegram deterministic-sync wording instead of the newer link-first stability gate used elsewhere.
+- **How it can happen:** A new implementer can reasonably pick a lower-priority item, start Workflow/Agent Core work because older Pixiv/Telegram sync stability appears satisfied, or build another account/bookmark collector even though the product direction is now explicit-link provider adapters first.
+- **Expected next step:** Add a short `Current Focus` or next-phase section that names the next link-first implementation slice, its non-goals, and verification targets. Update the RuleSpec/Workflow wording to wait for link-first contract stability across more provider adapters and repeated cron-style runs, then sync the same guidance across all three TODO files.
+
 ## Recently Resolved
 
+- `STATE.md` implemented-tool lists now include stable `link.queue.upsert` and `link.media.sync` before the experimental preview helpers in all three languages.
+- Phase 19 handoff docs and TODO are synchronized with the implemented link-first state. `STATE.md`, `TODO.md`, `RUNBOOK.md`, `TOOL_CATALOG.md`, and `ARCHITECTURE.md` now describe schema v7, stable `link.queue.upsert`, stable `link.media.sync`, the public `mediagent link sync <url>` entry point, queue claim/retry behavior, and Reddit/Redgifs delegation in all three languages.
+- `link_queue` is now documented as the URL resolution lifecycle only. A link row remains `resolved` after resolution; download state is tracked by `media_items` and `media_files`, including downloaded, partial, and failed outcomes.
+- Phase 19 first stable link layer is implemented with schema-v7 `link_queue` lifecycle/retry/provenance fields, stable `link.queue.upsert`, stable `link.media.sync`, public `mediagent link sync <url>`, Reddit static and preview-fallback gallery resolution, Reddit-to-Redgifs delegation, Redgifs direct/watch resolution, multi-file candidates for simple static groups, credential-bearing candidate header sanitization before persistence, regression coverage, and 2026-07-29 UTC live verification.
+- Phase 19 queue lifecycle hardening is implemented. Queued `link.media.sync` runs claim ready links with leases, retry temporary failures as scheduled `deferred` links, leave permanent skips non-retryable, dedupe resolved media items by `platform + remote_id`, and keep Telegram inbox sync as a hidden compatibility wrapper over the same link pipeline.
+- `library.file.verify` now rejects an explicit non-default `library_root` unless `platform` or `remote_id` is provided. This prevents live-test roots from being applied to every downloaded DB row that happens to share scanner-friendly relative paths from another root.
 - Telegram numeric dialog selectors can now be reused directly. `telegram.dialogs.list` may return selectors such as `"3779502941"`; the real Telegram entity selector now converts numeric strings to integers before Telethon lookup, and regression coverage confirms string IDs, negative channel IDs, saved messages, and username selectors.
 - Phase 18 Reddit video-only explicit-link support is implemented. `reddit_media_link` now resolves direct `v.redd.it` MP4 URLs before generic direct-media fallback, extracts explicit `v.redd.it/...DASH_*.mp4` candidates from Reddit post/legacy pages, maps them to `video` / `v0` / `library/reddit/video/...`, and marks `audio_status: "not_merged"` with `mux_required: true`. Direct `v.redd.it/<id>` manifest links still skip as `unsupported_media_type` with `reason: video_manifest_unsupported`; audio muxing and full DASH/HLS handling remain deferred.
 - Phase 17 Reddit explicit-link resolver foundation is implemented. `reddit_media_link` handles direct `i.redd.it` images, Reddit post/share links, bounded anonymous HTML, and `old.reddit.com` fallback with static `over18=1`. Fake-client tests cover direct image resolution, modern markup extraction, JS verification fallback, gallery skip behavior, single-MP4 Reddit video resolution, highest DASH candidate selection, and Telegram inbox sync into the Reddit layout. Live Telegram inbox verification on 2026-07-29 UTC resolved and downloaded one Reddit JPEG to `/home/ion/projects/mediagent/mediagent-data/live-test-phase17/library/reddit/photo/2026/07/20260728__reddit__t3_1v8yi6w__p0.jpg`; second-run dedupe queued 0 downloads, and `library.file.verify` reported 4 valid live-test files.
 - Phase 16 generic HTML resolver candidate selection now prefers a clearly marked original/full media URL over preview or thumbnail candidates while preserving ambiguous skips when there is no single winner. Live Telegram inbox verification downloaded a valid Danbooru original PNG and deduped a previously downloaded nhentai page; a Reddit short-link page remained skipped because the returned HTML exposed no static media candidates.
 - Phase 16 generic HTML media discovery is implemented without a domain allowlist. It handles single clear public HTML media targets, HEAD-forbidden HTML pages, and X age/login walls without downloading default preview images. Live Telegram inbox verification downloaded one valid PNG from the public HTML test link and skipped the X link as `requires_auth`.
-- Phase 16 undocumented Telegram inbox link resolver is implemented behind experimental boundaries with `link.resolve.preview`, `link.resolve.to_media_item`, `telegram.inbox.collect_links`, `telegram.inbox.sync_links`, hidden experimental CLI routing, `link_queue` schema v6, origin-source storage metadata, and link-safe GET downloads.
+- Phase 16 undocumented Telegram inbox link resolver was implemented behind experimental boundaries with `link.resolve.preview`, `link.resolve.to_media_item`, `telegram.inbox.collect_links`, `telegram.inbox.sync_links`, hidden experimental CLI routing, initial `link_queue` schema support now migrated to schema v7, origin-source storage metadata, and link-safe GET downloads.
 - Phase 16 URL safety now rejects userinfo before normalization and treats malformed URLs as structured unsafe skips. Regression tests cover username-only URLs, username/password URLs, invalid ports, extraction skip behavior, and resolver preview skip behavior.
 - Phase 16 experimental tool boundaries are enforced. Normal `tools list` hides experimental tools, normal inspect/run rejects them, and top-level help does not expose the hidden experimental command path.
 - Phase 16 link sync uses a link-safe GET path that revalidates redirects, enforces byte limits, rejects oversized bodies, validates MIME at GET time, and applies MOV fallback only when the GET final URL itself has a `.mov` suffix.
@@ -78,4 +92,4 @@ This file tracks known caveats that matter for the next handoff. Resolved histor
 - Localized issue handoffs have been synced with the current English issue state.
 - Localized TODO handoffs now include the Pixiv `pixiv.auth.login` / OAuth PKCE planning update, including authorization-code exchange, credential-file writing, redaction tests, and skipped-by-default live browser tests.
 - English, Traditional Chinese, and Japanese handoff docs have been synced to the Pixiv first-slice status.
-- The default test suite is green: `uv run --locked python -m unittest discover -s tests` runs 160 tests successfully.
+- The default test suite is green: `.venv/bin/python -m unittest discover -s tests` runs 176 tests successfully.

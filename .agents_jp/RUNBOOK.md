@@ -404,9 +404,81 @@ $MEDIAGENT_DATA_DIR/telegram/video/2026/07/20260722__telegram__trusted-12345-vid
 
 Telegram cursors は source と media-type scope ごとに保存されます。例: `messages:saved_messages:photo-video`。Durable sync processing が成功した後だけ進みます。
 
-## Reddit OAuth and Saved Collection
+## Link-First Resolver Smoke Checks
 
-Reddit V1 foundation は fake-client coverage がありますが、user が Reddit app credentials を提供するまで real live verification は skip します。First version は saved posts を curated source として扱います。Posting、commenting、voting、save/unsave、moderation、chat、subreddit scanning、HTML scraping、third-party extractors は実装しません。
+現在の primary path は explicit URL resolution であり、account saved/bookmark collection ではありません。Phase 19 link-first tools を開発するときは、まず以下を確認します。
+
+Experimental link tools を list します:
+
+```bash
+uv run --locked mediagent tools list --json --include-experimental
+```
+
+Stable link tools を inspect します:
+
+```bash
+uv run --locked mediagent tools inspect link.queue.upsert --json
+uv run --locked mediagent tools inspect link.media.sync --json
+```
+
+Explicit URL を queue します。Download は行いません:
+
+```bash
+printf '%s\n' '{"url":"https://example.com/path/to/media.jpg","ingest_platform":"cli"}' \
+  | uv run --locked mediagent tools run link.queue.upsert --input - --json
+```
+
+Core link pipeline で explicit URL を resolve して download します:
+
+```bash
+printf '%s\n' '{"url":"https://example.com/path/to/media.jpg","write_sidecar_metadata":true}' \
+  | uv run --locked mediagent tools run link.media.sync --input - --json
+```
+
+Tool JSON を書かずに同じ workflow を実行する public link entry point:
+
+```bash
+uv run --locked mediagent link sync 'https://example.com/path/to/media.jpg' --write-sidecar-metadata --json
+```
+
+Cron または daemon worker から queued links を実行:
+
+```bash
+uv run --locked mediagent tools run link.media.sync --json
+```
+
+Queued runs は短い lease で ready links を claim し、他 worker の未期限切れ leases を skip し、`next_attempt_at` を過ぎた retryable `deferred` links だけを含めます。Login walls、unsafe URLs、unsupported media、deleted/removed content、access controls などの permanent skips は retry しません。
+
+現在の preview resolver を inspect します:
+
+```bash
+uv run --locked mediagent tools inspect link.resolve.preview --json --allow-experimental
+```
+
+Download せず explicit URL を preview します:
+
+```bash
+printf '%s\n' '{"url":"https://example.com/path/to/media.jpg","record":false}' \
+  | uv run --locked mediagent tools run link.resolve.preview --input - --json --allow-experimental
+```
+
+Expected behavior:
+
+- Direct public image/video/audio URLs は full HTML fetch の前に resolve されます
+- Public single-media HTML は clear candidate が 1 件だけある場合に resolve できます
+- Reddit static galleries は複数 photo candidates として resolve できます。Complex galleries、login-required、JavaScript-required、blocked、unsafe、ambiguous pages は structured skip reasons を返します
+- Download steps は preview output を信用せず、URL safety、redirect、MIME、byte-limit checks を再実行します
+- Sync/download command を使う場合、output files は `${MEDIAGENT_DATA_DIR}` 配下に置きます
+
+Redgifs direct/watch links は no-auth provider foundation として実装済みです。Public HTML が direct MP4 candidate を公開している場合、direct `redgifs.com/watch/<id>` links は `origin_source: "redgifs"`、`media_type: "video"`、file key `v0`、scanner-friendly storage `library/redgifs/video/<yyyy>/<mm>/...` に resolve されるべきです。
+
+Reddit explicit links は現在 anonymous/bounded behavior を使います。Reddit page が external media を login wall や dynamic client data の後ろに隠している場合、resolver は `login_wall` または `external_source_hidden` で skip します。User が明示的に auth-assisted collection を再開しない限り、Reddit saved collection を次の product path として扱わないでください。
+
+## Deferred Reddit OAuth and Saved Collection
+
+Reddit V1 auth/saved tooling は fake-client coverage を持ちますが、deferred legacy/advanced capability です。Posting、commenting、voting、save/unsave、moderation、chat、subreddit scanning、HTML scraping、third-party extractors は実装しません。
+
+この section は legacy auth-assisted path を明示的に検証する場合だけ使います。
 
 `.env` に local-only values を追加します:
 
@@ -457,7 +529,7 @@ Credentials、DB writes、network なしで collector preview:
 uv run --locked mediagent tools run reddit.saved.collect --input examples/tools/reddit.saved.collect.json --dry-run --json
 ```
 
-`reddit.saved.collect` は normalized media items と optional cursor state だけを返します。Download orchestration は `reddit.saved.sync` を明示的に追加するまで deferred です。
+`reddit.saved.collect` は normalized media items と optional cursor state だけを返します。Download orchestration は現在の方向ではありません。User が明示的に auth-assisted account collection を再開する場合を除き、`reddit.saved.sync` を追加しないでください。
 
 ## よくある問題
 
@@ -469,8 +541,9 @@ uv run --locked mediagent tools run reddit.saved.collect --input examples/tools/
 - Pixiv auth failure: `PIXIV_CREDENTIALS_FILE`、token expiration、callback URL/code freshness、credential file が `MEDIAGENT_DATA_DIR` 配下か確認します。従来の refresh-token path を使う場合は `PIXIV_REFRESH_TOKEN` も確認します。
 - Pixiv download 403: `download.http` headers に `{"Referer":"https://www.pixiv.net/"}` を追加します。
 - Telegram auth failure: `TELEGRAM_API_ID`、`TELEGRAM_API_HASH`、`TELEGRAM_SESSION_FILE`、session file が `MEDIAGENT_DATA_DIR` の下か確認します。
-- Reddit auth failure: `REDDIT_CLIENT_ID`、`REDDIT_REDIRECT_URI`、`REDDIT_USER_AGENT`、`REDDIT_CREDENTIALS_FILE`、callback code freshness、credential file が `MEDIAGENT_DATA_DIR` 配下か確認します。
+- Reddit explicit link が `login_wall` または `external_source_hidden` を返す: public HTML が media URL を公開していない場合は expected skip です。利用できる場合は Redgifs など direct provider links を優先します。
+- Deferred saved-collection tooling の Reddit auth failure: `REDDIT_CLIENT_ID`、`REDDIT_REDIRECT_URI`、`REDDIT_USER_AGENT`、`REDDIT_CREDENTIALS_FILE`、callback code freshness、credential file が `MEDIAGENT_DATA_DIR` 配下か確認します。
 
 ## Safety Reminder
 
-X と Reddit の live verification にはまだ user-provided credentials が必要です。Pixiv と Telegram は現在の deterministic sync slice について user-assisted live verification を完了しています。今後の live runs でも user-provided credentials は必要です。
+現在の expansion path は explicit link resolution で、まず no-auth behavior を優先します。User が明示的に再開しない限り、X と Reddit auth-assisted collection は deferred です。Pixiv と Telegram は現在の deterministic sync slice について user-assisted live verification を完了しています。Platform-specific login tool を使う future live runs では引き続き user-provided credentials が必要です。
