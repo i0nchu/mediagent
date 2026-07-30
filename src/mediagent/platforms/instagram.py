@@ -1,1 +1,0 @@
-"""Instagram platform adapter placeholder."""

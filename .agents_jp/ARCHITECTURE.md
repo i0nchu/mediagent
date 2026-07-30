@@ -55,6 +55,7 @@ CLI、future workflows、future Agent Core は同じ registry から tools を�
 - `platforms/pixiv/`
 - `platforms/telegram/`
 - `platforms/reddit/`
+- `platforms/instagram/`
 
 `platforms/x/` には次があります。
 
@@ -79,6 +80,11 @@ CLI、future workflows、future Agent Core は同じ registry から tools を�
 - `auth.py`: Reddit OAuth config、token exchange/refresh/status、credential file helpers、Reddit rate-limit metadata parsing
 - `client.py`: Reddit OAuth API `/api/v1/me` と authenticated-user saved listings calls
 - `parser.py`: saved listing entries を first-version image/gallery/video/direct-media shapes の normalized media items に変換
+
+`platforms/instagram/` には次があります。
+
+- `auth.py`: saved-session status、explicit local username/password login、bounded ensure-session behavior、credential path safety、agent-decidable auth/session error mapping
+- `links.py`: Instagram post/Reel/tv URL parsing、canonical identity、whole-post resource normalization、runtime-only signed CDN download URL handling
 
 ## CLI Flow
 
@@ -145,6 +151,8 @@ Successful な `link.media.sync` run は 1 回の tool call で resolve と down
 `MediaCandidate` は credential-bearing request headers を永続化してはいけません。Persistable download hints は allowlisted かつ non-secret に限定し、必要な場合の public `Referer` などだけを許可します。`Authorization`、`Cookie`、signed URL tokens、session headers、CSRF headers など runtime-only headers は download context reference 経由で memory に保持し、SQLite、sidecar metadata、logs、snapshots には保存しません。
 
 Multi-candidate resolution は、Reddit galleries のような simple static file groups ではすでに対応しています。現在の contract は、それらの static groups について group id、required files、optional files、partial-success status、`metadata.files` mapping を記録します。Muxed video/audio tracks やより complex な multi-file posts は deferred のままです。
+
+Instagram は同じ link-first contract を使いますが、platform session boundary を持ちます。Instagram の `/p/<shortcode>/`、`/reel/<shortcode>/`、`/tv/<shortcode>/` URL 1 件は post 全体を表します。Carousel resources は 1 件の media item 配下の multiple files として normalize され、signed Instagram CDN URLs は runtime-only として扱い、canonical media identity として persist しません。
 
 ## 既存 Collector Flow
 

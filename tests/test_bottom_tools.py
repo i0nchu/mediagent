@@ -543,6 +543,43 @@ class BottomToolTests(unittest.TestCase):
             "x/video/2026/07/20260722__x__post-1__v0.mp4",
         )
 
+    def test_storage_path_plan_uses_file_media_type_for_mixed_post_files(self) -> None:
+        registry = create_default_registry()
+        with TemporaryDirectory() as temp_dir:
+            data_dir = Path(temp_dir) / "data"
+            context = ToolContext.from_env(
+                env={"MEDIAGENT_DATA_DIR": str(data_dir)},
+                cwd=Path(temp_dir),
+                dry_run=True,
+            )
+
+            result = asyncio.run(
+                registry.run(
+                    "storage.path.plan",
+                    {
+                        "item": {
+                            "platform": "instagram",
+                            "remote_id": "carousel-1",
+                            "media_type": "photo",
+                            "metadata": {"create_date": "2026-07-22T00:00:00+00:00"},
+                        },
+                        "file": {
+                            "url": "https://www.instagram.com/p/carousel-1/?mediagent_resource=4",
+                            "media_type": "video",
+                            "extension": ".mp4",
+                            "part": "v0",
+                        },
+                    },
+                    context,
+                )
+            )
+
+        self.assertTrue(result.is_success)
+        self.assertEqual(
+            result.data["relative_path"],
+            "instagram/video/2026/07/20260722__instagram__carousel-1__v0.mp4",
+        )
+
     def test_storage_path_plan_uses_platform_specific_library_dir(self) -> None:
         registry = create_default_registry()
         with TemporaryDirectory() as temp_dir:

@@ -25,6 +25,7 @@ from mediagent.core.links import (
     header_value,
     int_header,
     resolution_to_media_item,
+    sanitize_link_resolution_for_output,
 )
 from mediagent.core.storage import default_library_root, plan_storage_path, platform_library_env_name, safe_storage_segment
 from mediagent.core.sync import TERMINAL_ITEM_STATUSES, item_status_from_file_counts
@@ -731,7 +732,13 @@ async def inbox_sync_links(context: ToolContext, input_data: dict[str, Any]) -> 
 
     links = _limited_items(collect_result.data.get("links", []), input_data.get("limit"))
     policy = _link_safety_policy(input_data)
-    resolver_request = ResolveRequest(http_client=context.http_client, policy=policy)
+    resolver_request = ResolveRequest(
+        http_client=context.http_client,
+        policy=policy,
+        env=context.env,
+        cwd=context.cwd,
+        allowed_write_roots=tuple(context.allowed_write_roots()),
+    )
     resolutions: list[dict[str, Any]] = []
     resolved_items: list[dict[str, Any]] = []
     summary = {
@@ -751,7 +758,7 @@ async def inbox_sync_links(context: ToolContext, input_data: dict[str, Any]) -> 
     warnings: list[str] = []
     for link in links:
         resolution = default_link_resolver_registry().resolve(link["original_url"], request=resolver_request)
-        resolutions.append({"link": _safe_link_record(link), "resolution": resolution})
+        resolutions.append({"link": _safe_link_record(link), "resolution": sanitize_link_resolution_for_output(resolution)})
         if resolution.get("status") != "resolved":
             summary["skipped_links"] += 1
             if not context.dry_run and link.get("id") is not None:
@@ -1284,7 +1291,8 @@ async def _sync_one_link_item(
         download_result = _download_link_file_safely(
             context,
             input_data,
-            url=file_info["url"],
+            url=_link_file_download_url(file_info),
+            headers=_link_file_download_headers(file_info),
             target_path=target_path,
             overwrite=overwrite,
             expected_mime_prefix=_expected_mime_prefix(file_info),
@@ -1351,6 +1359,7 @@ def _download_link_file_safely(
     input_data: dict[str, Any],
     *,
     url: str,
+    headers: dict[str, str] | None = None,
     target_path: Path,
     overwrite: bool,
     expected_mime_prefix: str | None,
@@ -1370,12 +1379,19 @@ def _download_link_file_safely(
         )
 
     policy = _link_safety_policy(input_data)
-    request = ResolveRequest(http_client=context.http_client, policy=policy)
+    request = ResolveRequest(
+        http_client=context.http_client,
+        policy=policy,
+        env=context.env,
+        cwd=context.cwd,
+        allowed_write_roots=tuple(context.allowed_write_roots()),
+    )
     try:
         response, final_url = fetch_limited_follow_redirects(
             url,
             request=request,
             max_bytes=policy.max_media_bytes + 1,
+            headers=headers,
         )
     except URLSafetyError as exc:
         return ToolResult.failure(
@@ -1693,6 +1709,13 @@ def _item_files(item: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _link_item_files(item: dict[str, Any]) -> list[dict[str, Any]]:
+    runtime_files = (item.get("_runtime") or {}).get("files")
+    if isinstance(runtime_files, list) and runtime_files:
+        return [
+            file_info
+            for file_info in runtime_files
+            if isinstance(file_info, dict) and (file_info.get("url") or file_info.get("remote_url"))
+        ]
     files = (item.get("metadata") or {}).get("files", [])
     return [
         file_info
@@ -1811,6 +1834,23 @@ def _file_remote_url(file_info: dict[str, Any]) -> str:
 
 def _link_file_remote_url(file_info: dict[str, Any]) -> str:
     return str(file_info.get("remote_url") or file_info.get("url") or "")
+
+
+def _link_file_download_url(file_info: dict[str, Any]) -> str:
+    download_context = file_info.get("download_context")
+    if isinstance(download_context, dict) and download_context.get("url"):
+        return str(download_context["url"])
+    return _link_file_remote_url(file_info)
+
+
+def _link_file_download_headers(file_info: dict[str, Any]) -> dict[str, str] | None:
+    headers: dict[str, str] = {}
+    download_context = file_info.get("download_context")
+    if isinstance(download_context, dict) and isinstance(download_context.get("headers"), dict):
+        headers.update({str(key): str(value) for key, value in download_context["headers"].items()})
+    if isinstance(file_info.get("runtime_headers"), dict):
+        headers.update({str(key): str(value) for key, value in file_info["runtime_headers"].items()})
+    return headers or None
 
 
 def _existing_file_record(
@@ -1993,8 +2033,8 @@ async def _write_sidecar_metadata(
                 "author_id": item.get("author_id"),
                 "author_name": item.get("author_name"),
                 "media_type": item.get("media_type"),
-                "item_metadata": item.get("metadata") or {},
-                "file": file_info,
+                "item_metadata": sanitize_link_resolution_for_output(item.get("metadata") or {}),
+                "file": sanitize_link_resolution_for_output(file_info),
             },
         },
     )

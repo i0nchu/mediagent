@@ -34,6 +34,8 @@ uv lock --check
 uv run --locked mediagent tools list --json
 uv run --locked mediagent tools inspect core.env.check --json
 uv run --locked mediagent tools inspect x.bookmarks.collect --json
+uv run --locked mediagent tools inspect instagram.auth.status --json
+uv run --locked mediagent tools inspect instagram.link.resolve --json
 uv run --locked mediagent tools run x.auth.start --input examples/tools/x.auth.start.json --json
 ```
 
@@ -403,6 +405,53 @@ $MEDIAGENT_DATA_DIR/telegram/video/2026/07/20260722__telegram__trusted-12345-vid
 ```
 
 Telegram cursors は source と media-type scope ごとに保存されます。例: `messages:saved_messages:photo-video`。Durable sync processing が成功した後だけ進みます。
+
+## Instagram Saved Session And Link Test
+
+Instagram support は explicit-link first です。User-provided public post、carousel、Reel、tv URLs にだけ使います。Resolver は 1 件の Instagram post URL を post 全体として扱うため、carousel links は default ですべての resources を download します。Resolver は password login を自分で実行しません。
+
+Local setup は `.env` values を使います。
+
+```bash
+set -a
+source .env
+set +a
+```
+
+Saved session を確認します。
+
+```bash
+uv run --locked mediagent tools run instagram.auth.status --json
+```
+
+Session が missing または invalid で credentials がある場合は、明示的に repair tool を呼びます。
+
+```bash
+uv run --locked mediagent tools run instagram.auth.ensure_session --json
+```
+
+Download せず link を inspect します。
+
+```bash
+printf '%s\n' '{"url":"https://www.instagram.com/p/<shortcode>/"}' \
+  | uv run --locked mediagent tools run instagram.link.resolve --input - --json
+```
+
+Shared link pipeline で post 全体を download します。
+
+```bash
+printf '%s\n' '{"url":"https://www.instagram.com/p/<shortcode>/","write_sidecar_metadata":true}' \
+  | uv run --locked mediagent tools run link.media.sync --input - --json
+```
+
+Downloaded files は次に保存されます。
+
+```text
+$MEDIAGENT_DATA_DIR/library/instagram/photo/<yyyy>/<mm>/
+$MEDIAGENT_DATA_DIR/library/instagram/video/<yyyy>/<mm>/
+```
+
+Signed Instagram CDN URLs は runtime-only です。SQLite、sidecar metadata、logs、snapshots、committed fixtures に含まれていないことを確認してください。
 
 ## Link-First Resolver Smoke Checks
 

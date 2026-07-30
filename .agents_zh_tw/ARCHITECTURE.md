@@ -55,6 +55,7 @@ CLI、未來 workflows、未來 Agent Core 都必須透過同一個 registry 呼
 - `platforms/pixiv/`
 - `platforms/telegram/`
 - `platforms/reddit/`
+- `platforms/instagram/`
 
 `platforms/x/` 目前包含：
 
@@ -79,6 +80,11 @@ CLI、未來 workflows、未來 Agent Core 都必須透過同一個 registry 呼
 - `auth.py`：Reddit OAuth config、token exchange/refresh/status、credential file helpers 與 Reddit rate-limit metadata parsing
 - `client.py`：Reddit OAuth API `/api/v1/me` 與 authenticated-user saved listings calls
 - `parser.py`：把 saved listing entries 轉成 first-version image/gallery/video/direct-media shapes 的 normalized media items
+
+`platforms/instagram/` 目前包含：
+
+- `auth.py`：saved-session status、明確本機 username/password login、bounded ensure-session behavior、credential path safety，以及可供 agent 判斷的 auth/session error mapping
+- `links.py`：Instagram post/Reel/tv URL parsing、canonical identity、whole-post resource normalization，以及 runtime-only signed CDN download URL handling
 
 ## CLI Flow
 
@@ -145,6 +151,8 @@ Schema 目前已保存 retry counts、last error、retryable flag、next attempt
 `MediaCandidate` 不得持久化帶有 credentials 的 request headers。可保存的 download hints 必須是 allowlisted 且 non-secret，例如必要時使用的 public `Referer`。`Authorization`、`Cookie`、signed URL tokens、session headers、CSRF headers 等 runtime-only headers 必須透過 download context reference 保存在記憶體中，不得寫入 SQLite、sidecar metadata、logs 或 snapshots。
 
 Multi-candidate resolution 目前已支援簡單 static file groups，例如 Reddit galleries。現行 contract 會針對這些 static groups 記錄 group id、required files、optional files、partial-success status 與 `metadata.files` mapping。Muxed video/audio tracks 與更複雜的 multi-file posts 仍維持 deferred。
+
+Instagram 使用同一套 link-first contract，但多了一層 platform session boundary。一個 Instagram `/p/<shortcode>/`、`/reel/<shortcode>/` 或 `/tv/<shortcode>/` URL 代表整個 post。Carousel resources 會被 normalize 成同一個 media item 底下的多個 files；signed Instagram CDN URLs 只保留在 runtime，不會作為 canonical media identity 持久化。
 
 ## 既有 Collector Flow
 

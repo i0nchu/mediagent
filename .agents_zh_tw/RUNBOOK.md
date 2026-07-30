@@ -34,6 +34,8 @@ uv lock --check
 uv run --locked mediagent tools list --json
 uv run --locked mediagent tools inspect core.env.check --json
 uv run --locked mediagent tools inspect x.bookmarks.collect --json
+uv run --locked mediagent tools inspect instagram.auth.status --json
+uv run --locked mediagent tools inspect instagram.link.resolve --json
 uv run --locked mediagent tools run x.auth.start --input examples/tools/x.auth.start.json --json
 ```
 
@@ -403,6 +405,53 @@ $MEDIAGENT_DATA_DIR/telegram/video/2026/07/20260722__telegram__trusted-12345-vid
 ```
 
 Telegram cursors 會依 source 與 media-type scope 儲存，例如 `messages:saved_messages:photo-video`。只有 durable sync processing 成功後才會前進。
+
+## Instagram Saved Session 與 Link Test
+
+Instagram support 採 explicit-link first。只用於使用者提供的公開 post、carousel、Reel 或 tv URLs。Resolver 會把一個 Instagram post URL 視為整個 post，因此 carousel links 預設會下載所有 resources。Resolver 不會自行執行 password login。
+
+本機 setup 使用 `.env`：
+
+```bash
+set -a
+source .env
+set +a
+```
+
+檢查 saved session：
+
+```bash
+uv run --locked mediagent tools run instagram.auth.status --json
+```
+
+如果 session missing 或 invalid，且 credentials 已設定，明確呼叫修復工具：
+
+```bash
+uv run --locked mediagent tools run instagram.auth.ensure_session --json
+```
+
+只解析一個 link，不下載：
+
+```bash
+printf '%s\n' '{"url":"https://www.instagram.com/p/<shortcode>/"}' \
+  | uv run --locked mediagent tools run instagram.link.resolve --input - --json
+```
+
+透過 shared link pipeline 下載整個 post：
+
+```bash
+printf '%s\n' '{"url":"https://www.instagram.com/p/<shortcode>/","write_sidecar_metadata":true}' \
+  | uv run --locked mediagent tools run link.media.sync --input - --json
+```
+
+下載檔案會落在：
+
+```text
+$MEDIAGENT_DATA_DIR/library/instagram/photo/<yyyy>/<mm>/
+$MEDIAGENT_DATA_DIR/library/instagram/video/<yyyy>/<mm>/
+```
+
+Signed Instagram CDN URLs 是 runtime-only。需確認它們不會出現在 SQLite、sidecar metadata、logs、snapshots 或 committed fixtures。
 
 ## Link-First Resolver Smoke Checks
 

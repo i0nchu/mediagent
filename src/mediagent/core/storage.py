@@ -71,7 +71,7 @@ def plan_storage_path(
     now: datetime | None = None,
 ) -> StoragePlan:
     root = library_root.expanduser().resolve()
-    media_type = str(item.get("media_type") or "").strip()
+    media_type = str(file_info.get("media_type") or item.get("media_type") or "").strip()
     if media_type not in SUPPORTED_MEDIA_TYPES:
         raise PathSafetyError(f"Unsupported media type: {media_type or '<empty>'}")
 

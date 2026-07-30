@@ -1,0 +1,2 @@
+"""Instagram platform adapter."""
+

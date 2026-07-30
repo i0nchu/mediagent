@@ -22,6 +22,8 @@
 - `telegram.dialogs.list` が返す Telegram numeric dialog selectors は、string または explicit object ID として collect/sync tools に渡せます。
 - Reddit platform support は `src/mediagent/platforms/reddit/` にあり、OAuth config/auth helpers、saved-listing API calls、first-version image/gallery/video/direct-media shapes parsing を含みます。
 - Reddit explicit-link support は `reddit_media_link` resolver で実装済みです。Direct `i.redd.it` image URLs、direct `v.redd.it` MP4 video-only URLs、Reddit post/share links、bounded anonymous HTML、static non-secret `over18=1` 付き `old.reddit.com` fallback、static galleries、preview-fallback galleries、manifest/login-wall cases の structured skips に対応しています。
+- Instagram platform support は `src/mediagent/platforms/instagram/` にあり、saved-session auth boundaries、explicit local login、bounded session repair、post/Reel URL parsing、post-level resource normalization を含みます。
+- Instagram explicit-link support は `instagram_media_link` resolver で実装済みです。Configured saved local session を使い、public `/p/<shortcode>/`、`/reel/<shortcode>/`、`/tv/<shortcode>/` URLs を resolve します。
 - Deterministic sync helpers は `src/mediagent/core/sync.py` にあります。
 - Universal storage planning は `src/mediagent/core/storage.py` にあります。
 - Default shared-root storage layout は `scanner-friendly-v2` です: `<platform>/<media_type>/<yyyy>/<mm>/<filename>`。
@@ -67,6 +69,10 @@
 - `pixiv.auth.refresh`
 - `pixiv.bookmarks.collect`
 - `pixiv.bookmarks.sync`
+- `instagram.auth.login`
+- `instagram.auth.status`
+- `instagram.auth.ensure_session`
+- `instagram.link.resolve`
 - `telegram.auth.login`
 - `telegram.auth.status`
 - `telegram.inbox.collect_links`（experimental）
@@ -102,13 +108,15 @@ uv run --locked mediagent tools inspect core.cleanup.media_state --json
 uv run --locked mediagent tools inspect telegram.auth.login --json
 uv run --locked mediagent tools inspect telegram.messages.sync --json
 uv run --locked mediagent tools inspect reddit.saved.collect --json
+uv run --locked mediagent tools inspect instagram.auth.status --json
+uv run --locked mediagent tools inspect instagram.link.resolve --json
 uv run --locked mediagent tools run telegram.auth.login --input examples/tools/telegram.auth.login.json --dry-run --json
 uv run --locked mediagent tools run pixiv.auth.login --input examples/tools/pixiv.auth.login.start.json --dry-run --json
 uv run --locked mediagent tools run reddit.saved.collect --input examples/tools/reddit.saved.collect.json --dry-run --json
 uv run --locked mediagent tools run x.auth.start --input examples/tools/x.auth.start.json --json
 ```
 
-最新の local full suite は 176 tests passing です。
+最新の local full suite は 187 tests passing です。
 
 Phase 16 Telegram inbox link resolver verification:
 
@@ -145,6 +153,19 @@ Phase 19 link-first live verification:
 - Latest compatibility-wrapper rerun は 13 links を collect し、12 件を resolve し、1 件の expected X/auth link を skip し、2 件の新規 Reddit-delegated Redgifs MP4 files を download し、10 件の already-known items を skip しました。Failed/partial downloads は 0 でした。
 - Phase 19 live-test library の downloaded files は 5 件の Redgifs MP4 videos と 6 件の Reddit photo/GIF/JPEG files で、`library/redgifs/video/2026/07/...` と `library/reddit/photo/2026/07/...` 配下に保存され、合計 211178527 bytes でした。
 - Platform selectors を使った `library.file.verify` は Redgifs 5/5 valid、Reddit 6/6 valid を確認しました。`.partial` / `.tmp` files は残っていません。
+
+Phase 20 Instagram foundation verification:
+
+- Stable `instagram.auth.status`、`instagram.auth.login`、`instagram.auth.ensure_session`、`instagram.link.resolve` は実装済みで、default tool registry に登録され、fake-client regression tests で覆われています。
+- Local Instagram saved session は `/home/ion/projects/mediagent/mediagent-data/credentials/instagram_session.json` にあり、permission は `0600` です。これは credential として扱う必要があります。
+- `instagram.link.resolve` は platform-bound です。Non-Instagram direct media は `instagram_media_unsupported` で拒否され、out-of-root saved-session paths は fake-client callbacks、real-client loads、network work の前に `unsafe_credential_path` を返します。
+- 1 件の Instagram post URL は post 全体を表します。Carousel/multi-resource posts は default ですべての resources を download し、`img_index` は future explicit option がない限り source metadata としてのみ保持します。
+- Instagram CDN media URLs は signed/expiring runtime data です。Download run 中だけ使い、SQLite、sidecar metadata、logs、snapshots、tool output には persist しません。
+- 2026-07-30 UTC の direct formal-tool live verification は user-provided Instagram links 3/3 件を resolve し、auth/rate-limit/checkpoint failures は 0 でした。その後 `link.media.sync` で `/home/ion/projects/mediagent/mediagent-data/library/instagram/` 配下に 9 files を download しました。内訳は JPEG photos 7 件、MP4 videos 2 件です。
+- Direct test の 2 件の `/p/<shortcode>/` links は carousels でした。1 件は JPEG resources 3 件、もう 1 件は JPEG resources 4 件と MP4 resource 1 件を download しました。`/reel/<shortcode>/` link は MP4 resource 1 件を download しました。
+- 2026-07-30 UTC の Telegram inbox live verification は user-posted Instagram links を collect し、選択した Reel links 3/3 件を resolve し、MP4 files 3 件を `/home/ion/projects/mediagent/mediagent-data/library/instagram/video/2026/07/` に download しました。Rerun は 3 件すべてを already-downloaded として skip し、duplicate bytes は 0 でした。
+- Filesystem verification は JPEG/MP4 container types が valid で、Instagram library root 配下に `.partial` / `.tmp` files が残っていないこと、mixed-carousel layout が正しいことを確認しました。Photo resources は `instagram/photo/...`、video resources は `instagram/video/...` に配置されます。
+- SQLite/sidecar checks は direct と inbox live tests 合計で Instagram media items 6 件、media-file rows 12 件を確認し、signed CDN hosts ではなく stable Instagram post/resource URLs が使われていることを確認しました。
 
 Reddit foundation verification:
 
@@ -239,12 +260,13 @@ Phase 13 Telegram + Pixiv layout live verification は 2026-07-24 UTC に実行�
 - Reddit audio muxing、DASH/HLS manifest handling、complex multi-file `v.redd.it` support
 - `reddit.saved.sync`。現在は auth-assisted collection を明示的に再開するまで deferred
 - Pixiv localhost callback server
-- Instagram support
+- Instagram feed、saved-post、stories、profile scraping、messaging、posting、comments、likes、follows、broad account collection
+- Instagram session status TTL、および checkpoint/2FA/rate-limit/thumbnail-only Reel cases の追加 edge-case fixtures
 - LLM Agent Core
 - visual workflow editor
 
 ## 次の推奨作業
 
-Phase 19 first stable link layer と Telegram inbox live verification は完了済みです。Workflow V1 に進む前に、queue claim/retry scheduling、canonical/media identity dedupe、Reddit external-provider delegation、multi-candidate partial-success semantics を harden します。
+Phase 20 Instagram explicit-link foundation は完了済みです。次の implementation focus は Phase 21 Pixiv explicit artwork-link resolution で、shared link-first pipeline を使います。
 
-Reddit OAuth/saved collection と X live auth verification は deferred legacy/advanced paths として扱います。ユーザーが明示的に求めない限り、Workflow V1 はまだ始めません。
+Reddit OAuth/saved collection と X live auth verification は deferred legacy/advanced paths として扱います。User が明示的に workflow work を選ばない限り、link-first provider-adapter contract が少なくとももう 1 つの provider adapter または複数回の cron-style runs で安定するまで Workflow V1 や Agent Core は始めません。

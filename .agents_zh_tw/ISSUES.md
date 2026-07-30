@@ -23,18 +23,18 @@
 - **狀態：** 設計上延後。
 - **觀察位置：** `src/mediagent/workflows/`
 - **目前行為：** Tools 可從 Python 與 CLI 呼叫，但 YAML workflow validation/execution 還不存在。
-- **下一步：** 等 deterministic sync 行為通過 cleanup/recovery tooling 後仍保持穩定，且底層/platform tool contracts 保持穩定，再開始 Workflow V1。
-
-### 4. TODO 已寫入 link-first 決策，但沒有指定下一個 active slice
-
-- **狀態：** 規劃交接清晰度缺口。
-- **觀察位置：** `.agents/TODO.md`、`.agents_zh_tw/TODO.md`、`.agents_jp/TODO.md`
-- **目前行為：** TODO 已清楚說明使用者明確提供的 links 是主要產品路徑，Phase 19 也已完成；但它沒有定義 current/next focus 與排序後的 acceptance criteria。剩餘 post-19 items 同時提到 Imgur provider migration、Pixiv artwork links、X post links、Telegram inbox promotion、Reddit auth fallback policy、RuleSpec、Workflow V1 與 Agent Core。後面的 RuleSpec/Workflow gate 仍使用較舊的 Pixiv/Telegram deterministic-sync wording，而不是其他文件已採用的 link-first stability gate。
-- **如何發生：** 新接手的實作者可能合理地挑到較低優先順序項目，或因為 Pixiv/Telegram sync 看似已穩定而開始 Workflow/Agent Core，也可能新增 account/bookmark collector，偏離目前 explicit-link provider adapters 優先的方向。
-- **下一步：** 新增一小段 `Current Focus` 或下一 phase section，明確指定下一個 link-first implementation slice、non-goals 與 verification targets。並把 RuleSpec/Workflow wording 改成等 link-first contract 通過更多 provider adapters 與多次 cron-style runs 仍穩定後再開始，三語 TODO 同步更新。
+- **下一步：** 等 link-first sync contract 通過更多 provider adapters、cleanup/recovery tooling 與多次 cron-style runs 後仍保持穩定，再開始 Workflow V1。
 
 ## Recently Resolved
 
+- Generic link sync 現在會 enforce Instagram session-file 邊界。`ResolveRequest` 會攜帶 allowed write roots，`InstagramMediaLinkResolver` 會傳給 Instagram adapter，adapter 會在 fake-client callbacks、real-client loads 或 network work 前拒絕 out-of-root `INSTAGRAM_SESSION_FILE`。Regression coverage 現在已證明 `link.media.sync` 會回傳 structured `unsafe_credential_path` skipped resolution，且不會呼叫 Instagram fake client。
+- Instagram session-file 讀取邊界已修正。`instagram.auth.status` 與 `instagram.link.resolve` 現在會在 fake-client callbacks、real-client loads 或 network work 前，用 `context.allowed_write_roots()` 驗證 resolved saved-session path；out-of-root path 會回傳 `unsafe_credential_path`。兩個工具都有 regression tests。
+- `instagram.link.resolve` 現在會 enforce Instagram 平台邊界。非 Instagram hosts 或缺少 supported shortcode 的 URL 會回傳 `instagram_media_unsupported`，且工具也會拒絕任何不是由 `instagram_media_link` 解析出的 resolved result。Regression coverage 已證明非 Instagram direct media 無法透過 Instagram 專屬工具成功解析。
+- Phase 20 Instagram foundation 已實作並 live-verified。Stable `instagram.auth.status`、`instagram.auth.login`、`instagram.auth.ensure_session` 與 `instagram.link.resolve` tools 已註冊；`link.media.sync` 可解析並下載 Instagram post/Reel links；直接三連結 live verification 下載 9 個 files，Telegram inbox live verification 另外下載 3 個 Instagram Reel videos 並通過重跑去重。
+- Phase 20 TODO 與 STATE docs 已記錄 Instagram carousel 決策：一個 post URL 代表整個貼文，carousel/multi-resource posts 預設應下載所有 resources，`img_index` 只保留為 source metadata，除非未來加入明確選項改變行為。
+- 三語 TODO 已修正 stale RuleSpec/Workflow gate。後續 RuleSpec、Workflow V1、scheduling 與 Agent Core 現在必須等更多 provider adapters 與多次 cron-style runs 證明 link-first provider-adapter contract 穩定後再開始，不再只以 Pixiv/Telegram deterministic sync 穩定作為條件。
+- Instagram exploratory live-smoke findings 已被三語 STATE 與 TODO 中的正式 Phase 20 foundation verification 取代。正式 direct-tool run 下載 9 個 files，Telegram inbox run 又下載 3 個 Instagram Reel videos，位置都在 `/home/ion/projects/mediagent/mediagent-data/library/instagram/` 底下。
+- TODO 現在已在三語版本中把 Phase 20 記為 completed，並把 Phase 21 provider selection 指定為下一個焦點。
 - `STATE.md` 的已實作工具清單現在已在三語版本中把 stable `link.queue.upsert` 與 `link.media.sync` 加在 experimental preview helpers 之前。
 - Phase 19 handoff docs 與 TODO 已同步到已實作的 link-first 狀態。三語 `STATE.md`、`TODO.md`、`RUNBOOK.md`、`TOOL_CATALOG.md` 與 `ARCHITECTURE.md` 目前都描述 schema v7、stable `link.queue.upsert`、stable `link.media.sync`、public `mediagent link sync <url>` entry point、queue claim/retry behavior，以及 Reddit/Redgifs delegation。
 - `link_queue` 現在明確記錄為 URL resolution lifecycle。Link row 在 resolution 完成後會停在 `resolved`；下載狀態由 `media_items` 與 `media_files` 負責，包含 downloaded、partial 與 failed outcomes。
@@ -92,4 +92,4 @@
 - Localized issue handoffs 已同步到目前英文 issue 狀態。
 - Localized TODO handoffs 已包含 Pixiv `pixiv.auth.login` / OAuth PKCE planning update，包括 authorization-code exchange、credential-file writing、redaction tests，以及 skipped-by-default live browser tests。
 - 英文、繁中、日文 handoff docs 已同步到 Pixiv first-slice status。
-- 預設測試是綠燈：`.venv/bin/python -m unittest discover -s tests` 通過 176 個測試。
+- 預設測試是綠燈：`uv run --locked python -m unittest discover -s tests` 通過 187 個測試。

@@ -8,15 +8,16 @@ import ipaddress
 import mimetypes
 import re
 import socket
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 from urllib.parse import parse_qs, urljoin, urlparse, urlunparse
 from urllib.parse import ParseResult
 
 from mediagent.core.http import HttpResponse, UrllibHttpClient
 from mediagent.core.storage import extension_from_mime, safe_storage_segment
+from mediagent.platforms.instagram import links as instagram_links
 from mediagent.platforms.reddit import links as reddit_links
 
 
@@ -42,6 +43,7 @@ ALLOWED_DIRECT_EXTENSIONS = {
 URL_PATTERN = re.compile(r"https?://[^\s<>()\"']+", re.IGNORECASE)
 TELEGRAM_HOSTS = {"t.me", "telegram.me", "www.t.me", "www.telegram.me"}
 PIXIV_HOSTS = {"pixiv.net", "www.pixiv.net"}
+INSTAGRAM_HOSTS = instagram_links.INSTAGRAM_HOSTS
 IMGUR_HOSTS = {"imgur.com", "www.imgur.com"}
 REDGIFS_HOSTS = {"redgifs.com", "www.redgifs.com"}
 REDGIFS_MEDIA_HOSTS = {"media.redgifs.com"}
@@ -146,6 +148,10 @@ class ResolveRequest:
     http_client: Any | None = None
     policy: LinkSafetyPolicy = LinkSafetyPolicy()
     host_resolver: Callable[[str], list[str]] | None = None
+    env: Mapping[str, str] | None = None
+    cwd: Path | None = None
+    allowed_write_roots: tuple[Path, ...] | None = None
+    platform_options: dict[str, Any] = field(default_factory=dict)
 
 
 class LinkResolverRegistry:
@@ -216,6 +222,85 @@ class PixivArtworkLinkResolver(Resolver):
                 "candidate_tool": "pixiv.bookmarks.sync",
             },
         )
+
+
+class InstagramMediaLinkResolver(Resolver):
+    spec = ResolverSpec(
+        name="instagram_media_link",
+        allowed_domains=tuple(sorted(INSTAGRAM_HOSTS)),
+        matching_rules="Instagram post, reel, or tv URLs resolved through a configured saved session.",
+        supports_auth=True,
+        max_media_items=20,
+    )
+
+    def matches(self, safe_url: SafeURL) -> bool:
+        return safe_url.host in INSTAGRAM_HOSTS and instagram_links.instagram_shortcode(safe_url.normalized_url) is not None
+
+    def resolve(self, safe_url: SafeURL, request: ResolveRequest) -> dict[str, Any]:
+        try:
+            post = instagram_links.resolve_post_from_url(
+                safe_url.normalized_url,
+                env=request.env or {},
+                cwd=request.cwd or Path.cwd(),
+                http_client=request.http_client,
+                session_file=((request.platform_options.get("instagram") or {}).get("session_file")),
+                allowed_write_roots=request.allowed_write_roots,
+                timeout=request.policy.timeout_seconds,
+            )
+        except Exception as exc:
+            code = getattr(exc, "code", "instagram_resolve_failed")
+            details = getattr(exc, "public_details", lambda: {"error_code": code})()
+            return skipped_resolution(
+                original_url=safe_url.original_url,
+                normalized_url=safe_url.normalized_url,
+                resolver=self.spec.name,
+                skip_reason=_instagram_skip_reason(str(code)),
+                origin_source="instagram",
+                remote_id=instagram_links.instagram_shortcode(safe_url.normalized_url),
+                details=details,
+            )
+        candidates = _instagram_candidates(post)
+        if not candidates:
+            return skipped_resolution(
+                original_url=safe_url.original_url,
+                normalized_url=safe_url.normalized_url,
+                resolver=self.spec.name,
+                skip_reason="unsupported_media_type",
+                origin_source="instagram",
+                remote_id=post.shortcode,
+                details={
+                    "error_code": "instagram_media_unsupported",
+                    "reason": "empty_resources",
+                    "retryable": False,
+                    "user_action_required": False,
+                },
+            )
+        return {
+            "status": "resolved",
+            "original_url": safe_url.original_url,
+            "normalized_url": safe_url.normalized_url,
+            "canonical_url": post.canonical_url,
+            "aliases": _resolution_aliases(post.canonical_url, [safe_url.normalized_url, post.source_url]),
+            "source_url": post.source_url,
+            "resolved_media_url": candidates[0]["url"],
+            "resolver": self.spec.name,
+            "origin_source": "instagram",
+            "remote_id": post.shortcode,
+            "media_type": post.media_type,
+            "mime_type": candidates[0].get("mime_type"),
+            "extension": candidates[0].get("extension"),
+            "size_bytes": None,
+            "media_count": len(candidates),
+            "media_candidates": candidates,
+            "selected_candidate": candidates[0],
+            "warnings": [],
+            "details": {
+                "instagram": post.metadata,
+                "source_timestamp": post.source_timestamp,
+                "validation": "platform_session",
+                "post_scope": "all_resources",
+            },
+        }
 
 
 class ImgurSingleResolver(Resolver):
@@ -1233,6 +1318,7 @@ def default_link_resolver_registry() -> LinkResolverRegistry:
     return LinkResolverRegistry(
         [
             PixivArtworkLinkResolver(),
+            InstagramMediaLinkResolver(),
             ImgurSingleResolver(),
             RedgifsResolver(),
             RedditMediaLinkResolver(),
@@ -1502,6 +1588,7 @@ def resolution_to_media_item(
     )
     candidates = resolution_media_candidates(resolution)
     files: list[dict[str, Any]] = []
+    runtime_files: list[dict[str, Any]] = []
     group_id = None
     required_files = 0
     optional_files = 0
@@ -1515,24 +1602,29 @@ def resolution_to_media_item(
             required_files += 1
         else:
             optional_files += 1
-        files.append(
-            {
-                "url": candidate["url"],
-                "remote_url": candidate["url"],
-                "kind": candidate_media_type,
-                "page": index,
-                "part": part,
-                "media_type": candidate_media_type,
-                "mime_type": candidate.get("mime_type"),
-                "extension": candidate.get("extension"),
-                "size_bytes": candidate.get("size_bytes"),
-                "source_timestamp": candidate.get("source_timestamp") or source_timestamp,
-                "content_identity": candidate.get("content_identity"),
-                "quality_rank": candidate.get("quality_rank"),
-                "group_id": candidate_group_id,
-                "required": required,
-            }
-        )
+        file_record = {
+            "url": candidate["url"],
+            "remote_url": candidate["url"],
+            "kind": candidate_media_type,
+            "page": index,
+            "part": part,
+            "media_type": candidate_media_type,
+            "mime_type": candidate.get("mime_type"),
+            "extension": candidate.get("extension"),
+            "size_bytes": candidate.get("size_bytes"),
+            "source_timestamp": candidate.get("source_timestamp") or source_timestamp,
+            "content_identity": candidate.get("content_identity"),
+            "quality_rank": candidate.get("quality_rank"),
+            "group_id": candidate_group_id,
+            "required": required,
+        }
+        files.append(file_record)
+        runtime_file = dict(file_record)
+        if isinstance(candidate.get("download_context"), dict):
+            runtime_file["download_context"] = candidate["download_context"]
+        if isinstance(candidate.get("runtime_headers"), dict):
+            runtime_file["runtime_headers"] = candidate["runtime_headers"]
+        runtime_files.append(runtime_file)
     metadata = {
         "origin_source": origin_source,
         "source_timestamp": source_timestamp,
@@ -1561,7 +1653,7 @@ def resolution_to_media_item(
         metadata["delegated_from"] = details["delegated_from"]
     if origin_source != "reddit" and isinstance(details.get("reddit"), dict):
         metadata["reddit"] = details["reddit"]
-    return {
+    item = {
         "platform": origin_source,
         "remote_id": remote_id,
         "media_type": media_type,
@@ -1570,6 +1662,9 @@ def resolution_to_media_item(
         "author_name": platform_details.get("author"),
         "metadata": metadata,
     }
+    if runtime_files != files:
+        item["_runtime"] = {"files": runtime_files}
+    return item
 
 
 def resolution_media_candidates(resolution: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1584,7 +1679,7 @@ def resolution_media_candidates(resolution: dict[str, Any]) -> list[dict[str, An
 def candidate_from_resolution(resolution: dict[str, Any], *, file_index: int) -> dict[str, Any]:
     url = str(resolution.get("resolved_media_url") or "")
     media_type = str(resolution.get("media_type") or "")
-    return {
+    candidate = {
         "url": url,
         "media_type": media_type,
         "mime_type": resolution.get("mime_type"),
@@ -1602,6 +1697,96 @@ def candidate_from_resolution(resolution: dict[str, Any], *, file_index: int) ->
             "source_url": resolution.get("source_url"),
         },
     }
+    if isinstance(resolution.get("download_context"), dict):
+        candidate["download_context"] = resolution["download_context"]
+    if isinstance(resolution.get("runtime_headers"), dict):
+        candidate["runtime_headers"] = resolution["runtime_headers"]
+    return candidate
+
+
+def sanitize_link_resolution_for_output(value: Any) -> Any:
+    if isinstance(value, list):
+        return [sanitize_link_resolution_for_output(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+    sanitized: dict[str, Any] = {}
+    for key, item in value.items():
+        lowered = key.lower()
+        if lowered in {"headers", "persistable_headers"} and isinstance(item, dict):
+            sanitized[key] = {
+                header: header_value
+                for header, header_value in item.items()
+                if header.lower()
+                not in {
+                    "authorization",
+                    "cookie",
+                    "proxy-authorization",
+                    "set-cookie",
+                    "x-csrf-token",
+                    "x-xsrf-token",
+                }
+            }
+            continue
+        if lowered in {"runtime_headers", "download_context"}:
+            sanitized[key] = None
+            continue
+        sanitized[key] = sanitize_link_resolution_for_output(item)
+    return sanitized
+
+
+def _instagram_candidates(post: instagram_links.InstagramPost) -> list[dict[str, Any]]:
+    type_counts: dict[str, int] = {"photo": 0, "video": 0, "audio": 0}
+    candidates: list[dict[str, Any]] = []
+    for resource in post.resources:
+        media_type = resource.media_type
+        part = default_part(media_type, type_counts.get(media_type, resource.index))
+        type_counts[media_type] = type_counts.get(media_type, 0) + 1
+        candidates.append(
+            {
+                "url": resource.stable_url,
+                "media_type": media_type,
+                "mime_type": resource.mime_type,
+                "extension": resource.extension,
+                "size_bytes": None,
+                "source": "instagram",
+                "quality_rank": 0,
+                "file_index": resource.index,
+                "part": part,
+                "content_identity": resource.content_identity,
+                "group_id": post.shortcode,
+                "required": True,
+                "persistable_headers": {},
+                "download_context_ref": None,
+                "download_context": {"url": resource.download_url},
+                "source_timestamp": resource.source_timestamp or post.source_timestamp,
+                "details": {
+                    "resolver": "instagram_media_link",
+                    "source_url": post.source_url,
+                    "resource_id": resource.resource_id,
+                },
+            }
+        )
+    return candidates
+
+
+def _instagram_skip_reason(code: str) -> str:
+    if code in {
+        "instagram_session_missing",
+        "instagram_session_invalid",
+        "instagram_login_required",
+        "instagram_checkpoint_required",
+        "instagram_two_factor_required",
+    }:
+        return "requires_auth"
+    if code in {"instagram_rate_limited", "instagram_temporarily_blocked"}:
+        return "rate_limited"
+    if code == "unsafe_credential_path":
+        return "unsafe_credential_path"
+    if code == "instagram_media_not_found":
+        return "deleted_or_removed"
+    if code in {"instagram_media_private", "instagram_media_unsupported"}:
+        return "unsupported_media_type"
+    return "resolver_error"
 
 
 def default_part(media_type: str, index: int) -> str:

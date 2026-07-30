@@ -23,18 +23,18 @@ This file tracks known caveats that matter for the next handoff. Resolved histor
 - **Status:** Open by design.
 - **Observed in:** `src/mediagent/workflows/`
 - **Current behavior:** Tools can be called from Python and CLI, but YAML workflow validation/execution does not exist yet.
-- **Expected next step:** Keep Workflow V1 deferred until deterministic sync behavior has stayed stable through cleanup/recovery tooling and the bottom/platform tool contracts remain stable.
-
-### 4. TODO states the link-first decision but does not name the next active slice
-
-- **Status:** Open planning handoff clarity.
-- **Observed in:** `.agents/TODO.md`, `.agents_zh_tw/TODO.md`, `.agents_jp/TODO.md`
-- **Current behavior:** TODO clearly says explicit user-provided links are now the primary product path and that Phase 19 is complete, but it does not define a current/next focus with ordered acceptance criteria. The remaining post-19 items mention Imgur provider migration, Pixiv artwork links, X post links, Telegram inbox promotion, Reddit auth fallback policy, RuleSpec, Workflow V1, and Agent Core. The later RuleSpec/Workflow gates still use the older Pixiv/Telegram deterministic-sync wording instead of the newer link-first stability gate used elsewhere.
-- **How it can happen:** A new implementer can reasonably pick a lower-priority item, start Workflow/Agent Core work because older Pixiv/Telegram sync stability appears satisfied, or build another account/bookmark collector even though the product direction is now explicit-link provider adapters first.
-- **Expected next step:** Add a short `Current Focus` or next-phase section that names the next link-first implementation slice, its non-goals, and verification targets. Update the RuleSpec/Workflow wording to wait for link-first contract stability across more provider adapters and repeated cron-style runs, then sync the same guidance across all three TODO files.
+- **Expected next step:** Keep Workflow V1 deferred until the link-first sync contract stays stable through more provider adapters, cleanup/recovery tooling, and repeated cron-style runs.
 
 ## Recently Resolved
 
+- Generic link sync now enforces the Instagram session-file boundary. `ResolveRequest` carries allowed write roots, `InstagramMediaLinkResolver` passes them into the Instagram adapter, and the adapter rejects out-of-root `INSTAGRAM_SESSION_FILE` values before fake-client callbacks, real-client loads, or network work. Regression coverage now proves `link.media.sync` returns a structured `unsafe_credential_path` skipped resolution without calling the Instagram fake client.
+- Instagram session-file read boundaries are fixed. `instagram.auth.status` and `instagram.link.resolve` now validate the resolved saved-session path against `context.allowed_write_roots()` before fake-client callbacks, real-client loads, or network work, returning `unsafe_credential_path` for out-of-root paths. Regression tests cover both tools.
+- `instagram.link.resolve` now enforces the Instagram platform boundary. Non-Instagram hosts or URLs without a supported shortcode return `instagram_media_unsupported`, and the tool also rejects any resolved result that did not come from `instagram_media_link`. Regression coverage proves non-Instagram direct media cannot resolve through the Instagram-specific tool.
+- Phase 20 Instagram foundation is implemented and live-verified. Stable `instagram.auth.status`, `instagram.auth.login`, `instagram.auth.ensure_session`, and `instagram.link.resolve` tools are registered; `link.media.sync` can resolve and download Instagram post/Reel links; direct three-link live verification downloaded 9 files, and Telegram inbox live verification downloaded 3 more Instagram Reel videos with rerun dedupe.
+- Phase 20 TODO and STATE docs now record the Instagram carousel decision: one post URL represents the whole post, carousel/multi-resource posts should download every resource by default, and `img_index` is preserved only as source metadata unless a future explicit option changes that behavior.
+- The stale RuleSpec/Workflow gate is fixed in all three TODO files. Later RuleSpec, Workflow V1, scheduling, and Agent Core work now wait for link-first provider-adapter stability through more provider adapters and repeated cron-style runs, not just Pixiv/Telegram deterministic sync stability.
+- Instagram exploratory live-smoke findings have been superseded by formal Phase 20 foundation verification in all three STATE and TODO files. The formal direct-tool run downloaded 9 files, and the Telegram inbox run downloaded 3 more Instagram Reel videos under `/home/ion/projects/mediagent/mediagent-data/library/instagram/`.
+- TODO now records Phase 20 as completed and names Phase 21 provider selection as the next focus in all three languages.
 - `STATE.md` implemented-tool lists now include stable `link.queue.upsert` and `link.media.sync` before the experimental preview helpers in all three languages.
 - Phase 19 handoff docs and TODO are synchronized with the implemented link-first state. `STATE.md`, `TODO.md`, `RUNBOOK.md`, `TOOL_CATALOG.md`, and `ARCHITECTURE.md` now describe schema v7, stable `link.queue.upsert`, stable `link.media.sync`, the public `mediagent link sync <url>` entry point, queue claim/retry behavior, and Reddit/Redgifs delegation in all three languages.
 - `link_queue` is now documented as the URL resolution lifecycle only. A link row remains `resolved` after resolution; download state is tracked by `media_items` and `media_files`, including downloaded, partial, and failed outcomes.
@@ -92,4 +92,4 @@ This file tracks known caveats that matter for the next handoff. Resolved histor
 - Localized issue handoffs have been synced with the current English issue state.
 - Localized TODO handoffs now include the Pixiv `pixiv.auth.login` / OAuth PKCE planning update, including authorization-code exchange, credential-file writing, redaction tests, and skipped-by-default live browser tests.
 - English, Traditional Chinese, and Japanese handoff docs have been synced to the Pixiv first-slice status.
-- The default test suite is green: `.venv/bin/python -m unittest discover -s tests` runs 176 tests successfully.
+- The default test suite is green: `uv run --locked python -m unittest discover -s tests` runs 187 tests successfully.

@@ -40,6 +40,8 @@ uv lock
 uv run --locked mediagent tools list --json
 uv run --locked mediagent tools inspect core.env.check --json
 uv run --locked mediagent tools inspect x.bookmarks.collect --json
+uv run --locked mediagent tools inspect instagram.auth.status --json
+uv run --locked mediagent tools inspect instagram.link.resolve --json
 uv run --locked mediagent tools run x.auth.start --input examples/tools/x.auth.start.json --json
 ```
 
@@ -409,6 +411,53 @@ $MEDIAGENT_DATA_DIR/telegram/video/2026/07/20260722__telegram__trusted-12345-vid
 ```
 
 Telegram cursors are stored per source and media-type scope, for example `messages:saved_messages:photo-video`. They advance only after successful durable sync processing.
+
+## Instagram Saved Session And Link Test
+
+Instagram support is explicit-link first. Use it only for user-provided public post, carousel, Reel, or tv URLs. The resolver treats one Instagram post URL as the whole post, so carousel links download all resources by default. The resolver never performs password login by itself.
+
+Local setup uses `.env` values:
+
+```bash
+set -a
+source .env
+set +a
+```
+
+Check the saved session:
+
+```bash
+uv run --locked mediagent tools run instagram.auth.status --json
+```
+
+If the session is missing or invalid and credentials are present, explicitly repair it:
+
+```bash
+uv run --locked mediagent tools run instagram.auth.ensure_session --json
+```
+
+Inspect one link without downloading:
+
+```bash
+printf '%s\n' '{"url":"https://www.instagram.com/p/<shortcode>/"}' \
+  | uv run --locked mediagent tools run instagram.link.resolve --input - --json
+```
+
+Download one whole post through the shared link pipeline:
+
+```bash
+printf '%s\n' '{"url":"https://www.instagram.com/p/<shortcode>/","write_sidecar_metadata":true}' \
+  | uv run --locked mediagent tools run link.media.sync --input - --json
+```
+
+Downloaded files land under:
+
+```text
+$MEDIAGENT_DATA_DIR/library/instagram/photo/<yyyy>/<mm>/
+$MEDIAGENT_DATA_DIR/library/instagram/video/<yyyy>/<mm>/
+```
+
+Signed Instagram CDN URLs are runtime-only. Verify they are not present in SQLite, sidecar metadata, logs, snapshots, or committed fixtures.
 
 ## Link-First Resolver Smoke Checks
 

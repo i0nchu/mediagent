@@ -86,7 +86,7 @@ def upsert_media_item(db_path: Path, item: dict[str, Any]) -> dict[str, Any]:
     now = datetime.now(UTC).isoformat()
     platform = item["platform"]
     remote_id = item["remote_id"]
-    metadata = item.get("metadata", {})
+    metadata = _sanitize_link_resolution_for_storage(item.get("metadata", {}))
 
     with connect(db_path) as connection:
         existing = connection.execute(

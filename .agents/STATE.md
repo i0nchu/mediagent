@@ -23,6 +23,8 @@
 - Telegram numeric dialog selectors returned by `telegram.dialogs.list` can be passed back to collect/sync tools as strings or explicit object IDs.
 - Reddit platform support exists under `src/mediagent/platforms/reddit/` for OAuth config/auth helpers, saved-listing API calls, and media parsing for first-version image/gallery/video/direct-media shapes.
 - Reddit explicit-link support exists through the `reddit_media_link` resolver for direct `i.redd.it` image URLs, direct `v.redd.it` MP4 video-only URLs, Reddit post/share links, bounded anonymous HTML, `old.reddit.com` fallback with static non-secret `over18=1`, static galleries, preview-fallback galleries, and structured skips for manifest/login-wall cases.
+- Instagram platform support exists under `src/mediagent/platforms/instagram/` for saved-session auth boundaries, explicit local login, bounded session repair, post/Reel URL parsing, and post-level resource normalization.
+- Instagram explicit-link support exists through the `instagram_media_link` resolver for public `/p/<shortcode>/`, `/reel/<shortcode>/`, and `/tv/<shortcode>/` URLs using a configured saved local session.
 - Deterministic sync helpers exist in `src/mediagent/core/sync.py`.
 - Universal storage planning exists in `src/mediagent/core/storage.py`.
 - The default shared-root storage layout is `scanner-friendly-v2`: `<platform>/<media_type>/<yyyy>/<mm>/<filename>`.
@@ -68,6 +70,10 @@
 - `pixiv.auth.refresh`
 - `pixiv.bookmarks.collect`
 - `pixiv.bookmarks.sync`
+- `instagram.auth.login`
+- `instagram.auth.status`
+- `instagram.auth.ensure_session`
+- `instagram.link.resolve`
 - `telegram.auth.login`
 - `telegram.auth.status`
 - `telegram.inbox.collect_links` (experimental)
@@ -103,13 +109,15 @@ uv run --locked mediagent tools inspect core.cleanup.media_state --json
 uv run --locked mediagent tools inspect telegram.auth.login --json
 uv run --locked mediagent tools inspect telegram.messages.sync --json
 uv run --locked mediagent tools inspect reddit.saved.collect --json
+uv run --locked mediagent tools inspect instagram.auth.status --json
+uv run --locked mediagent tools inspect instagram.link.resolve --json
 uv run --locked mediagent tools run telegram.auth.login --input examples/tools/telegram.auth.login.json --dry-run --json
 uv run --locked mediagent tools run pixiv.auth.login --input examples/tools/pixiv.auth.login.start.json --dry-run --json
 uv run --locked mediagent tools run reddit.saved.collect --input examples/tools/reddit.saved.collect.json --dry-run --json
 uv run --locked mediagent tools run x.auth.start --input examples/tools/x.auth.start.json --json
 ```
 
-The latest local full suite has 176 passing tests.
+The latest local full suite has 187 passing tests.
 
 Phase 16 Telegram inbox link resolver verification:
 
@@ -146,6 +154,19 @@ Phase 19 link-first live verification:
 - The latest compatibility-wrapper rerun collected 13 links, resolved 12, skipped 1 expected X/auth link, downloaded 2 new Reddit-delegated Redgifs MP4 files, skipped 10 already-known items, and had 0 failed/partial downloads.
 - Downloaded files in the Phase 19 live-test library are 5 Redgifs MP4 videos and 6 Reddit photo/GIF/JPEG files under `library/redgifs/video/2026/07/...` and `library/reddit/photo/2026/07/...`, totaling 211178527 bytes.
 - `library.file.verify` with platform selectors confirmed 5/5 Redgifs files valid and 6/6 Reddit files valid. No `.partial` or `.tmp` files remained.
+
+Phase 20 Instagram foundation verification:
+
+- Stable `instagram.auth.status`, `instagram.auth.login`, `instagram.auth.ensure_session`, and `instagram.link.resolve` are implemented, registered in the default tool registry, and covered by fake-client regression tests.
+- The saved Instagram session at `/home/ion/projects/mediagent/mediagent-data/credentials/instagram_session.json` exists locally with `0600` permissions and must be treated as a credential.
+- `instagram.link.resolve` is platform-bound: non-Instagram direct media is rejected with `instagram_media_unsupported`, and out-of-root saved-session paths return `unsafe_credential_path` before fake-client callbacks, real-client loads, or network work.
+- One Instagram post URL represents the whole post. Carousel/multi-resource posts download every resource by default; `img_index` is preserved only as source metadata unless a future explicit option changes that behavior.
+- Instagram CDN media URLs are signed/expiring runtime data. They are used only during the download run and are not persisted to SQLite, sidecar metadata, logs, snapshots, or tool output.
+- Direct formal-tool live verification on 2026-07-30 UTC resolved 3/3 user-provided Instagram links with 0 auth/rate-limit/checkpoint failures, then `link.media.sync` downloaded 9 files under `/home/ion/projects/mediagent/mediagent-data/library/instagram/`: 7 JPEG photos and 2 MP4 videos.
+- The two direct `/p/<shortcode>/` links were carousels: one downloaded 3 JPEG resources, and one downloaded 4 JPEG resources plus 1 MP4 resource. The direct `/reel/<shortcode>/` link downloaded 1 MP4 resource.
+- Telegram inbox live verification on 2026-07-30 UTC collected user-posted Instagram links, resolved 3/3 selected Reel links, downloaded 3 MP4 files under `/home/ion/projects/mediagent/mediagent-data/library/instagram/video/2026/07/`, and a rerun skipped all 3 already-downloaded items with 0 duplicate bytes.
+- Filesystem verification showed valid JPEG/MP4 container types, no `.partial` or `.tmp` files under the Instagram library root, and correct mixed-carousel layout: photo resources under `instagram/photo/...`, video resources under `instagram/video/...`.
+- SQLite/sidecar checks found 6 Instagram media items and 12 media-file rows for the direct plus inbox live tests, all using stable Instagram post/resource URLs rather than signed CDN hosts.
 
 Reddit foundation verification:
 
@@ -240,12 +261,13 @@ Phase 13 Telegram + Pixiv layout live verification ran on 2026-07-24 UTC:
 - Reddit audio muxing, DASH/HLS manifest handling, and complex multi-file `v.redd.it` support
 - `reddit.saved.sync`, now deferred unless auth-assisted collection is explicitly resumed
 - Pixiv localhost callback server
-- Instagram support
+- Instagram feed, saved-post, stories, profile scraping, messaging, posting, comments, likes, follows, and broad account collection
+- Instagram session status TTL and extra edge-case fixtures for checkpoint/2FA/rate-limit/thumbnail-only Reel cases
 - LLM Agent Core
 - visual workflow editor
 
 ## Next Recommended Task
 
-Phase 19 first stable link layer and Telegram inbox live verification are complete. Before starting Workflow V1, keep any remaining work focused on post-Phase-19 provider adapters, optional auth fallback design, and broader explicit-link platform coverage.
+Phase 20 Instagram explicit-link foundation is complete. The next implementation focus is Phase 21 Pixiv explicit artwork-link resolution through the shared link-first pipeline.
 
-Treat Reddit OAuth/saved collection and X live auth verification as deferred legacy/advanced paths. Do not start Workflow V1 unless the user explicitly chooses workflow work next.
+Treat Reddit OAuth/saved collection and X live auth verification as deferred legacy/advanced paths. Do not start Workflow V1 or Agent Core until the link-first provider-adapter contract remains stable through at least one more provider adapter or repeated cron-style runs, unless the user explicitly chooses workflow work next.

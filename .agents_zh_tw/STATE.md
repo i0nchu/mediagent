@@ -22,6 +22,8 @@
 - `telegram.dialogs.list` 回傳的 Telegram numeric dialog selectors 可以用字串或 explicit object ID 形式傳回 collect/sync tools。
 - Reddit platform support 位於 `src/mediagent/platforms/reddit/`，包含 OAuth config/auth helpers、saved-listing API calls，以及第一版 image/gallery/video/direct-media shapes parsing。
 - Reddit explicit-link support 已透過 `reddit_media_link` resolver 建立，支援 direct `i.redd.it` image URLs、direct `v.redd.it` MP4 video-only URLs、Reddit post/share links、bounded anonymous HTML、搭配靜態非敏感 `over18=1` 的 `old.reddit.com` fallback、static galleries、preview-fallback galleries，以及 manifest/login-wall cases 的 structured skips。
+- Instagram platform support 位於 `src/mediagent/platforms/instagram/`，包含 saved-session auth boundaries、explicit local login、bounded session repair、post/Reel URL parsing 與 post-level resource normalization。
+- Instagram explicit-link support 已透過 `instagram_media_link` resolver 建立，支援使用 configured saved local session 解析公開 `/p/<shortcode>/`、`/reel/<shortcode>/` 與 `/tv/<shortcode>/` URLs。
 - Deterministic sync helpers 位於 `src/mediagent/core/sync.py`。
 - Universal storage planning 位於 `src/mediagent/core/storage.py`。
 - 預設 shared-root storage layout 是 `scanner-friendly-v2`：`<platform>/<media_type>/<yyyy>/<mm>/<filename>`。
@@ -67,6 +69,10 @@
 - `pixiv.auth.refresh`
 - `pixiv.bookmarks.collect`
 - `pixiv.bookmarks.sync`
+- `instagram.auth.login`
+- `instagram.auth.status`
+- `instagram.auth.ensure_session`
+- `instagram.link.resolve`
 - `telegram.auth.login`
 - `telegram.auth.status`
 - `telegram.inbox.collect_links`（experimental）
@@ -102,13 +108,15 @@ uv run --locked mediagent tools inspect core.cleanup.media_state --json
 uv run --locked mediagent tools inspect telegram.auth.login --json
 uv run --locked mediagent tools inspect telegram.messages.sync --json
 uv run --locked mediagent tools inspect reddit.saved.collect --json
+uv run --locked mediagent tools inspect instagram.auth.status --json
+uv run --locked mediagent tools inspect instagram.link.resolve --json
 uv run --locked mediagent tools run telegram.auth.login --input examples/tools/telegram.auth.login.json --dry-run --json
 uv run --locked mediagent tools run pixiv.auth.login --input examples/tools/pixiv.auth.login.start.json --dry-run --json
 uv run --locked mediagent tools run reddit.saved.collect --input examples/tools/reddit.saved.collect.json --dry-run --json
 uv run --locked mediagent tools run x.auth.start --input examples/tools/x.auth.start.json --json
 ```
 
-最新本機完整測試狀態是 176 個測試通過。
+最新本機完整測試狀態是 187 個測試通過。
 
 Phase 16 Telegram inbox link resolver verification：
 
@@ -145,6 +153,19 @@ Phase 19 link-first live verification：
 - 最新一次 compatibility-wrapper 重跑收集 13 個 links、解析 12 個、skip 1 個預期中的 X/auth link，下載 2 個新的 Reddit-delegated Redgifs MP4 files，skip 10 個已知 items，且 failed/partial downloads 為 0。
 - Phase 19 live-test library 內的下載內容包含 5 個 Redgifs MP4 videos 與 6 個 Reddit photo/GIF/JPEG files，位於 `library/redgifs/video/2026/07/...` 與 `library/reddit/photo/2026/07/...`，總計 211178527 bytes。
 - 使用 platform selectors 做 `library.file.verify`，確認 Redgifs 5/5 valid、Reddit 6/6 valid；沒有 `.partial` 或 `.tmp` 殘留。
+
+Phase 20 Instagram foundation verification：
+
+- Stable `instagram.auth.status`、`instagram.auth.login`、`instagram.auth.ensure_session` 與 `instagram.link.resolve` 已實作、註冊到 default tool registry，並有 fake-client regression tests。
+- 本機 Instagram saved session 位於 `/home/ion/projects/mediagent/mediagent-data/credentials/instagram_session.json`，權限是 `0600`，必須視為 credential。
+- `instagram.link.resolve` 具備平台邊界：非 Instagram direct media 會以 `instagram_media_unsupported` 拒絕；out-of-root saved-session paths 會在 fake-client callbacks、real-client loads 或 network work 前回傳 `unsafe_credential_path`。
+- 一個 Instagram post URL 代表整個貼文。Carousel/multi-resource posts 預設下載所有 resources；`img_index` 只保留為 source metadata，除非未來加入明確選項改變行為。
+- Instagram CDN media URLs 是 signed/expiring runtime data，只在下載當下使用，不會持久化到 SQLite、sidecar metadata、logs、snapshots 或 tool output。
+- 2026-07-30 UTC，直接用正式工具 live verification 解析 3/3 個使用者提供的 Instagram links，auth/rate-limit/checkpoint failures 為 0，並透過 `link.media.sync` 下載 9 個 files 到 `/home/ion/projects/mediagent/mediagent-data/library/instagram/`：7 個 JPEG photos 與 2 個 MP4 videos。
+- 直接測試中的兩個 `/p/<shortcode>/` links 是 carousels：一個下載 3 個 JPEG resources，另一個下載 4 個 JPEG resources 與 1 個 MP4 resource。`/reel/<shortcode>/` link 下載 1 個 MP4 resource。
+- 2026-07-30 UTC，Telegram inbox live verification 收集使用者貼上的 Instagram links，解析 3/3 個選定 Reel links，下載 3 個 MP4 files 到 `/home/ion/projects/mediagent/mediagent-data/library/instagram/video/2026/07/`；重跑後 3 個已下載項目全部 skip，duplicate bytes 為 0。
+- Filesystem verification 顯示 JPEG/MP4 container types 有效，Instagram library root 底下沒有 `.partial` 或 `.tmp` files，且 mixed-carousel layout 正確：photo resources 位於 `instagram/photo/...`，video resources 位於 `instagram/video/...`。
+- SQLite/sidecar checks 顯示直接與 inbox live tests 共留下 6 個 Instagram media items 與 12 個 media-file rows，且都使用穩定 Instagram post/resource URLs，而不是 signed CDN hosts。
 
 Reddit foundation verification：
 
@@ -239,12 +260,13 @@ Phase 13 Telegram + Pixiv layout live verification 已於 2026-07-24 UTC 執行�
 - Reddit audio muxing、DASH/HLS manifest handling 與複雜 multi-file `v.redd.it` support
 - `reddit.saved.sync`，目前 deferred，除非明確恢復 auth-assisted collection
 - Pixiv localhost callback server
-- Instagram support
+- Instagram feed、saved-post、stories、profile scraping、messaging、posting、comments、likes、follows 與廣泛 account collection
+- Instagram session status TTL，以及 checkpoint/2FA/rate-limit/thumbnail-only Reel cases 的額外 edge-case fixtures
 - LLM Agent Core
 - visual workflow editor
 
 ## 下一個建議任務
 
-Phase 19 第一版 stable link layer 與 Telegram inbox live verification 已完成。開始 Workflow V1 前，先 harden queue claim/retry scheduling、canonical/media identity dedupe、Reddit external-provider delegation 與 multi-candidate partial-success semantics。
+Phase 20 Instagram explicit-link foundation 已完成。下一個實作焦點是 Phase 21 Pixiv explicit artwork-link resolution，並且要走共享 link-first pipeline。
 
-Reddit OAuth/saved collection 與 X live auth verification 都視為 deferred legacy/advanced paths。除非使用者明確要求，否則不要先做 Workflow V1。
+Reddit OAuth/saved collection 與 X live auth verification 都視為 deferred legacy/advanced paths。除非使用者明確要求，否則不要在 link-first provider-adapter contract 通過至少一個更多 provider adapter 或多次 cron-style runs 保持穩定前開始 Workflow V1 或 Agent Core。

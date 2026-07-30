@@ -23,18 +23,18 @@
 - **Status:** 設計上延期。
 - **Observed in:** `src/mediagent/workflows/`
 - **Current behavior:** Tools は Python と CLI から呼べますが、YAML workflow validation/execution はまだありません。
-- **Expected next step:** Deterministic sync behavior が cleanup/recovery tooling 後も安定し、bottom/platform tool contracts が安定してから Workflow V1 を始めます。
-
-### 4. TODO は link-first 決定を書いているが、次の active slice を指定していない
-
-- **Status:** 計画引き継ぎの明確化が必要。
-- **Observed in:** `.agents/TODO.md`、`.agents_zh_tw/TODO.md`、`.agents_jp/TODO.md`
-- **Current behavior:** TODO は user-provided explicit links が primary product path であり Phase 19 が完了したことを明記していますが、current/next focus と ordered acceptance criteria は定義していません。残りの post-19 items には Imgur provider migration、Pixiv artwork links、X post links、Telegram inbox promotion、Reddit auth fallback policy、RuleSpec、Workflow V1、Agent Core が並んでいます。後続の RuleSpec/Workflow gates は、他ドキュメントで使っている link-first stability gate ではなく、古い Pixiv/Telegram deterministic-sync wording のままです。
-- **How it can happen:** 新しい実装者が優先度の低い item を選んだり、Pixiv/Telegram sync がすでに安定しているように見えるため Workflow/Agent Core を始めたり、現在の explicit-link provider adapters 優先方針に反して account/bookmark collector を追加したりする可能性があります。
-- **Expected next step:** 短い `Current Focus` または next-phase section を追加し、次の link-first implementation slice、non-goals、verification targets を明記してください。RuleSpec/Workflow wording も、より多くの provider adapters と複数回の cron-style runs で link-first contract が安定してから始める、という表現へ更新し、3 言語 TODO を同期してください。
+- **Expected next step:** Link-first sync contract がさらに多くの provider adapters、cleanup/recovery tooling、複数回の cron-style runs を通じて安定してから Workflow V1 を始めます。
 
 ## Recently Resolved
 
+- Generic link sync は Instagram session-file boundary を enforce するようになりました。`ResolveRequest` は allowed write roots を保持し、`InstagramMediaLinkResolver` はそれを Instagram adapter に渡します。Adapter は fake-client callbacks、real-client loads、network work の前に out-of-root `INSTAGRAM_SESSION_FILE` を reject します。Regression coverage は `link.media.sync` が structured `unsafe_credential_path` skipped resolution を返し、Instagram fake client を呼ばないことを確認します。
+- Instagram session-file read boundary は修正済みです。`instagram.auth.status` と `instagram.link.resolve` は、fake-client callbacks、real-client loads、network work の前に resolved saved-session path を `context.allowed_write_roots()` で検証し、out-of-root path には `unsafe_credential_path` を返します。両 tool に regression tests があります。
+- `instagram.link.resolve` は Instagram platform boundary を enforce するようになりました。Non-Instagram hosts、または supported shortcode を持たない URL は `instagram_media_unsupported` を返し、tool は `instagram_media_link` 以外から来た resolved result も拒否します。Regression coverage は non-Instagram direct media が Instagram-specific tool で成功しないことを確認しています。
+- Phase 20 Instagram foundation は実装済みで live-verified です。Stable `instagram.auth.status`、`instagram.auth.login`、`instagram.auth.ensure_session`、`instagram.link.resolve` tools が登録され、`link.media.sync` は Instagram post/Reel links を resolve/download できます。Direct 3-link live verification で 9 files、Telegram inbox live verification でさらに 3 Instagram Reel videos を download し、rerun dedupe も通っています。
+- Phase 20 TODO と STATE docs は Instagram carousel decision を記録しました。1 件の post URL は post 全体を表し、carousel/multi-resource posts は default ですべての resources を download し、`img_index` は future explicit option が追加されない限り source metadata としてのみ保持します。
+- 3 言語 TODO の stale RuleSpec/Workflow gate を修正しました。Later RuleSpec、Workflow V1、scheduling、Agent Core は、Pixiv/Telegram deterministic sync stability だけではなく、さらに多くの provider adapters と複数回の cron-style runs で link-first provider-adapter contract が安定してから開始します。
+- Instagram exploratory live-smoke findings は、3 言語 STATE と TODO の formal Phase 20 foundation verification に置き換えられました。Formal direct-tool run は 9 files を download し、Telegram inbox run はさらに Instagram Reel videos 3 件を `/home/ion/projects/mediagent/mediagent-data/library/instagram/` 配下に download しました。
+- TODO は 3 言語すべてで Phase 20 を completed として記録し、Phase 21 provider selection を next focus にしています。
 - `STATE.md` の実装済みツール一覧は、3 言語すべてで stable `link.queue.upsert` と `link.media.sync` を experimental preview helpers の前に含むようになりました。
 - Phase 19 handoff docs と TODO は、実装済みの link-first 状態と同期しました。3 言語の `STATE.md`、`TODO.md`、`RUNBOOK.md`、`TOOL_CATALOG.md`、`ARCHITECTURE.md` は schema v7、stable `link.queue.upsert`、stable `link.media.sync`、public `mediagent link sync <url>` entry point、queue claim/retry behavior、Reddit/Redgifs delegation を説明しています。
 - `link_queue` は URL resolution lifecycle だけを表すものとして明記しました。Resolution 完了後の link row は `resolved` のままで、download state は `media_items` と `media_files` が source of truth です。Downloaded、partial、failed outcomes もそちらで扱います。
@@ -92,4 +92,4 @@
 - Localized issue handoffs は現在の英語版 issue state に同期済みです。
 - Localized TODO handoffs は Pixiv `pixiv.auth.login` / OAuth PKCE planning update に対応済みで、authorization-code exchange、credential-file writing、redaction tests、skipped-by-default live browser tests を含みます。
 - 英語、繁体字中国語、日本語の handoff docs は Pixiv first-slice status に同期済みです。
-- default test suite は green です: `.venv/bin/python -m unittest discover -s tests` が 176 tests passing です。
+- default test suite は green です: `uv run --locked python -m unittest discover -s tests` が 187 tests passing です。

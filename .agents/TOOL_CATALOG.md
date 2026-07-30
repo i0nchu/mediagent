@@ -361,6 +361,54 @@ This shortcut delegates to `link.media.sync`; it is the stable non-Telegram entr
 
 `link.media.sync` is deterministic and callable from Python, CLI, cron, workflows, and future Agent/SKILL integrations. It must keep writes under configured project-local roots and must not persist credential-bearing headers from resolver candidates.
 
+## Instagram Tools
+
+Instagram support is explicit-link first. It uses a saved local session only for resolving user-provided public post/Reel URLs. It does not scan feeds, saved posts, stories, profiles, messages, comments, likes, follows, or account activity.
+
+One Instagram post URL represents the whole post. Carousel posts download every media resource by default; `img_index` is retained only as source metadata unless a future explicit option changes that behavior. Signed Instagram CDN URLs are runtime-only download data and must not be persisted to SQLite, sidecar metadata, logs, snapshots, or tool output.
+
+### `instagram.auth.status`
+
+Validates the configured saved Instagram session without exposing cookies, session IDs, username, password, or raw private API payloads. Session paths are checked against configured project-local roots before fake-client callbacks, real-client loads, or network work.
+
+Permissions:
+
+- `read_env`
+- `read_credentials`
+- `network`
+
+### `instagram.auth.login`
+
+Creates or replaces a saved local Instagram session from explicit local username/password credentials. The session file must live under allowed credential/data roots and is written with restrictive permissions.
+
+Permissions:
+
+- `read_env`
+- `read_credentials`
+- `write_credentials`
+- `network`
+
+### `instagram.auth.ensure_session`
+
+Checks the saved session and attempts bounded low-frequency relogin only when credentials exist and cooldown allows it. User-action states such as checkpoint and 2FA stop automation; rate-limit and temporary-block states should defer work.
+
+Permissions:
+
+- `read_env`
+- `read_credentials`
+- `write_credentials`
+- `network`
+
+### `instagram.link.resolve`
+
+Resolves one public Instagram `/p/<shortcode>/`, `/reel/<shortcode>/`, or `/tv/<shortcode>/` URL into normalized media candidates. It never performs password login by itself. Non-Instagram hosts or missing shortcodes return `instagram_media_unsupported`; missing/invalid sessions return agent-decidable auth errors such as `instagram_session_missing`, `instagram_session_invalid`, or `instagram_login_required`.
+
+Permissions:
+
+- `read_env`
+- `read_credentials`
+- `network`
+
 ## Experimental Link Tools
 
 These tools remain hidden/experimental helper surfaces while the public preview/compatibility story is settled. Use `--include-experimental` for listing and `--allow-experimental` for inspect/run.
@@ -484,6 +532,7 @@ Permissions:
 - Pixiv credentials may come from `PIXIV_CREDENTIALS_FILE`, `PIXIV_REFRESH_TOKEN`, or `PIXIV_ACCESS_TOKEN`. Prefer `pixiv.auth.login` for first-time local setup.
 - Telegram credentials come from `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`, and `TELEGRAM_SESSION_FILE`; the session file is a credential and should live under `${MEDIAGENT_DATA_DIR}/credentials/`. Prefer `telegram.auth.login` for first-time local setup.
 - Reddit credentials may come from `REDDIT_CREDENTIALS_FILE` or token environment variables. Use `reddit.auth.start` + `reddit.auth.exchange` only when explicitly validating the deferred auth-assisted path, and always use a unique descriptive `REDDIT_USER_AGENT`.
-- `X_CREDENTIALS_FILE`, `PIXIV_CREDENTIALS_FILE`, `TELEGRAM_SESSION_FILE`, and `REDDIT_CREDENTIALS_FILE` should point to explicit files controlled by the user.
+- Instagram credentials come from `INSTAGRAM_ACCOUNT`, `INSTAGRAM_SECRET`, and `INSTAGRAM_SESSION_FILE`; the session file is a credential and should live under `${MEDIAGENT_DATA_DIR}/credentials/`. Prefer `instagram.auth.ensure_session` before link sync and use `instagram.auth.login` only for explicit local session creation.
+- `X_CREDENTIALS_FILE`, `PIXIV_CREDENTIALS_FILE`, `TELEGRAM_SESSION_FILE`, `REDDIT_CREDENTIALS_FILE`, and `INSTAGRAM_SESSION_FILE` should point to explicit files controlled by the user.
 - Token exchange and refresh outputs do not include raw tokens.
 - SQLite run records must never store raw access tokens, refresh tokens, cookies, sessions, or bot tokens.

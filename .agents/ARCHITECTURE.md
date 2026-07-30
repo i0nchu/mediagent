@@ -55,6 +55,7 @@ Platform directories:
 - `platforms/pixiv/`
 - `platforms/telegram/`
 - `platforms/reddit/`
+- `platforms/instagram/`
 
 Platform modules should normalize their output into the shared media item shape before handing data to bottom tools.
 
@@ -81,6 +82,11 @@ Platform modules should normalize their output into the shared media item shape 
 - `auth.py`: Reddit OAuth config, token exchange/refresh/status, credential file helpers, and Reddit rate-limit metadata parsing
 - `client.py`: Reddit OAuth API calls for `/api/v1/me` and authenticated-user saved listings
 - `parser.py`: conversion from saved listing entries into normalized media items for first-version image/gallery/video/direct-media shapes
+
+`platforms/instagram/` currently contains:
+
+- `auth.py`: saved-session status, explicit local username/password login, bounded ensure-session behavior, credential path safety, and agent-decidable auth/session error mapping
+- `links.py`: Instagram post/Reel/tv URL parsing, canonical identity, whole-post resource normalization, and runtime-only signed CDN download URL handling
 
 ## CLI Flow
 
@@ -147,6 +153,8 @@ A successful `link.media.sync` run may resolve and download in one tool call, bu
 `MediaCandidate` must not persist credential-bearing request headers. Persistable download hints should be allowlisted and non-secret, such as a public `Referer` when required. Runtime-only headers such as `Authorization`, `Cookie`, signed URL tokens, session headers, and CSRF headers must stay in memory through a download context reference and must not be written to SQLite, sidecar metadata, logs, or snapshots.
 
 Multi-candidate resolution is now supported for simple static file groups such as Reddit galleries. The current contract records group id, required files, optional files, partial-success status, and `metadata.files` mapping for those static groups. Muxed video/audio tracks and more complex multi-file posts remain deferred.
+
+Instagram uses the same link-first contract with a platform session boundary. One Instagram `/p/<shortcode>/`, `/reel/<shortcode>/`, or `/tv/<shortcode>/` URL represents the whole post. Carousel resources are normalized as multiple files under one media item, while signed Instagram CDN URLs stay runtime-only and are not persisted as canonical media identity.
 
 ## Existing Collector Flow
 

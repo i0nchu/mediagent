@@ -188,7 +188,7 @@ class TelethonTelegramClient:
             for selector in chats:
                 source_key = source_key_for_chat(selector)
                 entity_selector = _entity_selector(selector)
-                entity = await client.get_entity(entity_selector)
+                entity = await _get_entity_with_dialog_fallback(client, entity_selector)
                 selected_ids = (message_ids_by_source or {}).get(source_key)
                 if selected_ids:
                     raw_messages = await client.get_messages(entity, ids=selected_ids)
@@ -202,7 +202,7 @@ class TelethonTelegramClient:
                 messages.extend(chat_messages)
                 source_summaries.append(_source_summary(source_key, chat_messages))
             for ref in link_refs:
-                entity = await client.get_entity(ref["chat"])
+                entity = await _get_entity_with_dialog_fallback(client, ref["chat"])
                 message = await client.get_messages(entity, ids=[ref["message_id"]])
                 raw_message = message[0] if isinstance(message, list) else message
                 if raw_message:
@@ -227,7 +227,7 @@ class TelethonTelegramClient:
     ) -> dict[str, Any]:
         destination = Path(partial_path)
         async with self._connected_client(config) as client:
-            entity = await client.get_entity(download_entity_selector(download_ref))
+            entity = await _get_entity_with_dialog_fallback(client, download_entity_selector(download_ref))
             message = await client.get_messages(entity, ids=[int(download_ref["message_id"])])
             raw_message = message[0] if isinstance(message, list) else message
             if raw_message is None:
@@ -322,6 +322,45 @@ def _entity_selector(selector: Any) -> Any:
     if text.lstrip("-").isdigit():
         return int(text)
     return text
+
+
+async def _get_entity_with_dialog_fallback(client: Any, selector: Any) -> Any:
+    try:
+        return await client.get_entity(selector)
+    except ValueError:
+        matched = await _find_dialog_entity(client, selector)
+        if matched is not None:
+            return matched
+        raise
+
+
+async def _find_dialog_entity(client: Any, selector: Any) -> Any | None:
+    target = str(selector).strip()
+    if not target:
+        return None
+    async for dialog in client.iter_dialogs():
+        entity = getattr(dialog, "entity", dialog)
+        values = _dialog_selector_values(entity, getattr(dialog, "name", None))
+        if target in values:
+            return entity
+    return None
+
+
+def _dialog_selector_values(entity: Any, name: str | None) -> set[str]:
+    values = set()
+    chat_id = getattr(entity, "id", None)
+    if chat_id is not None:
+        text_id = str(chat_id)
+        values.add(text_id)
+        values.add(f"-100{text_id}")
+    username = getattr(entity, "username", None)
+    if username:
+        values.add(str(username))
+        values.add(f"@{username}")
+    title = getattr(entity, "title", None) or name
+    if title:
+        values.add(str(title))
+    return values
 
 
 def _source_summary(
