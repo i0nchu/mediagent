@@ -259,6 +259,7 @@ async def link_resolve(context: ToolContext, input_data: dict[str, Any]) -> Tool
         env=context.env,
         cwd=context.cwd,
         allowed_write_roots=tuple(context.allowed_write_roots()),
+        dry_run=context.dry_run,
         platform_options={"instagram": {"session_file": session_file}},
     )
     resolution = default_link_resolver_registry().resolve(url, request=request)

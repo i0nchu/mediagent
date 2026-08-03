@@ -195,6 +195,22 @@ Check the configured session:
 uv run --locked mediagent tools run pixiv.auth.status --input examples/tools/pixiv.auth.status.json --json
 ```
 
+Resolve one explicit Pixiv artwork URL without downloading:
+
+```bash
+printf '%s\n' '{"url":"https://www.pixiv.net/artworks/143734851"}' \
+  | uv run --locked mediagent tools run pixiv.link.resolve --input - --json
+```
+
+Download one explicit Pixiv artwork URL through the shared link-first pipeline:
+
+```bash
+printf '%s\n' '{"url":"https://www.pixiv.net/artworks/143734851","write_sidecar_metadata":false}' \
+  | uv run --locked mediagent tools run link.media.sync --input - --json
+```
+
+This path treats one artwork URL as the whole artwork, resolves all original pages by default, dedupes against `pixiv.bookmarks.sync`, and applies the required Pixiv `Referer` during download without persisting runtime headers. If credentials are missing or expired, `pixiv.link.resolve` returns a structured auth error with a recommended Pixiv auth tool instead of starting browser login by itself.
+
 Collect bookmarked works:
 
 ```bash

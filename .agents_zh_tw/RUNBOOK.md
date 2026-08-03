@@ -189,6 +189,22 @@ uv run --locked mediagent tools run pixiv.auth.refresh --input examples/tools/pi
 uv run --locked mediagent tools run pixiv.auth.status --input examples/tools/pixiv.auth.status.json --json
 ```
 
+解析單一 Pixiv artwork URL，但不下載檔案：
+
+```bash
+printf '%s\n' '{"url":"https://www.pixiv.net/artworks/143734851"}' \
+  | uv run --locked mediagent tools run pixiv.link.resolve --input - --json
+```
+
+透過共享 link-first pipeline 下載單一 Pixiv artwork URL：
+
+```bash
+printf '%s\n' '{"url":"https://www.pixiv.net/artworks/143734851","write_sidecar_metadata":false}' \
+  | uv run --locked mediagent tools run link.media.sync --input - --json
+```
+
+這條路徑會把一個 artwork URL 視為整個作品，預設解析所有 original pages，與 `pixiv.bookmarks.sync` 去重，並在下載時套用必要的 Pixiv `Referer`，但不會持久化 runtime headers。若 credentials 缺失或過期，`pixiv.link.resolve` 會回傳 structured auth error 與建議的 Pixiv auth tool，不會自行啟動 browser login。
+
 收集收藏作品：
 
 ```bash

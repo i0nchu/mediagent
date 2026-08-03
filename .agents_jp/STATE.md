@@ -67,6 +67,7 @@
 - `pixiv.auth.login`
 - `pixiv.auth.status`
 - `pixiv.auth.refresh`
+- `pixiv.link.resolve`
 - `pixiv.bookmarks.collect`
 - `pixiv.bookmarks.sync`
 - `instagram.auth.login`
@@ -92,6 +93,18 @@
 - `x.auth.status`
 - `x.bookmarks.collect`
 
+## Latest Repair-Mode State
+
+- `link.media.sync` は `repair_missing_files: true` による明示的 file-health-aware repair をサポートします。
+- `telegram.inbox.sync_links` と `telegram.messages.sync` も、既存 sync logic 上の compatibility paths として同じ option を公開します。
+- Default rerun は conservative のままです。Repair mode が明示されない限り、downloaded items は skip されます。
+- Repair mode は required file records が missing/corrupt/unhealthy、または DB row は `downloaded` だが `local_path` の実体 file が存在しない場合だけ、downloaded items を再 queue します。
+- Dry-run repair は同じ candidate selection を使い、file write や DB mutation なしで `planned_downloads` を返します。
+- Focused regression tests は missing-file queue、healthy downloaded skip、default rerun unchanged、dry-run no-write planning を覆っています。
+- 2026-08-03 UTC に live DB へ dry-run repair planning を実行しました。14 件の missing downloaded file records から 12 unique source URLs を導出し、8 repair downloads を 4 providers に対して resolve/plan しました。4 links は resolution 段階で skip されました。0 bytes written、0 files downloaded で、live DB は 675 downloaded file records と同じ 14 missing on disk のままです。
+- 2026-08-03 UTC の bounded non-dry repair は同じ 12-source scope を使い、Danbooru、nhentai、Redgifs、rule34 にまたがる 8 repaired files を download し、76755767 bytes を書き込み、failed/partial items は 0 件でした。
+- Repair 後の `library.file.verify` は、675 downloaded file records に対して 669 valid、6 missing、0 corrupt、0 unknown を報告しました。Remaining 6 missing rows はすべて Reddit records で、4 unique source URLs から来ています。Diagnostic dry-run はこれらの source に `requires_auth:login_required` を返しました。
+
 ## 検証済み
 
 最後に確認した検証コマンド:
@@ -110,13 +123,16 @@ uv run --locked mediagent tools inspect telegram.messages.sync --json
 uv run --locked mediagent tools inspect reddit.saved.collect --json
 uv run --locked mediagent tools inspect instagram.auth.status --json
 uv run --locked mediagent tools inspect instagram.link.resolve --json
+uv run --locked mediagent tools inspect pixiv.link.resolve --json
+uv run --locked mediagent tools inspect link.media.sync --json
 uv run --locked mediagent tools run telegram.auth.login --input examples/tools/telegram.auth.login.json --dry-run --json
 uv run --locked mediagent tools run pixiv.auth.login --input examples/tools/pixiv.auth.login.start.json --dry-run --json
+PIXIV_ACCESS_TOKEN= PIXIV_REFRESH_TOKEN= PIXIV_CREDENTIALS_FILE= uv run --locked mediagent tools run pixiv.link.resolve --input examples/tools/pixiv.link.resolve.json --dry-run --json
 uv run --locked mediagent tools run reddit.saved.collect --input examples/tools/reddit.saved.collect.json --dry-run --json
 uv run --locked mediagent tools run x.auth.start --input examples/tools/x.auth.start.json --json
 ```
 
-最新の local full suite は 187 tests passing です。
+最新の local full suite は 200 tests passing です。
 
 Phase 16 Telegram inbox link resolver verification:
 
@@ -205,6 +221,23 @@ Deterministic Pixiv sync verification:
 - `storage.path.plan` と `pixiv.bookmarks.sync` には `scanner-friendly-v2` platform layer と、platform-specific roots の下で duplicate platform directories を避ける regression coverage があります。
 - `media_items.downloaded_at` がない old-style SQLite DB は `core.db.init` / tool initialization で migration され、`media.item.set_status` が downloaded state を更新できます。
 
+Phase 21 Pixiv explicit-link implementation verification は 2026-08-03 UTC に完了しました。
+
+- `pixiv.link.resolve` は 1 件の Pixiv artwork URL または `illust_id` を resolve する stable public tool として実装済みです。
+- Core `pixiv_artwork_link` resolver は Pixiv artwork detail を使い、normalized media candidates を生成し、multi-page works を support し、ugoira zip candidates を保持し、structured Pixiv auth/rate-limit/unavailable errors を返します。
+- `link.media.sync` は Pixiv artwork URLs を直接扱い、既存 Pixiv bookmark-sync items/files と dedupe し、runtime headers を永続化せずに必要な Pixiv `Referer` を適用できます。
+- Fake-client tests は URL/id parsing、localized aliases、artwork detail request shape、multi-page resolution、ugoira zip candidates、missing credentials、unsafe credential-file paths、`pixiv.link.resolve` platform boundary、Pixiv `Referer`、bookmark-sync dedupe を覆っています。
+- CLI inspect は `pixiv.link.resolve` と `link.media.sync` で動作します。No-credential dry-run は structured `pixiv_auth_missing_credentials` と `recommended_tool: "pixiv.auth.login"` を返します。
+
+Phase 21 Telegram inbox live verification は 2026-08-03 UTC に完了しました。
+
+- Natural-language task「download all new media in inbox」を、configured inbox chat に対する `telegram.inbox.sync_links`、cursor storage enabled、shared link resolver/download pipeline として解釈しました。
+- First live run は 27 external links を collected/considered し、24 resolved、3 skipped、9 new media items queued、9 items / 22 files downloaded、134098941 bytes written、partial 0、failed 0 でした。
+- Pixiv explicit links は `pixiv_artwork_link` で resolve されました。`112418327` は 4 files を `library/pixiv/photo/2023/10/...` に download し、`137814756` は 38 already-known valid files として dedupe skip されました。
+- Second live run は collected links 0、downloaded files 0 で、inbox path cursor advancement を確認しました。
+- `library.file.verify` は 675 DB file records を checked しました: valid 661、missing 14、corrupt 0、unknown 0。14 missing rows は古い already-recorded link-first live-test files であり、この run で download した新規 files ではありません。
+- この run の newly downloaded 22 artifact paths はすべて存在します。Pixiv persisted media metadata に runtime headers や tokens はなく、Pixiv link resolution rows も `runtime_headers` または runtime `download_context` keys を永続化しません。
+
 Pixiv live verification は 2026-07-21 UTC に一度完了しました。
 
 - `pixiv.auth.status` は user-provided account に対して usable session を返しました。
@@ -267,6 +300,6 @@ Phase 13 Telegram + Pixiv layout live verification は 2026-07-24 UTC に実行�
 
 ## 次の推奨作業
 
-Phase 20 Instagram explicit-link foundation は完了済みです。次の implementation focus は Phase 21 Pixiv explicit artwork-link resolution で、shared link-first pipeline を使います。
+File-health-aware repair mode は実装済みで、bounded live repair により resolve 可能な missing files は復元済みです。次の recommended task は、remaining 6 historical Reddit rows の扱いを決めることです。Known missing として残す、cleanup tooling で reset/quarantine する、または Reddit auth/resolver work を再開するまで deferred にします。
 
 Reddit OAuth/saved collection と X live auth verification は deferred legacy/advanced paths として扱います。User が明示的に workflow work を選ばない限り、link-first provider-adapter contract が少なくとももう 1 つの provider adapter または複数回の cron-style runs で安定するまで Workflow V1 や Agent Core は始めません。

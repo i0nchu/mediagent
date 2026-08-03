@@ -68,7 +68,8 @@ Platform modules should normalize their output into the shared media item shape 
 `platforms/pixiv/` currently contains:
 
 - `auth.py`: local OAuth/PKCE setup helpers, explicit refresh-token auth, token refresh, credential file support, and auth session modeling
-- `client.py`: Pixiv App API calls for user detail, bookmarked illustrations, and ugoira metadata
+- `client.py`: Pixiv App API calls for user detail, bookmarked illustrations, artwork detail, and ugoira metadata
+- `links.py`: explicit artwork URL/id normalization and Pixiv artwork-detail resolution for the shared link-first resolver pipeline
 - `parser.py`: conversion from Pixiv works into normalized media items, including multi-page works and ugoira metadata
 
 `platforms/telegram/` currently contains:

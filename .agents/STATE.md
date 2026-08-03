@@ -68,6 +68,7 @@
 - `pixiv.auth.login`
 - `pixiv.auth.status`
 - `pixiv.auth.refresh`
+- `pixiv.link.resolve`
 - `pixiv.bookmarks.collect`
 - `pixiv.bookmarks.sync`
 - `instagram.auth.login`
@@ -93,6 +94,18 @@
 - `x.auth.status`
 - `x.bookmarks.collect`
 
+## Latest Repair-Mode State
+
+- `link.media.sync` supports explicit file-health-aware repair with `repair_missing_files: true`.
+- `telegram.inbox.sync_links` and `telegram.messages.sync` expose the same option as compatibility paths over their existing sync logic.
+- Default reruns remain conservative: downloaded items are skipped unless repair mode is explicitly enabled.
+- Repair mode queues downloaded items only when required file records are missing/corrupt/unhealthy or when a DB row says `downloaded` but `local_path` no longer exists.
+- Dry-run repair uses the same candidate selection and returns `planned_downloads` without writing files or mutating the DB.
+- Focused regression tests cover missing-file queueing, healthy downloaded skip behavior, unchanged default reruns, and dry-run no-write planning.
+- Live DB dry-run repair planning on 2026-08-03 UTC considered 12 unique source URLs from 14 missing downloaded file records. It resolved/planned 8 repair downloads across 4 providers, skipped 4 links during resolution, wrote 0 bytes, downloaded 0 files, and left the live DB at 675 downloaded file records with the same 14 files missing on disk.
+- A bounded non-dry repair run on 2026-08-03 UTC used the same 12-source scope, downloaded 8 repaired files across Danbooru, nhentai, Redgifs, and rule34, wrote 76755767 bytes, and had 0 failed/partial items.
+- Post-repair `library.file.verify` reports 669 valid files, 6 missing files, 0 corrupt, and 0 unknown across 675 downloaded file records. The remaining 6 missing rows are all Reddit records from 4 unique source URLs; a diagnostic dry-run reports `requires_auth:login_required` for those sources.
+
 ## Verified
 
 Last known verification commands:
@@ -111,13 +124,16 @@ uv run --locked mediagent tools inspect telegram.messages.sync --json
 uv run --locked mediagent tools inspect reddit.saved.collect --json
 uv run --locked mediagent tools inspect instagram.auth.status --json
 uv run --locked mediagent tools inspect instagram.link.resolve --json
+uv run --locked mediagent tools inspect pixiv.link.resolve --json
+uv run --locked mediagent tools inspect link.media.sync --json
 uv run --locked mediagent tools run telegram.auth.login --input examples/tools/telegram.auth.login.json --dry-run --json
 uv run --locked mediagent tools run pixiv.auth.login --input examples/tools/pixiv.auth.login.start.json --dry-run --json
+PIXIV_ACCESS_TOKEN= PIXIV_REFRESH_TOKEN= PIXIV_CREDENTIALS_FILE= uv run --locked mediagent tools run pixiv.link.resolve --input examples/tools/pixiv.link.resolve.json --dry-run --json
 uv run --locked mediagent tools run reddit.saved.collect --input examples/tools/reddit.saved.collect.json --dry-run --json
 uv run --locked mediagent tools run x.auth.start --input examples/tools/x.auth.start.json --json
 ```
 
-The latest local full suite has 187 passing tests.
+The latest local full suite has 200 passing tests.
 
 Phase 16 Telegram inbox link resolver verification:
 
@@ -206,6 +222,23 @@ Deterministic Pixiv sync verification:
 - `storage.path.plan` and `pixiv.bookmarks.sync` have regression coverage for the `scanner-friendly-v2` platform layer and for avoiding duplicate platform directories under platform-specific roots.
 - Old-style SQLite DBs missing `media_items.downloaded_at` are migrated by `core.db.init` / tool initialization before `media.item.set_status` updates downloaded state.
 
+Phase 21 Pixiv explicit-link implementation verification completed on 2026-08-03 UTC:
+
+- `pixiv.link.resolve` is implemented as a stable public tool for one Pixiv artwork URL or `illust_id`.
+- The core `pixiv_artwork_link` resolver uses Pixiv artwork detail, produces normalized media candidates, supports multi-page works, preserves ugoira zip candidates, and returns structured Pixiv auth/rate-limit/unavailable errors.
+- `link.media.sync` can consume Pixiv artwork URLs directly, dedupe against existing Pixiv bookmark-sync items/files, and apply the required Pixiv `Referer` without persisting runtime headers.
+- Fake-client tests cover URL/id parsing, localized aliases, artwork detail request shape, multi-page resolution, ugoira zip candidates, missing credentials, unsafe credential-file paths, `pixiv.link.resolve` platform boundary, Pixiv `Referer`, and bookmark-sync dedupe.
+- CLI inspect works for `pixiv.link.resolve` and `link.media.sync`. A no-credential dry-run returns structured `pixiv_auth_missing_credentials` with `recommended_tool: "pixiv.auth.login"`.
+
+Phase 21 Telegram inbox live verification completed on 2026-08-03 UTC:
+
+- Interpreted the natural-language task "download all new media in inbox" as `telegram.inbox.sync_links` with the configured inbox chat, cursor storage enabled, and the shared link resolver/download pipeline.
+- First live run collected 27 external links, considered 27, resolved 24, skipped 3, queued 9 new media items, downloaded 9 items / 22 files, wrote 134098941 bytes, and had 0 partial / 0 failed items.
+- Pixiv explicit links resolved through `pixiv_artwork_link`: `112418327` downloaded 4 files under `library/pixiv/photo/2023/10/...`; `137814756` resolved to 38 already-known valid files and was skipped by dedupe.
+- The second live run collected 0 links and downloaded 0 files, confirming cursor advancement for the inbox path.
+- `library.file.verify` checked 675 DB file records: 661 valid, 14 missing, 0 corrupt, 0 unknown. The 14 missing rows were older already-recorded link-first live-test files, not files downloaded by this run.
+- The 22 newly downloaded artifact paths all exist. Pixiv persisted media metadata has no runtime headers or tokens, and Pixiv link resolution rows no longer persist `runtime_headers` or runtime `download_context` keys.
+
 Live Pixiv verification completed on 2026-07-21 UTC:
 
 - `pixiv.auth.status` returned a usable session for the user-provided account.
@@ -268,6 +301,6 @@ Phase 13 Telegram + Pixiv layout live verification ran on 2026-07-24 UTC:
 
 ## Next Recommended Task
 
-Phase 20 Instagram explicit-link foundation is complete. The next implementation focus is Phase 21 Pixiv explicit artwork-link resolution through the shared link-first pipeline.
+File-health-aware repair mode is implemented and bounded live repair has restored the resolvable missing files. The next recommended task is deciding how to handle the 6 remaining historical Reddit rows that now hit `requires_auth:login_required`: leave them as known missing, reset/quarantine them with cleanup tooling, or defer them until Reddit auth/resolver work resumes.
 
 Treat Reddit OAuth/saved collection and X live auth verification as deferred legacy/advanced paths. Do not start Workflow V1 or Agent Core until the link-first provider-adapter contract remains stable through at least one more provider adapter or repeated cron-style runs, unless the user explicitly chooses workflow work next.

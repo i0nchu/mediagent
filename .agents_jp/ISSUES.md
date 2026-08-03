@@ -27,6 +27,8 @@
 
 ## Recently Resolved
 
+- Downloaded DB state は、明示的 repair mode では missing local files を隠さなくなりました。`link.media.sync`、`telegram.inbox.sync_links`、`telegram.messages.sync` は `repair_missing_files` を受け付けます。Default rerun は引き続き conservative に downloaded items を skip し、repair mode は existing file records の missing/corrupt/unhealthy state、または DB 上は `downloaded` だが `local_path` の実体 file が存在しない状態を検査します。Dry-run repair は file を書かず planned downloads を返し、focused regression tests は missing、healthy、default、dry-run behavior を覆っています。Bounded live repair は resolve 可能だった 8 missing files を復元しました。Remaining 6 historical Reddit rows は source URLs が `requires_auth:login_required` として resolve されるため missing のままです。
+- Pixiv runtime download headers は link resolution storage に永続化されなくなりました。Storage sanitizer は runtime-only `runtime_headers` と runtime `download_context` keys を `null` として保存せず省略します。Existing Pixiv live link rows は cleaned 済みで、focused tests は sanitizer behavior を覆っています。
 - Generic link sync は Instagram session-file boundary を enforce するようになりました。`ResolveRequest` は allowed write roots を保持し、`InstagramMediaLinkResolver` はそれを Instagram adapter に渡します。Adapter は fake-client callbacks、real-client loads、network work の前に out-of-root `INSTAGRAM_SESSION_FILE` を reject します。Regression coverage は `link.media.sync` が structured `unsafe_credential_path` skipped resolution を返し、Instagram fake client を呼ばないことを確認します。
 - Instagram session-file read boundary は修正済みです。`instagram.auth.status` と `instagram.link.resolve` は、fake-client callbacks、real-client loads、network work の前に resolved saved-session path を `context.allowed_write_roots()` で検証し、out-of-root path には `unsafe_credential_path` を返します。両 tool に regression tests があります。
 - `instagram.link.resolve` は Instagram platform boundary を enforce するようになりました。Non-Instagram hosts、または supported shortcode を持たない URL は `instagram_media_unsupported` を返し、tool は `instagram_media_link` 以外から来た resolved result も拒否します。Regression coverage は non-Instagram direct media が Instagram-specific tool で成功しないことを確認しています。
@@ -34,7 +36,7 @@
 - Phase 20 TODO と STATE docs は Instagram carousel decision を記録しました。1 件の post URL は post 全体を表し、carousel/multi-resource posts は default ですべての resources を download し、`img_index` は future explicit option が追加されない限り source metadata としてのみ保持します。
 - 3 言語 TODO の stale RuleSpec/Workflow gate を修正しました。Later RuleSpec、Workflow V1、scheduling、Agent Core は、Pixiv/Telegram deterministic sync stability だけではなく、さらに多くの provider adapters と複数回の cron-style runs で link-first provider-adapter contract が安定してから開始します。
 - Instagram exploratory live-smoke findings は、3 言語 STATE と TODO の formal Phase 20 foundation verification に置き換えられました。Formal direct-tool run は 9 files を download し、Telegram inbox run はさらに Instagram Reel videos 3 件を `/home/ion/projects/mediagent/mediagent-data/library/instagram/` 配下に download しました。
-- TODO は 3 言語すべてで Phase 20 を completed として記録し、Phase 21 provider selection を next focus にしています。
+- TODO は 3 言語すべてで bounded Phase 21 Pixiv explicit-link Telegram inbox live verification に focus しています。完了済みの Phase 21 implementation details は `STATE.md` に置きます。
 - `STATE.md` の実装済みツール一覧は、3 言語すべてで stable `link.queue.upsert` と `link.media.sync` を experimental preview helpers の前に含むようになりました。
 - Phase 19 handoff docs と TODO は、実装済みの link-first 状態と同期しました。3 言語の `STATE.md`、`TODO.md`、`RUNBOOK.md`、`TOOL_CATALOG.md`、`ARCHITECTURE.md` は schema v7、stable `link.queue.upsert`、stable `link.media.sync`、public `mediagent link sync <url>` entry point、queue claim/retry behavior、Reddit/Redgifs delegation を説明しています。
 - `link_queue` は URL resolution lifecycle だけを表すものとして明記しました。Resolution 完了後の link row は `resolved` のままで、download state は `media_items` と `media_files` が source of truth です。Downloaded、partial、failed outcomes もそちらで扱います。
@@ -92,4 +94,4 @@
 - Localized issue handoffs は現在の英語版 issue state に同期済みです。
 - Localized TODO handoffs は Pixiv `pixiv.auth.login` / OAuth PKCE planning update に対応済みで、authorization-code exchange、credential-file writing、redaction tests、skipped-by-default live browser tests を含みます。
 - 英語、繁体字中国語、日本語の handoff docs は Pixiv first-slice status に同期済みです。
-- default test suite は green です: `uv run --locked python -m unittest discover -s tests` が 187 tests passing です。
+- default test suite は green です: `uv run --locked python -m unittest discover -s tests` が 200 tests passing です。

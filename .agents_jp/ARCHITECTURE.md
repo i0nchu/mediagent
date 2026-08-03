@@ -66,7 +66,8 @@ CLI、future workflows、future Agent Core は同じ registry から tools を�
 `platforms/pixiv/` には次があります。
 
 - `auth.py`: local OAuth/PKCE setup、explicit refresh-token auth、token refresh、credential file support、auth session model
-- `client.py`: Pixiv App API user detail、bookmarked illustrations、ugoira metadata calls
+- `client.py`: Pixiv App API user detail、bookmarked illustrations、artwork detail、ugoira metadata calls
+- `links.py`: shared link-first resolver pipeline 用の explicit artwork URL/id normalization と Pixiv artwork-detail resolution
 - `parser.py`: Pixiv works を normalized media items に変換し、multi-page works と ugoira metadata を扱う
 
 `platforms/telegram/` には次があります。

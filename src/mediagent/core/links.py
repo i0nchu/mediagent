@@ -18,6 +18,7 @@ from urllib.parse import ParseResult
 from mediagent.core.http import HttpResponse, UrllibHttpClient
 from mediagent.core.storage import extension_from_mime, safe_storage_segment
 from mediagent.platforms.instagram import links as instagram_links
+from mediagent.platforms.pixiv import links as pixiv_links
 from mediagent.platforms.reddit import links as reddit_links
 
 
@@ -151,6 +152,7 @@ class ResolveRequest:
     env: Mapping[str, str] | None = None
     cwd: Path | None = None
     allowed_write_roots: tuple[Path, ...] | None = None
+    dry_run: bool = False
     platform_options: dict[str, Any] = field(default_factory=dict)
 
 
@@ -204,24 +206,88 @@ class PixivArtworkLinkResolver(Resolver):
     )
 
     def matches(self, safe_url: SafeURL) -> bool:
-        return safe_url.host in PIXIV_HOSTS and pixiv_artwork_id(safe_url.normalized_url) is not None
+        return safe_url.host in PIXIV_HOSTS and pixiv_links.pixiv_artwork_id(safe_url.normalized_url) is not None
 
     def resolve(self, safe_url: SafeURL, request: ResolveRequest) -> dict[str, Any]:
-        artwork_id = pixiv_artwork_id(safe_url.normalized_url)
-        return skipped_resolution(
-            original_url=safe_url.original_url,
-            normalized_url=safe_url.normalized_url,
-            resolver=self.spec.name,
-            skip_reason="requires_auth",
-            origin_source="pixiv",
-            remote_id=artwork_id,
-            details={
-                "platform": "pixiv",
-                "remote_id": artwork_id,
-                "reason": "Pixiv artwork pages require platform credentials and an artwork-detail source tool.",
-                "candidate_tool": "pixiv.bookmarks.sync",
+        artwork_id = pixiv_links.pixiv_artwork_id(safe_url.normalized_url)
+        canonical_url = pixiv_links.pixiv_canonical_artwork_url(str(artwork_id)) if artwork_id else safe_url.normalized_url
+        try:
+            item = pixiv_links.resolve_artwork_from_url(
+                safe_url.normalized_url,
+                env=request.env or {},
+                cwd=request.cwd or Path.cwd(),
+                http_client=request.http_client,
+                allowed_write_roots=request.allowed_write_roots,
+                allow_credential_write=not request.dry_run,
+                timeout=request.policy.timeout_seconds,
+                include_ugoira_metadata=bool(
+                    (request.platform_options.get("pixiv") or {}).get("include_ugoira_metadata", True)
+                ),
+            )
+        except Exception as exc:
+            code = getattr(exc, "code", "pixiv_artwork_resolve_failed")
+            details = getattr(exc, "public_details", lambda: {"error_code": code})()
+            return skipped_resolution(
+                original_url=safe_url.original_url,
+                normalized_url=safe_url.normalized_url,
+                resolver=self.spec.name,
+                skip_reason=_pixiv_skip_reason(str(code)),
+                origin_source="pixiv",
+                remote_id=artwork_id,
+                details=details,
+            )
+        candidates = _pixiv_candidates(item)
+        if not candidates:
+            return skipped_resolution(
+                original_url=safe_url.original_url,
+                normalized_url=safe_url.normalized_url,
+                resolver=self.spec.name,
+                skip_reason="unsupported_media_type",
+                origin_source="pixiv",
+                remote_id=item.get("remote_id"),
+                details={
+                    "error_code": "pixiv_artwork_unsupported_media",
+                    "reason": "empty_files",
+                    "retryable": False,
+                    "user_action_required": False,
+                },
+            )
+        canonical_url = str(item.get("source_url") or canonical_url)
+        return {
+            "status": "resolved",
+            "original_url": safe_url.original_url,
+            "normalized_url": safe_url.normalized_url,
+            "canonical_url": canonical_url,
+            "aliases": _resolution_aliases(
+                canonical_url,
+                [safe_url.normalized_url, pixiv_links.pixiv_localized_artwork_url(str(item["remote_id"]))],
+            ),
+            "source_url": canonical_url,
+            "resolved_media_url": candidates[0]["url"],
+            "resolver": self.spec.name,
+            "origin_source": "pixiv",
+            "remote_id": str(item["remote_id"]),
+            "media_type": str(item.get("media_type") or candidates[0].get("media_type") or "photo"),
+            "mime_type": candidates[0].get("mime_type"),
+            "extension": candidates[0].get("extension"),
+            "size_bytes": None,
+            "media_count": len(candidates),
+            "media_candidates": candidates,
+            "selected_candidate": candidates[0],
+            "warnings": [],
+            "source_timestamp": (item.get("metadata") or {}).get("create_date"),
+            "details": {
+                "pixiv": {
+                    "remote_id": str(item["remote_id"]),
+                    "author_id": item.get("author_id"),
+                    "author": item.get("author_name"),
+                    **_pixiv_public_metadata(item.get("metadata") or {}),
+                },
+                "source_timestamp": (item.get("metadata") or {}).get("create_date"),
+                "validation": "platform_session",
+                "post_scope": "all_resources",
             },
-        )
+        }
 
 
 class InstagramMediaLinkResolver(Resolver):
@@ -1789,6 +1855,91 @@ def _instagram_skip_reason(code: str) -> str:
     return "resolver_error"
 
 
+def _pixiv_skip_reason(code: str) -> str:
+    if code in {
+        "pixiv_auth_missing_credentials",
+        "pixiv_auth_refresh_failed",
+        "pixiv_auth_failed",
+        "pixiv_access_token_missing",
+    }:
+        return "requires_auth"
+    if code == "unsafe_credential_path":
+        return "unsafe_credential_path"
+    if code == "pixiv_rate_limited":
+        return "rate_limited"
+    if code in {"pixiv_artwork_not_found", "pixiv_artwork_unavailable"}:
+        return "deleted_or_removed"
+    if code in {"pixiv_artwork_private", "pixiv_artwork_unsupported_media"}:
+        return "unsupported_media_type"
+    return "resolver_error"
+
+
+def _pixiv_candidates(item: dict[str, Any]) -> list[dict[str, Any]]:
+    metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+    files = metadata.get("files") if isinstance(metadata.get("files"), list) else []
+    candidates: list[dict[str, Any]] = []
+    type_counts: dict[str, int] = {"photo": 0, "video": 0, "audio": 0}
+    for index, file_info in enumerate(files):
+        if not isinstance(file_info, dict) or not file_info.get("url"):
+            continue
+        kind = str(file_info.get("kind") or "")
+        media_type = "video" if kind == "ugoira_zip" else "photo"
+        part = default_part(media_type, type_counts.get(media_type, index))
+        type_counts[media_type] = type_counts.get(media_type, 0) + 1
+        url = str(file_info["url"])
+        mime_type = pixiv_links.mime_type_for_file(file_info)
+        candidates.append(
+            {
+                "url": url,
+                "media_type": media_type,
+                "mime_type": mime_type,
+                "extension": pixiv_links.extension_for_file(file_info),
+                "size_bytes": None,
+                "source": "pixiv",
+                "quality_rank": 0,
+                "file_index": index,
+                "page": file_info.get("page", index),
+                "part": part,
+                "content_identity": pixiv_links.content_identity(item, file_info),
+                "group_id": str(item.get("remote_id")),
+                "required": True,
+                "persistable_headers": {},
+                "download_context_ref": None,
+                "runtime_headers": {"Referer": "https://www.pixiv.net/"},
+                "source_timestamp": metadata.get("create_date"),
+                "details": {
+                    "resolver": "pixiv_artwork_link",
+                    "source_url": item.get("source_url"),
+                    "kind": kind,
+                    "page": file_info.get("page", index),
+                },
+            }
+        )
+    return candidates
+
+
+def _pixiv_public_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
+    allowed_keys = {
+        "title",
+        "caption",
+        "pixiv_type",
+        "create_date",
+        "page_count",
+        "width",
+        "height",
+        "sanity_level",
+        "x_restrict",
+        "total_bookmarks",
+        "total_view",
+        "visible",
+        "is_muted",
+        "tools",
+        "tags",
+        "ugoira_metadata",
+    }
+    return {key: value for key, value in metadata.items() if key in allowed_keys}
+
+
 def default_part(media_type: str, index: int) -> str:
     if media_type == "video":
         return f"v{index}"
@@ -2005,13 +2156,7 @@ def _merge_resolution_aliases(*groups: list[dict[str, str]]) -> list[dict[str, s
 
 
 def pixiv_artwork_id(url: str) -> str | None:
-    parsed = urlparse(url)
-    parts = [part for part in parsed.path.split("/") if part]
-    for index, part in enumerate(parts):
-        if part == "artworks" and index + 1 < len(parts) and parts[index + 1].isdigit():
-            return parts[index + 1]
-    values = parse_qs(parsed.query).get("illust_id", [])
-    return values[0] if values and values[0].isdigit() else None
+    return pixiv_links.pixiv_artwork_id(url)
 
 
 def imgur_remote_id(page_url: str, media_url: str) -> str:

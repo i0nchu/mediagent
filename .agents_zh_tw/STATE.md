@@ -67,6 +67,7 @@
 - `pixiv.auth.login`
 - `pixiv.auth.status`
 - `pixiv.auth.refresh`
+- `pixiv.link.resolve`
 - `pixiv.bookmarks.collect`
 - `pixiv.bookmarks.sync`
 - `instagram.auth.login`
@@ -92,6 +93,18 @@
 - `x.auth.status`
 - `x.bookmarks.collect`
 
+## 最新 Repair Mode 狀態
+
+- `link.media.sync` 支援明確的 file-health-aware repair：`repair_missing_files: true`。
+- `telegram.inbox.sync_links` 與 `telegram.messages.sync` 也暴露相同選項，作為既有 sync logic 上的 compatibility paths。
+- 預設重跑仍保持保守：除非明確啟用 repair mode，否則 downloaded items 會被跳過。
+- Repair mode 只會在必要 file records missing/corrupt/unhealthy，或 DB row 標記 `downloaded` 但 `local_path` 實體檔案不存在時，重新 queue downloaded items。
+- Dry-run repair 使用相同 candidate selection，並回傳 `planned_downloads`，不寫檔也不修改 DB。
+- Focused regression tests 已覆蓋 missing-file queue、healthy downloaded skip、default rerun 不變，以及 dry-run no-write planning。
+- 2026-08-03 UTC 對 live DB 做 dry-run repair planning：從 14 筆 missing downloaded file records 推導出 12 個 unique source URLs；其中解析並規劃 8 個 repair downloads，分布於 4 個 providers，另有 4 個 links 在 resolution 階段 skip；寫入 0 bytes、下載 0 files，live DB 維持 675 筆 downloaded file records 與相同 14 筆 missing on disk。
+- 2026-08-03 UTC 的 bounded non-dry repair 使用同一個 12-source scope，成功下載 8 個 repaired files，分布於 Danbooru、nhentai、Redgifs 與 rule34，共寫入 76755767 bytes，0 failed/partial items。
+- Repair 後 `library.file.verify` 回報 675 筆 downloaded file records 中有 669 valid、6 missing、0 corrupt、0 unknown。剩餘 6 筆 missing rows 全部是 Reddit records，來自 4 個 unique source URLs；diagnostic dry-run 顯示這些 source 目前回 `requires_auth:login_required`。
+
 ## 已驗證
 
 最後已知通過的驗證命令：
@@ -110,13 +123,16 @@ uv run --locked mediagent tools inspect telegram.messages.sync --json
 uv run --locked mediagent tools inspect reddit.saved.collect --json
 uv run --locked mediagent tools inspect instagram.auth.status --json
 uv run --locked mediagent tools inspect instagram.link.resolve --json
+uv run --locked mediagent tools inspect pixiv.link.resolve --json
+uv run --locked mediagent tools inspect link.media.sync --json
 uv run --locked mediagent tools run telegram.auth.login --input examples/tools/telegram.auth.login.json --dry-run --json
 uv run --locked mediagent tools run pixiv.auth.login --input examples/tools/pixiv.auth.login.start.json --dry-run --json
+PIXIV_ACCESS_TOKEN= PIXIV_REFRESH_TOKEN= PIXIV_CREDENTIALS_FILE= uv run --locked mediagent tools run pixiv.link.resolve --input examples/tools/pixiv.link.resolve.json --dry-run --json
 uv run --locked mediagent tools run reddit.saved.collect --input examples/tools/reddit.saved.collect.json --dry-run --json
 uv run --locked mediagent tools run x.auth.start --input examples/tools/x.auth.start.json --json
 ```
 
-最新本機完整測試狀態是 187 個測試通過。
+最新本機完整測試狀態是 200 個測試通過。
 
 Phase 16 Telegram inbox link resolver verification：
 
@@ -205,6 +221,23 @@ Deterministic Pixiv sync 驗證：
 - `storage.path.plan` 與 `pixiv.bookmarks.sync` 已有 `scanner-friendly-v2` platform layer，以及平台專屬 root 不重複 platform directory 的 regression coverage。
 - 舊式 SQLite DB 若缺 `media_items.downloaded_at`，會在 `core.db.init` / tool initialization 時被 migration，讓 `media.item.set_status` 可以正常標記 downloaded。
 
+Phase 21 Pixiv explicit-link implementation verification 已於 2026-08-03 UTC 完成：
+
+- `pixiv.link.resolve` 已實作為 stable public tool，可解析單一 Pixiv artwork URL 或 `illust_id`。
+- Core `pixiv_artwork_link` resolver 使用 Pixiv artwork detail，產生 normalized media candidates，支援多頁作品，保留 ugoira zip candidates，並回傳 structured Pixiv auth/rate-limit/unavailable errors。
+- `link.media.sync` 可以直接消費 Pixiv artwork URLs，與既有 Pixiv bookmark-sync items/files 去重，並在不持久化 runtime headers 的前提下套用必要 Pixiv `Referer`。
+- Fake-client tests 覆蓋 URL/id parsing、localized aliases、artwork detail request shape、多頁解析、ugoira zip candidates、missing credentials、unsafe credential-file paths、`pixiv.link.resolve` platform boundary、Pixiv `Referer` 與 bookmark-sync dedupe。
+- CLI inspect 可用於 `pixiv.link.resolve` 與 `link.media.sync`。無 credential dry-run 會回傳 structured `pixiv_auth_missing_credentials` 與 `recommended_tool: "pixiv.auth.login"`。
+
+Phase 21 Telegram inbox live verification 已於 2026-08-03 UTC 完成：
+
+- 將自然語言任務「下載 inbox 中所有新的媒體」解析為使用 configured inbox chat 執行 `telegram.inbox.sync_links`，啟用 cursor storage，並走共享 link resolver/download pipeline。
+- 第一輪 live run 收集 27 個 external links、considered 27、resolved 24、skipped 3、queued 9 個新 media items，下載 9 items / 22 files，寫入 134098941 bytes，partial 0、failed 0。
+- Pixiv explicit links 透過 `pixiv_artwork_link` 解析：`112418327` 下載 4 個 files 到 `library/pixiv/photo/2023/10/...`；`137814756` 解析成 38 個已知 valid files，並被 dedupe 跳過。
+- 第二輪 live run 收集 0 links、下載 0 files，確認 inbox path cursor advancement 生效。
+- `library.file.verify` 檢查 675 個 DB file records：661 valid、14 missing、0 corrupt、0 unknown。14 個 missing rows 是舊的已記錄 link-first live-test files，不是本輪下載的新檔案。
+- 本輪新下載的 22 個 artifact paths 全部存在。Pixiv persisted media metadata 沒有 runtime headers 或 tokens，Pixiv link resolution rows 也不再持久化 `runtime_headers` 或 runtime `download_context` keys。
+
 Pixiv live verification 已於 2026-07-21 UTC 完成一次：
 
 - `pixiv.auth.status` 對使用者提供的帳號回傳 usable session。
@@ -267,6 +300,6 @@ Phase 13 Telegram + Pixiv layout live verification 已於 2026-07-24 UTC 執行�
 
 ## 下一個建議任務
 
-Phase 20 Instagram explicit-link foundation 已完成。下一個實作焦點是 Phase 21 Pixiv explicit artwork-link resolution，並且要走共享 link-first pipeline。
+File-health-aware repair mode 已實作，且 bounded live repair 已恢復可解析的 missing files。下一個建議任務是決定剩餘 6 筆歷史 Reddit rows 要如何處理：保留為 known missing、用 cleanup tooling reset/quarantine，或延後到 Reddit auth/resolver work 恢復時再處理。
 
 Reddit OAuth/saved collection 與 X live auth verification 都視為 deferred legacy/advanced paths。除非使用者明確要求，否則不要在 link-first provider-adapter contract 通過至少一個更多 provider adapter 或多次 cron-style runs 保持穩定前開始 Workflow V1 或 Agent Core。

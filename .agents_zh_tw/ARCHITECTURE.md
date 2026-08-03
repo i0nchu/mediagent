@@ -66,7 +66,8 @@ CLI、未來 workflows、未來 Agent Core 都必須透過同一個 registry 呼
 `platforms/pixiv/` 目前包含：
 
 - `auth.py`：local OAuth/PKCE setup、explicit refresh-token auth、token refresh、credential file support、auth session model
-- `client.py`：Pixiv App API user detail、bookmarked illustrations、ugoira metadata calls
+- `client.py`：Pixiv App API user detail、bookmarked illustrations、artwork detail、ugoira metadata calls
+- `links.py`：explicit artwork URL/id normalization，以及給共享 link-first resolver pipeline 使用的 Pixiv artwork-detail resolution
 - `parser.py`：把 Pixiv works 轉成 normalized media items，包含多頁作品與 ugoira metadata
 
 `platforms/telegram/` 目前包含：

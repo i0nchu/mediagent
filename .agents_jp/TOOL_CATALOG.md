@@ -58,10 +58,11 @@ safe preview に対応する tool では `--dry-run` を付けます。
 - `pixiv.auth.login`: 明示的な local Pixiv OAuth/PKCE setup を開始または完了します。`code` または `callback_url` がない場合は login URL と code verifier を返し、`code` または `callback_url` に `code_verifier` を添えて渡すと tokens に交換して configured write roots 内の credential JSON に書けます。
 - `pixiv.auth.status`: Pixiv credentials が利用可能か確認します。secrets は出力しません。user ID 付きの usable access token を検証でき、refresh token しかない場合は refresh が成功するか確認しますが、credential file は書きません。
 - `pixiv.auth.refresh`: 明示的に提供された refresh token で Pixiv App API credentials を更新し、configured write roots 内の credential JSON に書けます。
+- `pixiv.link.resolve`: user-provided Pixiv artwork URL または `illust_id` を normalized downloadable media candidates に resolve しますが、file は download しません。Configured Pixiv session を使い、自分で browser login は開始しません。login/refresh が必要な場合は `pixiv_auth_missing_credentials` のような structured auth errors を返します。
 - `pixiv.bookmarks.collect`: configured account の Pixiv bookmarked illustrations/manga を収集し、single-page、multi-page、ugoira metadata を normalize し、cursor を SQLite に保存できます。
 - `pixiv.bookmarks.sync`: Pixiv bookmarks を collect し、media items を upsert/filter し、scanner-friendly storage paths を plan し、各 `metadata.files[]` file を `.partial` finalization 付きで download し、local media files を記録し、parent item status を `downloaded`、`partial`、`failed` に更新します。JSON sidecar metadata は `write_sidecar_metadata` で明示的に有効化します。`media_types` filtering を使う場合、sync cursor は `bookmarks:public:photo` のように filter scope ごとに保存され、unscoped bookmark cursor は変更しません。
 
-Pixiv collector は file を download しません。bookmark 全体の deterministic download には `pixiv.bookmarks.sync` を使います。単一 file を手動 download する場合は、戻り値の `metadata.files[].url` を `download.http` に渡します。Pixiv 画像 download には通常次が必要です。
+Pixiv collector は file を download しません。bookmark 全体の deterministic download には `pixiv.bookmarks.sync` を使います。Explicit artwork URLs は `link.media.sync` に直接渡せます。この path は 1 artwork URL を 1 media item として扱い、default で全 pages を resolve し、`pixiv.bookmarks.sync` と dedupe し、download 時に必要な Pixiv `Referer` を適用し、runtime headers を metadata に保存しません。単一 file を手動 download する場合は、戻り値の `metadata.files[].url` を `download.http` に渡します。Pixiv 画像 download には通常次が必要です。
 
 ```json
 {"Referer":"https://www.pixiv.net/"}

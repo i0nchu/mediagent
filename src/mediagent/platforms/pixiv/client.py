@@ -56,6 +56,22 @@ def get_user_bookmarks(
     )
 
 
+def get_illust_detail(
+    *,
+    http_client: Any,
+    access_token: str,
+    illust_id: str,
+    timeout: float = 30.0,
+) -> tuple[dict[str, Any], dict[str, Any] | None, int]:
+    return _get_json(
+        http_client=http_client,
+        access_token=access_token,
+        path="/v1/illust/detail",
+        params={"illust_id": illust_id},
+        timeout=timeout,
+    )
+
+
 def get_ugoira_metadata(
     *,
     http_client: Any,

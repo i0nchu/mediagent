@@ -1466,6 +1466,152 @@ class LinkQueueAndSyncTests(unittest.TestCase):
         self.assertEqual(len(files), 1)
         self.assertEqual(files[0]["status"], "downloaded")
 
+    def test_link_media_sync_default_rerun_keeps_missing_downloaded_item_skipped(self) -> None:
+        registry = create_default_registry()
+        url = f"https://{PUBLIC_TEST_IP}/missing-default.jpg"
+        http = FakeLinkHttpClient()
+        http.heads[url] = HttpResponse(200, {"Content-Type": "image/jpeg", "Content-Length": "4"}, b"")
+        http.gets[url] = HttpResponse(200, {"Content-Type": "image/jpeg", "Content-Length": "4"}, b"test")
+        with TemporaryDirectory() as temp_dir:
+            data_dir = Path(temp_dir) / "data"
+            db_path = data_dir / "mediagent.sqlite3"
+            context = ToolContext.from_env(
+                env={"MEDIAGENT_DATA_DIR": str(data_dir), "MEDIAGENT_DB_PATH": str(db_path)},
+                cwd=Path(temp_dir),
+                http_client=http,
+            )
+
+            first = asyncio.run(registry.run("link.media.sync", {"db_path": str(db_path), "url": url}, context))
+            stored_file = db.list_media_files(db_path)[0]
+            Path(stored_file["local_path"]).unlink()
+            http.calls.clear()
+            rerun = asyncio.run(registry.run("link.media.sync", {"db_path": str(db_path), "url": url}, context))
+
+        self.assertTrue(first.is_success)
+        self.assertTrue(rerun.is_success)
+        self.assertEqual(rerun.data["summary"]["queued"], 0)
+        self.assertEqual(rerun.data["summary"]["skipped_items"], 1)
+        self.assertEqual(rerun.data["summary"]["files_downloaded"], 0)
+        self.assertNotIn(("GET_LIMITED", url), http.calls)
+
+    def test_link_media_sync_repair_missing_file_queues_and_redownloads(self) -> None:
+        registry = create_default_registry()
+        url = f"https://{PUBLIC_TEST_IP}/missing-repair.jpg"
+        http = FakeLinkHttpClient()
+        http.heads[url] = HttpResponse(200, {"Content-Type": "image/jpeg", "Content-Length": "4"}, b"")
+        http.gets[url] = HttpResponse(200, {"Content-Type": "image/jpeg", "Content-Length": "4"}, b"test")
+        with TemporaryDirectory() as temp_dir:
+            data_dir = Path(temp_dir) / "data"
+            db_path = data_dir / "mediagent.sqlite3"
+            context = ToolContext.from_env(
+                env={"MEDIAGENT_DATA_DIR": str(data_dir), "MEDIAGENT_DB_PATH": str(db_path)},
+                cwd=Path(temp_dir),
+                http_client=http,
+            )
+
+            first = asyncio.run(registry.run("link.media.sync", {"db_path": str(db_path), "url": url}, context))
+            stored_file = db.list_media_files(db_path)[0]
+            target_path = Path(stored_file["local_path"])
+            target_path.unlink()
+            repair = asyncio.run(
+                registry.run(
+                    "link.media.sync",
+                    {"db_path": str(db_path), "url": url, "repair_missing_files": True},
+                    context,
+                )
+            )
+            repaired_file = db.list_media_files(db_path)[0]
+            repaired_path_exists = Path(repaired_file["local_path"]).exists()
+
+        self.assertTrue(first.is_success)
+        self.assertTrue(repair.is_success)
+        self.assertEqual(repair.data["summary"]["queued"], 1)
+        self.assertEqual(repair.data["summary"]["repair_items"], 1)
+        self.assertEqual(repair.data["summary"]["repair_files_missing"], 1)
+        self.assertEqual(repair.data["summary"]["repaired"], 1)
+        self.assertEqual(repair.data["summary"]["files_downloaded"], 1)
+        self.assertTrue(repaired_path_exists)
+        self.assertEqual(repaired_file["file_health"], "valid")
+
+    def test_link_media_sync_repair_keeps_healthy_downloaded_item_skipped(self) -> None:
+        registry = create_default_registry()
+        url = f"https://{PUBLIC_TEST_IP}/healthy-repair.jpg"
+        http = FakeLinkHttpClient()
+        http.heads[url] = HttpResponse(200, {"Content-Type": "image/jpeg", "Content-Length": "4"}, b"")
+        http.gets[url] = HttpResponse(200, {"Content-Type": "image/jpeg", "Content-Length": "4"}, b"test")
+        with TemporaryDirectory() as temp_dir:
+            data_dir = Path(temp_dir) / "data"
+            db_path = data_dir / "mediagent.sqlite3"
+            context = ToolContext.from_env(
+                env={"MEDIAGENT_DATA_DIR": str(data_dir), "MEDIAGENT_DB_PATH": str(db_path)},
+                cwd=Path(temp_dir),
+                http_client=http,
+            )
+
+            first = asyncio.run(registry.run("link.media.sync", {"db_path": str(db_path), "url": url}, context))
+            http.calls.clear()
+            repair = asyncio.run(
+                registry.run(
+                    "link.media.sync",
+                    {"db_path": str(db_path), "url": url, "repair_missing_files": True},
+                    context,
+                )
+            )
+
+        self.assertTrue(first.is_success)
+        self.assertTrue(repair.is_success)
+        self.assertEqual(repair.data["summary"]["queued"], 0)
+        self.assertEqual(repair.data["summary"]["skipped_items"], 1)
+        self.assertEqual(repair.data["summary"]["skipped_healthy"], 1)
+        self.assertEqual(repair.data["summary"]["repair_items"], 0)
+        self.assertEqual(repair.data["summary"]["files_downloaded"], 0)
+        self.assertNotIn(("GET_LIMITED", url), http.calls)
+
+    def test_link_media_sync_dry_run_repair_plans_missing_file_without_writes(self) -> None:
+        registry = create_default_registry()
+        url = f"https://{PUBLIC_TEST_IP}/missing-dry-run.jpg"
+        http = FakeLinkHttpClient()
+        http.heads[url] = HttpResponse(200, {"Content-Type": "image/jpeg", "Content-Length": "4"}, b"")
+        http.gets[url] = HttpResponse(200, {"Content-Type": "image/jpeg", "Content-Length": "4"}, b"test")
+        with TemporaryDirectory() as temp_dir:
+            data_dir = Path(temp_dir) / "data"
+            db_path = data_dir / "mediagent.sqlite3"
+            context = ToolContext.from_env(
+                env={"MEDIAGENT_DATA_DIR": str(data_dir), "MEDIAGENT_DB_PATH": str(db_path)},
+                cwd=Path(temp_dir),
+                http_client=http,
+            )
+
+            first = asyncio.run(registry.run("link.media.sync", {"db_path": str(db_path), "url": url}, context))
+            stored_file = db.list_media_files(db_path)[0]
+            target_path = Path(stored_file["local_path"])
+            target_path.unlink()
+            dry_context = ToolContext.from_env(
+                env={"MEDIAGENT_DATA_DIR": str(data_dir), "MEDIAGENT_DB_PATH": str(db_path)},
+                cwd=Path(temp_dir),
+                http_client=http,
+                dry_run=True,
+            )
+            http.calls.clear()
+            dry_run = asyncio.run(
+                registry.run(
+                    "link.media.sync",
+                    {"db_path": str(db_path), "url": url, "repair_missing_files": True},
+                    dry_context,
+                )
+            )
+            unchanged_file = db.list_media_files(db_path)[0]
+
+        self.assertTrue(first.is_success)
+        self.assertTrue(dry_run.is_success)
+        self.assertEqual(dry_run.data["summary"]["queued"], 1)
+        self.assertEqual(dry_run.data["summary"]["repair_items"], 1)
+        self.assertEqual(dry_run.data["summary"]["repair_files_missing"], 1)
+        self.assertEqual(len(dry_run.data["planned_downloads"]), 1)
+        self.assertFalse(target_path.exists())
+        self.assertEqual(unchanged_file["file_health"], "valid")
+        self.assertNotIn(("GET_LIMITED", url), http.calls)
+
     def test_link_media_sync_dedupes_resolved_media_items_from_distinct_links(self) -> None:
         registry = create_default_registry()
         page_url = "https://www.reddit.com/r/example/comments/abc123/photo/"
@@ -1606,4 +1752,4 @@ class LinkQueueAndSyncTests(unittest.TestCase):
         candidate = updated["resolution"]["media_candidates"][0]
         self.assertEqual(candidate["persistable_headers"], {"Referer": "https://example.com/"})
         self.assertEqual(candidate["details"]["headers"], {"Accept": "image/*"})
-        self.assertIsNone(candidate["details"]["download_context"])
+        self.assertNotIn("download_context", candidate["details"])

@@ -9,11 +9,14 @@ from typing import Any
 from mediagent.core import db
 from mediagent.core.http import HttpResponse
 from mediagent.core.tooling import ToolContext
+from mediagent.platforms.pixiv import client as pixiv_client
+from mediagent.platforms.pixiv import links as pixiv_links
 from mediagent.platforms.pixiv import parser as pixiv_parser
 from mediagent.tools.defaults import create_default_registry
 
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
+PUBLIC_TEST_IP = "1.1.1.1"
 
 
 class FakePixivHttpClient:
@@ -445,6 +448,207 @@ class PixivToolTests(unittest.TestCase):
         self.assertFalse(result.is_success)
         self.assertEqual(result.error.code, "unsafe_credential_path")
         self.assertEqual(result.error.category.value, "filesystem")
+
+    def test_pixiv_artwork_id_parses_canonical_localized_and_query_urls(self) -> None:
+        self.assertEqual(pixiv_links.pixiv_artwork_id("143734851"), "143734851")
+        self.assertEqual(pixiv_links.pixiv_artwork_id("https://www.pixiv.net/artworks/143734851"), "143734851")
+        self.assertEqual(pixiv_links.pixiv_artwork_id("https://www.pixiv.net/en/artworks/143734851"), "143734851")
+        self.assertEqual(pixiv_links.pixiv_artwork_id("https://www.pixiv.net/member_illust.php?illust_id=143734851"), "143734851")
+        self.assertIsNone(pixiv_links.pixiv_artwork_id("https://example.com/artworks/143734851"))
+
+    def test_pixiv_client_get_illust_detail_request_shape(self) -> None:
+        fake = FakePixivHttpClient()
+        fake.queue(HttpResponse(200, {}, json.dumps({"illust": _pixiv_illust("1001")}).encode("utf-8")))
+
+        payload, _, status_code = pixiv_client.get_illust_detail(
+            http_client=fake,
+            access_token="secret-access",
+            illust_id="1001",
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertIn("illust", payload)
+        self.assertIn("/v1/illust/detail?illust_id=1001", fake.requests[0][1])
+        self.assertEqual(fake.requests[0][2]["Authorization"], "Bearer secret-access")
+
+    def test_pixiv_artwork_link_resolver_resolves_multipage_artwork(self) -> None:
+        fake = FakePixivHttpClient()
+        fake.queue(HttpResponse(200, {}, json.dumps({"illust": _pixiv_illust("1002")}).encode("utf-8")))
+        with TemporaryDirectory() as temp_dir:
+            context = _pixiv_access_context(temp_dir, fake)
+
+            result = asyncio.run(
+                create_default_registry().run(
+                    "pixiv.link.resolve",
+                    {"url": "https://www.pixiv.net/en/artworks/1002?foo=bar"},
+                    context,
+                )
+            )
+
+        self.assertTrue(result.is_success)
+        resolution = result.data["resolution"]
+        self.assertEqual(resolution["status"], "resolved")
+        self.assertEqual(resolution["resolver"], "pixiv_artwork_link")
+        self.assertEqual(resolution["canonical_url"], "https://www.pixiv.net/artworks/1002")
+        self.assertEqual(resolution["remote_id"], "1002")
+        self.assertEqual(resolution["media_count"], 2)
+        self.assertEqual([candidate["part"] for candidate in resolution["media_candidates"]], ["p0", "p1"])
+        self.assertIsNone(resolution["media_candidates"][0]["runtime_headers"])
+        self.assertNotIn("secret-access", json.dumps(result.to_dict()))
+
+    def test_pixiv_link_resolve_rejects_non_pixiv_host(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            context = _pixiv_access_context(temp_dir, FakePixivHttpClient())
+
+            result = asyncio.run(
+                create_default_registry().run(
+                    "pixiv.link.resolve",
+                    {"url": "https://example.com/artworks/1002"},
+                    context,
+                )
+            )
+
+        self.assertFalse(result.is_success)
+        self.assertEqual(result.error.code, "pixiv_artwork_unsupported_url")
+
+    def test_pixiv_link_resolve_reports_missing_credentials(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            context = ToolContext.from_env(env={"MEDIAGENT_DATA_DIR": temp_dir}, cwd=Path(temp_dir))
+
+            result = asyncio.run(
+                create_default_registry().run(
+                    "pixiv.link.resolve",
+                    {"illust_id": "1002"},
+                    context,
+                )
+            )
+
+        self.assertFalse(result.is_success)
+        self.assertEqual(result.error.code, "pixiv_auth_missing_credentials")
+        self.assertEqual(result.error.details["recommended_tool"], "pixiv.auth.login")
+
+    def test_pixiv_link_resolve_rejects_outside_credential_file_before_read(self) -> None:
+        fake = FakePixivHttpClient()
+        with TemporaryDirectory() as temp_dir:
+            outside = Path(temp_dir) / "outside" / "pixiv-oauth.json"
+            outside.parent.mkdir()
+            outside.write_text(json.dumps({"access_token": "secret-access"}), encoding="utf-8")
+            context = ToolContext.from_env(
+                env={
+                    "MEDIAGENT_DATA_DIR": str(Path(temp_dir) / "data"),
+                    "PIXIV_CREDENTIALS_FILE": str(outside),
+                },
+                cwd=Path(temp_dir),
+                http_client=fake,
+            )
+
+            result = asyncio.run(
+                create_default_registry().run(
+                    "pixiv.link.resolve",
+                    {"url": "https://www.pixiv.net/artworks/1002"},
+                    context,
+                )
+            )
+
+        self.assertFalse(result.is_success)
+        self.assertEqual(result.error.code, "unsafe_credential_path")
+        self.assertEqual(fake.requests, [])
+
+    def test_link_media_sync_downloads_pixiv_artwork_with_referer_and_dedupes_rerun(self) -> None:
+        registry = create_default_registry()
+        fake = FakePixivHttpClient()
+        fake.queue(HttpResponse(200, {}, json.dumps({"illust": _pixiv_illust("1002")}).encode("utf-8")))
+        fake.queue(HttpResponse(200, {"Content-Type": "image/png", "Content-Length": "7"}, b"png-one"))
+        fake.queue(HttpResponse(200, {"Content-Type": "image/png", "Content-Length": "7"}, b"png-two"))
+        fake.queue(HttpResponse(200, {}, json.dumps({"illust": _pixiv_illust("1002")}).encode("utf-8")))
+        with TemporaryDirectory() as temp_dir:
+            data_dir = Path(temp_dir) / "data"
+            db_path = data_dir / "mediagent.sqlite3"
+            context = _pixiv_access_context(temp_dir, fake, extra={"MEDIAGENT_DB_PATH": str(db_path)})
+
+            result = asyncio.run(
+                registry.run(
+                    "link.media.sync",
+                    {
+                        "db_path": str(db_path),
+                        "url": "https://www.pixiv.net/artworks/1002",
+                        "write_sidecar_metadata": True,
+                    },
+                    context,
+                )
+            )
+            second_result = asyncio.run(
+                registry.run(
+                    "link.media.sync",
+                    {
+                        "db_path": str(db_path),
+                        "url": "https://www.pixiv.net/artworks/1002",
+                    },
+                    context,
+                )
+            )
+            files = db.list_media_files(db_path, platform="pixiv", remote_id="1002")
+
+        self.assertTrue(result.is_success)
+        self.assertEqual(result.data["summary"]["files_downloaded"], 2)
+        self.assertTrue(second_result.is_success)
+        self.assertEqual(second_result.data["summary"]["files_downloaded"], 0)
+        self.assertEqual(len(files), 2)
+        self.assertTrue(all(file["library_relative_path"].startswith("pixiv/photo/2026/01/") for file in files))
+        download_requests = [request for request in fake.requests if request[1].startswith(f"https://{PUBLIC_TEST_IP}/")]
+        self.assertEqual(len(download_requests), 2)
+        self.assertTrue(all(request[2].get("Referer") == "https://www.pixiv.net/" for request in download_requests))
+
+    def test_link_media_sync_dedupes_pixiv_artwork_against_existing_bookmark_item(self) -> None:
+        registry = create_default_registry()
+        fake = FakePixivHttpClient()
+        fake.queue(HttpResponse(200, {}, json.dumps({"illust": _pixiv_illust("1001")}).encode("utf-8")))
+        with TemporaryDirectory() as temp_dir:
+            data_dir = Path(temp_dir) / "data"
+            db_path = data_dir / "mediagent.sqlite3"
+            db.initialize_database(db_path)
+            item = pixiv_parser.parse_illust(_pixiv_illust("1001"))
+            db.upsert_media_item(db_path, item)
+            db.update_media_item_status(db_path, platform="pixiv", remote_id="1001", status="downloaded")
+            context = _pixiv_access_context(temp_dir, fake, extra={"MEDIAGENT_DB_PATH": str(db_path)})
+
+            result = asyncio.run(
+                registry.run(
+                    "link.media.sync",
+                    {
+                        "db_path": str(db_path),
+                        "url": "https://www.pixiv.net/artworks/1001",
+                    },
+                    context,
+                )
+            )
+
+        self.assertTrue(result.is_success)
+        self.assertEqual(result.data["summary"]["queued"], 0)
+        self.assertEqual(result.data["summary"]["skipped_items"], 1)
+        self.assertEqual([request[0] for request in fake.requests], ["GET"])
+
+    def test_pixiv_artwork_resolver_supports_ugoira_zip_candidate(self) -> None:
+        fake = FakePixivHttpClient()
+        fake.queue(HttpResponse(200, {}, json.dumps({"illust": _pixiv_illust("1003")}).encode("utf-8")))
+        fake.queue(HttpResponse(200, {}, (FIXTURES / "pixiv" / "ugoira_metadata_response.json").read_bytes()))
+        with TemporaryDirectory() as temp_dir:
+            context = _pixiv_access_context(temp_dir, fake)
+
+            result = asyncio.run(
+                create_default_registry().run(
+                    "pixiv.link.resolve",
+                    {"illust_id": "1003"},
+                    context,
+                )
+            )
+
+        self.assertTrue(result.is_success)
+        candidate = result.data["resolution"]["media_candidates"][0]
+        self.assertEqual(result.data["resolution"]["media_type"], "video")
+        self.assertEqual(candidate["media_type"], "video")
+        self.assertEqual(candidate["mime_type"], "application/zip")
+        self.assertEqual(candidate["extension"], ".zip")
 
     def test_pixiv_bookmarks_collect_uses_fixture_and_stores_cursor(self) -> None:
         registry = create_default_registry()
@@ -1018,3 +1222,48 @@ def _media_files(db_path: Path) -> list[dict[str, Any]]:
             """
         ).fetchall()
     return [dict(row) for row in rows]
+
+
+def _pixiv_access_context(
+    temp_dir: str,
+    fake: FakePixivHttpClient,
+    *,
+    extra: dict[str, str] | None = None,
+) -> ToolContext:
+    data_dir = Path(temp_dir) / "data"
+    env = {
+        "MEDIAGENT_DATA_DIR": str(data_dir),
+        "MEDIAGENT_DB_PATH": str(data_dir / "mediagent.sqlite3"),
+        "PIXIV_ACCESS_TOKEN": "secret-access",
+        "PIXIV_USER_ID": "42",
+        "PIXIV_TOKEN_EXPIRES_AT": (datetime.now(UTC) + timedelta(hours=1)).isoformat(),
+    }
+    env.update(extra or {})
+    return ToolContext.from_env(env=env, cwd=Path(temp_dir), http_client=fake)
+
+
+def _pixiv_illust(illust_id: str) -> dict[str, Any]:
+    payload = json.loads((FIXTURES / "pixiv" / "bookmarks_response.json").read_text(encoding="utf-8"))
+    for illust in payload["illusts"]:
+        if str(illust["id"]) == str(illust_id):
+            cloned = json.loads(json.dumps(illust))
+            _replace_pixiv_urls(cloned)
+            return cloned
+    raise AssertionError(f"Missing Pixiv fixture illust: {illust_id}")
+
+
+def _replace_pixiv_urls(value: Any) -> None:
+    if isinstance(value, dict):
+        for key, item in list(value.items()):
+            if isinstance(item, str) and item.startswith("https://i.pximg.net/"):
+                value[key] = _test_media_url(item)
+            else:
+                _replace_pixiv_urls(item)
+    elif isinstance(value, list):
+        for item in value:
+            _replace_pixiv_urls(item)
+
+
+def _test_media_url(url: str) -> str:
+    filename = Path(url.split("?", 1)[0]).name
+    return f"https://{PUBLIC_TEST_IP}/{filename}"

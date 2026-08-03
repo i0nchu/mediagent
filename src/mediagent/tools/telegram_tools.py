@@ -91,6 +91,7 @@ def definitions() -> list[ToolDefinition]:
                         "limit": {"type": "integer"},
                         "overwrite": {"type": "boolean"},
                         "retry_failed": {"type": "boolean"},
+                        "repair_missing_files": {"type": "boolean"},
                         "attempts": {"type": "integer"},
                         "timeout_seconds": {"type": "number"},
                         "max_redirects": {"type": "integer"},
@@ -238,6 +239,7 @@ def definitions() -> list[ToolDefinition]:
                         "extract_message_links": {"type": "boolean"},
                         "overwrite": {"type": "boolean"},
                         "retry_failed": {"type": "boolean"},
+                        "repair_missing_files": {"type": "boolean"},
                         "timeout_seconds": {"type": "number"},
                         "store_cursor": {"type": "boolean"},
                         "write_sidecar_metadata": {"type": "boolean"},
@@ -607,7 +609,13 @@ async def messages_sync(context: ToolContext, input_data: dict[str, Any]) -> Too
     items = _limited_items(collected_items, input_data.get("limit"))
 
     statuses = db.get_media_statuses(db_path, items)
-    items_to_sync, skipped = _sync_candidates(items, statuses, retry_failed=input_data.get("retry_failed", False))
+    items_to_sync, candidate_summary = _sync_candidates(
+        items,
+        statuses,
+        db_path=db_path,
+        retry_failed=input_data.get("retry_failed", False),
+        repair_missing_files=input_data.get("repair_missing_files", False),
+    )
     if context.dry_run:
         return ToolResult.success(
             {
@@ -617,7 +625,8 @@ async def messages_sync(context: ToolContext, input_data: dict[str, Any]) -> Too
                     "collected": len(collected_items),
                     "discovered": len(items),
                     "queued": len(items_to_sync),
-                    "skipped": skipped,
+                    "skipped": candidate_summary["skipped_items"],
+                    **candidate_summary,
                     "target_dir": str(target_dir),
                     "cursor_stored": False,
                     "cursor_reason": "dry_run",
@@ -635,14 +644,23 @@ async def messages_sync(context: ToolContext, input_data: dict[str, Any]) -> Too
     for item in items:
         db.upsert_media_item(db_path, item)
     statuses = db.get_media_statuses(db_path, items)
-    items_to_sync, skipped = _sync_candidates(items, statuses, retry_failed=input_data.get("retry_failed", False))
+    items_to_sync, candidate_summary = _sync_candidates(
+        items,
+        statuses,
+        db_path=db_path,
+        retry_failed=input_data.get("retry_failed", False),
+        repair_missing_files=input_data.get("repair_missing_files", False),
+    )
     target_dir.mkdir(parents=True, exist_ok=True)
 
     summary = {
         "collected": len(collected_items),
         "discovered": len(items),
         "queued": len(items_to_sync),
-        "skipped": skipped,
+        "skipped": candidate_summary["skipped_items"],
+        **candidate_summary,
+        "repaired": 0,
+        "still_missing_files": 0,
         "downloaded": 0,
         "partial": 0,
         "failed": 0,
@@ -668,6 +686,10 @@ async def messages_sync(context: ToolContext, input_data: dict[str, Any]) -> Too
         summary["files_downloaded"] += result["files_downloaded"]
         summary["files_failed"] += result["files_failed"]
         summary["bytes_written"] += result["bytes_written"]
+        if item.get("_repair"):
+            if result["status"] == "downloaded":
+                summary["repaired"] += 1
+            summary["still_missing_files"] += result["files_failed"]
         artifacts.extend({"type": "file", "path": path} for path in result["artifacts"])
         warnings.extend(result["warnings"])
         if result.get("cancelled"):
@@ -738,6 +760,7 @@ async def inbox_sync_links(context: ToolContext, input_data: dict[str, Any]) -> 
         env=context.env,
         cwd=context.cwd,
         allowed_write_roots=tuple(context.allowed_write_roots()),
+        dry_run=context.dry_run,
     )
     resolutions: list[dict[str, Any]] = []
     resolved_items: list[dict[str, Any]] = []
@@ -748,6 +771,13 @@ async def inbox_sync_links(context: ToolContext, input_data: dict[str, Any]) -> 
         "skipped_links": 0,
         "queued": 0,
         "skipped_items": 0,
+        "skipped_healthy": 0,
+        "repair_items": 0,
+        "repair_files_missing": 0,
+        "repair_files_corrupt": 0,
+        "repair_files_unhealthy": 0,
+        "repaired": 0,
+        "still_missing_files": 0,
         "downloaded": 0,
         "partial": 0,
         "failed": 0,
@@ -786,10 +816,20 @@ async def inbox_sync_links(context: ToolContext, input_data: dict[str, Any]) -> 
             )
 
     if context.dry_run:
+        statuses = db.get_media_statuses(db_path, resolved_items)
+        items_to_sync, candidate_summary = _sync_candidates(
+            resolved_items,
+            statuses,
+            db_path=db_path,
+            retry_failed=input_data.get("retry_failed", False),
+            repair_missing_files=input_data.get("repair_missing_files", False),
+            link_items=True,
+        )
+        summary.update(candidate_summary)
         planned_downloads = []
-        for item in resolved_items:
+        for item in items_to_sync:
             planned_downloads.extend(_planned_link_downloads(context, input_data, item))
-        summary["queued"] = len(resolved_items)
+        summary["queued"] = len(items_to_sync)
         return ToolResult.success(
             {
                 "platform": "telegram",
@@ -805,13 +845,16 @@ async def inbox_sync_links(context: ToolContext, input_data: dict[str, Any]) -> 
     for item in resolved_items:
         db.upsert_media_item(db_path, item)
     statuses = db.get_media_statuses(db_path, resolved_items)
-    items_to_sync, skipped_items = _sync_candidates(
+    items_to_sync, candidate_summary = _sync_candidates(
         resolved_items,
         statuses,
+        db_path=db_path,
         retry_failed=input_data.get("retry_failed", False),
+        repair_missing_files=input_data.get("repair_missing_files", False),
+        link_items=True,
     )
+    summary.update(candidate_summary)
     summary["queued"] = len(items_to_sync)
-    summary["skipped_items"] = skipped_items
 
     item_results: list[dict[str, Any]] = []
     artifacts: list[dict[str, str]] = []
@@ -822,6 +865,10 @@ async def inbox_sync_links(context: ToolContext, input_data: dict[str, Any]) -> 
         summary["files_downloaded"] += result["files_downloaded"]
         summary["files_failed"] += result["files_failed"]
         summary["bytes_written"] += result["bytes_written"]
+        if item.get("_repair"):
+            if result["status"] == "downloaded":
+                summary["repaired"] += 1
+            summary["still_missing_files"] += result["files_failed"]
         artifacts.extend({"type": "file", "path": path} for path in result["artifacts"])
         warnings.extend(result["warnings"])
 
@@ -1385,6 +1432,7 @@ def _download_link_file_safely(
         env=context.env,
         cwd=context.cwd,
         allowed_write_roots=tuple(context.allowed_write_roots()),
+        dry_run=context.dry_run,
     )
     try:
         response, final_url = fetch_limited_follow_redirects(
@@ -1616,20 +1664,100 @@ def _sync_candidates(
     items: list[dict[str, Any]],
     statuses: dict[tuple[str, str], str],
     *,
+    db_path: Path,
     retry_failed: bool,
-) -> tuple[list[dict[str, Any]], int]:
+    repair_missing_files: bool,
+    link_items: bool = False,
+) -> tuple[list[dict[str, Any]], dict[str, int]]:
     candidates = []
-    skipped = 0
+    summary = {
+        "skipped_items": 0,
+        "skipped_healthy": 0,
+        "repair_items": 0,
+        "repair_files_missing": 0,
+        "repair_files_corrupt": 0,
+        "repair_files_unhealthy": 0,
+    }
     for item in items:
         status = statuses.get((item["platform"], item["remote_id"]))
         if status == "failed" and retry_failed:
             candidates.append(item)
             continue
         if status in TERMINAL_ITEM_STATUSES:
-            skipped += 1
+            if status == "downloaded" and repair_missing_files:
+                repair = _repair_assessment(db_path, item, link_items=link_items)
+                if repair["repairable"]:
+                    repair_item = dict(item)
+                    repair_item["_repair"] = repair
+                    candidates.append(repair_item)
+                    summary["repair_items"] += 1
+                    summary["repair_files_missing"] += int(repair.get("missing", 0))
+                    summary["repair_files_corrupt"] += int(repair.get("corrupt", 0))
+                    summary["repair_files_unhealthy"] += int(repair.get("unhealthy", 0))
+                    continue
+                summary["skipped_healthy"] += 1
+            summary["skipped_items"] += 1
             continue
         candidates.append(item)
-    return candidates, skipped
+    return candidates, summary
+
+
+def _repair_assessment(db_path: Path, item: dict[str, Any], *, link_items: bool) -> dict[str, Any]:
+    records = db.list_media_files(db_path, platform=item["platform"], remote_id=item["remote_id"])
+    records_by_remote = {str(record.get("remote_url") or ""): record for record in records if record.get("remote_url")}
+    missing = 0
+    corrupt = 0
+    unhealthy = 0
+    files: list[dict[str, Any]] = []
+    item_files = _link_item_files(item) if link_items else _item_files(item)
+    remote_url_for = _link_file_remote_url if link_items else _file_remote_url
+    for file_info in item_files:
+        remote_url = remote_url_for(file_info)
+        record = records_by_remote.get(remote_url)
+        reason = None
+        health = None
+        status = None
+        local_path = None
+        if record is None:
+            reason = "missing_record"
+            missing += 1
+        else:
+            health = str(record.get("file_health") or "unknown")
+            status = str(record.get("status") or "")
+            local_path = record.get("local_path")
+            if health == "corrupt":
+                reason = "corrupt_file"
+                corrupt += 1
+            elif health == "missing":
+                reason = "missing_file"
+                missing += 1
+            elif status and status != "downloaded":
+                reason = "unhealthy_status"
+                unhealthy += 1
+            elif status == "downloaded" and local_path and not Path(str(local_path)).exists():
+                reason = "downloaded_file_missing_on_disk"
+                missing += 1
+            elif health not in {"valid", "unknown"}:
+                reason = "unhealthy_file"
+                unhealthy += 1
+        if reason:
+            files.append(
+                {
+                    "remote_url": remote_url,
+                    "part": file_info.get("part"),
+                    "reason": reason,
+                    "status": status,
+                    "file_health": health,
+                    "local_path": local_path,
+                }
+            )
+    return {
+        "repairable": bool(files),
+        "missing": missing,
+        "corrupt": corrupt,
+        "unhealthy": unhealthy,
+        "files": files,
+    }
 
 
 def _limited_items(items: list[dict[str, Any]], limit: Any) -> list[dict[str, Any]]:

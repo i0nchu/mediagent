@@ -12,6 +12,7 @@ from typing import Any
 from mediagent.core import db
 from mediagent.core.auth import CredentialRef, resolve_credential, resolve_credential_path
 from mediagent.core.filesystem import PathSafetyError, ensure_inside, normalize_path, resolve_placeholders
+from mediagent.core.links import LinkSafetyPolicy, ResolveRequest, default_link_resolver_registry, sanitize_link_resolution_for_output
 from mediagent.core.storage import default_library_root, plan_storage_path, platform_library_env_name
 from mediagent.core.sync import (
     TERMINAL_ITEM_STATUSES,
@@ -29,6 +30,7 @@ from mediagent.tools.download_tools import download_http
 from mediagent.tools.metadata_tools import metadata_write
 from mediagent.platforms.pixiv import auth as pixiv_auth
 from mediagent.platforms.pixiv import client as pixiv_client
+from mediagent.platforms.pixiv import links as pixiv_links
 from mediagent.platforms.pixiv import parser as pixiv_parser
 
 
@@ -88,6 +90,26 @@ def definitions() -> list[ToolDefinition]:
                 dry_run_supported=True,
             ),
             handler=auth_refresh,
+        ),
+        ToolDefinition(
+            spec=ToolSpec(
+                name="pixiv.link.resolve",
+                description="Resolve one Pixiv artwork URL or id into downloadable media candidates.",
+                input_schema={
+                    "type": "object",
+                    "required_any": [["url", "illust_id"]],
+                    "properties": {
+                        "url": {"type": "string"},
+                        "illust_id": {"type": "string"},
+                        "timeout_seconds": {"type": "number"},
+                        "include_ugoira_metadata": {"type": "boolean"},
+                    },
+                },
+                output_schema={"type": "object"},
+                permissions=(Permission.NETWORK, Permission.READ_CREDENTIALS, Permission.WRITE_CREDENTIALS),
+                dry_run_supported=True,
+            ),
+            handler=link_resolve,
         ),
         ToolDefinition(
             spec=ToolSpec(
@@ -356,6 +378,52 @@ async def auth_refresh(context: ToolContext, input_data: dict[str, Any]) -> Tool
     )
 
 
+async def link_resolve(context: ToolContext, input_data: dict[str, Any]) -> ToolResult:
+    raw_url = _pixiv_link_input(input_data)
+    if raw_url is None:
+        return ToolResult.failure(
+            "pixiv_artwork_unsupported_url",
+            "Provide a Pixiv artwork URL or illust_id.",
+            category=ErrorCategory.VALIDATION,
+        )
+    if pixiv_links.pixiv_artwork_id(raw_url) is None:
+        return ToolResult.failure(
+            "pixiv_artwork_unsupported_url",
+            "Pixiv URL is not a supported artwork URL.",
+            data={
+                "details": pixiv_links.pixiv_error_details(
+                    "pixiv_artwork_unsupported_url",
+                    {"reason": "missing_artwork_id"},
+                )
+            },
+            category=ErrorCategory.VALIDATION,
+        )
+    policy = LinkSafetyPolicy(timeout_seconds=float(input_data.get("timeout_seconds", 30.0)))
+    request = ResolveRequest(
+        http_client=context.http_client,
+        policy=policy,
+        env=context.env,
+        cwd=context.cwd,
+        allowed_write_roots=tuple(context.allowed_write_roots()),
+        dry_run=context.dry_run,
+        platform_options={"pixiv": {"include_ugoira_metadata": input_data.get("include_ugoira_metadata", True)}},
+    )
+    resolution = default_link_resolver_registry().resolve(raw_url, request=request)
+    public_resolution = sanitize_link_resolution_for_output(resolution)
+    if resolution.get("status") == "resolved" and resolution.get("resolver") == "pixiv_artwork_link":
+        return ToolResult.success({"resolution": public_resolution})
+    if resolution.get("status") == "resolved":
+        return ToolResult.failure(
+            "pixiv_artwork_unsupported_url",
+            "Pixiv URL resolved outside the Pixiv resolver boundary.",
+            data={"resolution": public_resolution},
+            category=ErrorCategory.VALIDATION,
+        )
+    details = resolution.get("details") if isinstance(resolution.get("details"), dict) else {}
+    code = str(details.get("error_code") or resolution.get("skip_reason") or "pixiv_artwork_resolve_failed")
+    return _pixiv_link_failure(code, data={"resolution": public_resolution}, details=details)
+
+
 async def bookmarks_collect(context: ToolContext, input_data: dict[str, Any]) -> ToolResult:
     if context.dry_run:
         return ToolResult.success({"would_collect": True, "platform": "pixiv"})
@@ -614,6 +682,41 @@ def _sync_db_path(context: ToolContext, input_data: dict[str, Any]) -> Path | No
     if raw_path:
         return Path(resolve_placeholders(str(raw_path), context.env)).expanduser().resolve()
     return context.db_path
+
+
+def _pixiv_link_input(input_data: dict[str, Any]) -> str | None:
+    if input_data.get("url"):
+        return str(input_data["url"])
+    if input_data.get("illust_id"):
+        illust_id = str(input_data["illust_id"]).strip()
+        if illust_id.isdigit():
+            return pixiv_links.pixiv_canonical_artwork_url(illust_id)
+    return None
+
+
+def _pixiv_link_failure(
+    code: str,
+    *,
+    data: dict[str, Any] | None = None,
+    details: dict[str, Any] | None = None,
+) -> ToolResult:
+    if code == "pixiv_rate_limited":
+        category = ErrorCategory.RATE_LIMIT
+    elif code in {"pixiv_auth_missing_credentials", "pixiv_auth_refresh_failed", "pixiv_auth_failed"}:
+        category = ErrorCategory.AUTH
+    elif code in {"unsafe_credential_path"}:
+        category = ErrorCategory.FILESYSTEM
+    elif code in {"pixiv_artwork_unsupported_url"}:
+        category = ErrorCategory.VALIDATION
+    else:
+        category = ErrorCategory.NETWORK
+    return ToolResult.failure(
+        code,
+        "Pixiv artwork link could not be resolved.",
+        data=data,
+        details=pixiv_links.pixiv_error_details(code, details or {}),
+        category=category,
+    )
 
 
 def _sync_target_dir(context: ToolContext, input_data: dict[str, Any]) -> tuple[Path, bool]:

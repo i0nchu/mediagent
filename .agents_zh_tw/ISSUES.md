@@ -27,6 +27,8 @@
 
 ## Recently Resolved
 
+- Downloaded DB state 不再於明確 repair mode 下遮蔽 missing local files。`link.media.sync`、`telegram.inbox.sync_links` 與 `telegram.messages.sync` 現在接受 `repair_missing_files`；預設重跑仍保守跳過 downloaded items，而 repair mode 會檢查既有 file records 是否 missing/corrupt/unhealthy，或 DB 標記 `downloaded` 但 `local_path` 實體檔案不存在。Dry-run repair 會回傳 planned downloads 而不寫檔，focused regression tests 已覆蓋 missing、healthy、default 與 dry-run 行為。Bounded live repair 已恢復 8 個可解析的 missing files；仍有 6 筆歷史 Reddit rows missing，原因是 source URLs 目前解析為 `requires_auth:login_required`。
+- Pixiv runtime download headers 不再持久化到 link resolution storage。Storage sanitizer 現在會省略 runtime-only `runtime_headers` 與 runtime `download_context` keys，而不是存成 `null`；既有 Pixiv live link rows 已清理，focused tests 也已覆蓋 sanitizer behavior。
 - Generic link sync 現在會 enforce Instagram session-file 邊界。`ResolveRequest` 會攜帶 allowed write roots，`InstagramMediaLinkResolver` 會傳給 Instagram adapter，adapter 會在 fake-client callbacks、real-client loads 或 network work 前拒絕 out-of-root `INSTAGRAM_SESSION_FILE`。Regression coverage 現在已證明 `link.media.sync` 會回傳 structured `unsafe_credential_path` skipped resolution，且不會呼叫 Instagram fake client。
 - Instagram session-file 讀取邊界已修正。`instagram.auth.status` 與 `instagram.link.resolve` 現在會在 fake-client callbacks、real-client loads 或 network work 前，用 `context.allowed_write_roots()` 驗證 resolved saved-session path；out-of-root path 會回傳 `unsafe_credential_path`。兩個工具都有 regression tests。
 - `instagram.link.resolve` 現在會 enforce Instagram 平台邊界。非 Instagram hosts 或缺少 supported shortcode 的 URL 會回傳 `instagram_media_unsupported`，且工具也會拒絕任何不是由 `instagram_media_link` 解析出的 resolved result。Regression coverage 已證明非 Instagram direct media 無法透過 Instagram 專屬工具成功解析。
@@ -34,7 +36,7 @@
 - Phase 20 TODO 與 STATE docs 已記錄 Instagram carousel 決策：一個 post URL 代表整個貼文，carousel/multi-resource posts 預設應下載所有 resources，`img_index` 只保留為 source metadata，除非未來加入明確選項改變行為。
 - 三語 TODO 已修正 stale RuleSpec/Workflow gate。後續 RuleSpec、Workflow V1、scheduling 與 Agent Core 現在必須等更多 provider adapters 與多次 cron-style runs 證明 link-first provider-adapter contract 穩定後再開始，不再只以 Pixiv/Telegram deterministic sync 穩定作為條件。
 - Instagram exploratory live-smoke findings 已被三語 STATE 與 TODO 中的正式 Phase 20 foundation verification 取代。正式 direct-tool run 下載 9 個 files，Telegram inbox run 又下載 3 個 Instagram Reel videos，位置都在 `/home/ion/projects/mediagent/mediagent-data/library/instagram/` 底下。
-- TODO 現在已在三語版本中把 Phase 20 記為 completed，並把 Phase 21 provider selection 指定為下一個焦點。
+- TODO 現在已在三語版本中聚焦 bounded Phase 21 Pixiv explicit-link Telegram inbox live verification；已完成的 Phase 21 實作細節放在 `STATE.md`。
 - `STATE.md` 的已實作工具清單現在已在三語版本中把 stable `link.queue.upsert` 與 `link.media.sync` 加在 experimental preview helpers 之前。
 - Phase 19 handoff docs 與 TODO 已同步到已實作的 link-first 狀態。三語 `STATE.md`、`TODO.md`、`RUNBOOK.md`、`TOOL_CATALOG.md` 與 `ARCHITECTURE.md` 目前都描述 schema v7、stable `link.queue.upsert`、stable `link.media.sync`、public `mediagent link sync <url>` entry point、queue claim/retry behavior，以及 Reddit/Redgifs delegation。
 - `link_queue` 現在明確記錄為 URL resolution lifecycle。Link row 在 resolution 完成後會停在 `resolved`；下載狀態由 `media_items` 與 `media_files` 負責，包含 downloaded、partial 與 failed outcomes。
@@ -92,4 +94,4 @@
 - Localized issue handoffs 已同步到目前英文 issue 狀態。
 - Localized TODO handoffs 已包含 Pixiv `pixiv.auth.login` / OAuth PKCE planning update，包括 authorization-code exchange、credential-file writing、redaction tests，以及 skipped-by-default live browser tests。
 - 英文、繁中、日文 handoff docs 已同步到 Pixiv first-slice status。
-- 預設測試是綠燈：`uv run --locked python -m unittest discover -s tests` 通過 187 個測試。
+- 預設測試是綠燈：`uv run --locked python -m unittest discover -s tests` 通過 200 個測試。

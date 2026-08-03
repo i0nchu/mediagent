@@ -1095,7 +1095,6 @@ def _sanitize_link_resolution_for_storage(value: Any) -> Any:
             }
             continue
         if lowered in _RUNTIME_DOWNLOAD_KEYS:
-            sanitized[key] = None
             continue
         sanitized[key] = _sanitize_link_resolution_for_storage(item)
     return sanitized

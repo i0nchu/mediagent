@@ -236,6 +236,16 @@ Permissions:
 - `read_credentials`
 - `write_credentials`
 
+### `pixiv.link.resolve`
+
+Resolves one user-provided Pixiv artwork URL or `illust_id` into normalized downloadable media candidates without downloading files. It uses the configured Pixiv session, does not start browser login by itself, and returns structured auth errors such as `pixiv_auth_missing_credentials` when the user needs to run `pixiv.auth.login` or `pixiv.auth.refresh`.
+
+Permissions:
+
+- `network`
+- `read_credentials`
+- `write_credentials`
+
 ### `pixiv.bookmarks.collect`
 
 Collects bookmarked Pixiv illustrations and manga for the configured account. It normalizes single-page works, multi-page works, and ugoira metadata into shared media items and can store a per-restrict cursor in SQLite.
@@ -268,6 +278,8 @@ Permissions:
 - `write_db`
 - `read_files`
 - `write_files`
+
+Pixiv explicit artwork URLs can also be downloaded directly through `link.media.sync`. This path treats one artwork URL as one media item, resolves all pages by default, dedupes against `pixiv.bookmarks.sync`, applies the required Pixiv `Referer` at download time, and keeps runtime headers out of persisted metadata.
 
 ## Telegram Tools
 

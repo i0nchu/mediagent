@@ -58,10 +58,11 @@ uv run --locked mediagent tools run <tool-name> --input examples/tools/<tool-nam
 - `pixiv.auth.login`：啟動或完成明確的本機 Pixiv OAuth/PKCE setup。沒有 `code` 或 `callback_url` 時回傳 login URL 與 code verifier；有 `code` 或 `callback_url` 加上 `code_verifier` 時交換 tokens，並可把 credential JSON 寫入 configured write roots。
 - `pixiv.auth.status`：檢查 Pixiv credentials 是否可用，不輸出 secrets。可驗證帶 user ID 的可用 access token；若只有 refresh token，會測試 refresh 是否成功，但不寫 credential file。
 - `pixiv.auth.refresh`：用明確提供的 refresh token 更新 Pixiv App API credentials，可寫入 configured write roots 內的 credential JSON。
+- `pixiv.link.resolve`：解析使用者提供的 Pixiv artwork URL 或 `illust_id`，回傳 normalized downloadable media candidates，但不下載檔案。它會使用已設定的 Pixiv session，不會自行啟動 browser login；若需要使用者重新登入或 refresh，會回傳 `pixiv_auth_missing_credentials` 這類 structured auth errors。
 - `pixiv.bookmarks.collect`：收集 configured account 的 Pixiv bookmarked illustrations/manga，normalize 單頁、多頁與 ugoira metadata，並可把 cursor 存入 SQLite。
 - `pixiv.bookmarks.sync`：收集 Pixiv bookmarks、upsert/filter media items、規劃 scanner-friendly storage paths、用 `.partial` finalization 下載每個 `metadata.files[]` 檔案、記錄 local media files，並把 parent item status 更新為 `downloaded`、`partial` 或 `failed`。JSON sidecar metadata 需用 `write_sidecar_metadata` 明確啟用。使用 `media_types` filtering 時，sync cursor 會依 filter scope 儲存，例如 `bookmarks:public:photo`，不會修改 unscoped bookmark cursor。
 
-Pixiv collector 不會自己下載檔案。完整 bookmark 下載請用 `pixiv.bookmarks.sync`。若要手動下載單一檔案，請使用回傳的 `metadata.files[].url` 搭配 `download.http`；Pixiv 圖片下載通常需要：
+Pixiv collector 不會自己下載檔案。完整 bookmark 下載請用 `pixiv.bookmarks.sync`。Explicit artwork URLs 可以直接交給 `link.media.sync`，它會把一個作品 URL 視為一個 media item、預設解析所有頁、與 `pixiv.bookmarks.sync` 去重、在下載時套用必要的 Pixiv `Referer`，且不把 runtime headers 寫入 metadata。若要手動下載單一檔案，請使用回傳的 `metadata.files[].url` 搭配 `download.http`；Pixiv 圖片下載通常需要：
 
 ```json
 {"Referer":"https://www.pixiv.net/"}
