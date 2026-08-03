@@ -500,6 +500,7 @@ class RedditMediaLinkResolver(Resolver):
                 safe_url.normalized_url,
                 request=request,
                 max_bytes=request.policy.max_html_bytes,
+                headers=_reddit_page_headers(),
             )
         except URLSafetyError as exc:
             return skipped_resolution(
@@ -676,7 +677,7 @@ class RedditMediaLinkResolver(Resolver):
                 legacy_url,
                 request=request,
                 max_bytes=request.policy.max_html_bytes,
-                headers={"Cookie": "over18=1"},
+                headers=_reddit_page_headers(),
             )
         except URLSafetyError as exc:
             return skipped_resolution(
@@ -951,6 +952,10 @@ class RedditMediaLinkResolver(Resolver):
                 "source_timestamp": source_timestamp,
             }
         return direct
+
+
+def _reddit_page_headers() -> dict[str, str]:
+    return {"Cookie": "over18=1"}
 
 
 class GenericHTMLMediaResolver(Resolver):

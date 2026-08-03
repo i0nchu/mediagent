@@ -30,9 +30,11 @@ class FakeLinkHttpClient:
         self.heads: dict[str, HttpResponse] = {}
         self.gets: dict[str, HttpResponse] = {}
         self.calls: list[tuple[str, str]] = []
+        self.headers_by_call: list[tuple[str, str, dict[str, str]]] = []
 
     def head(self, url: str, *, headers=None, timeout: float = 30.0) -> HttpResponse:
         self.calls.append(("HEAD", url))
+        self.headers_by_call.append(("HEAD", url, dict(headers or {})))
         return self.heads[url]
 
     def get_limited(
@@ -44,6 +46,7 @@ class FakeLinkHttpClient:
         max_bytes: int = 1024 * 1024,
     ) -> HttpResponse:
         self.calls.append(("GET_LIMITED", url))
+        self.headers_by_call.append(("GET_LIMITED", url, dict(headers or {})))
         response = self.gets[url]
         return HttpResponse(
             response.status_code,
@@ -54,6 +57,7 @@ class FakeLinkHttpClient:
 
     def get(self, url: str, *, headers=None, timeout: float = 30.0) -> HttpResponse:
         self.calls.append(("GET", url))
+        self.headers_by_call.append(("GET", url, dict(headers or {})))
         return self.gets[url]
 
 
@@ -354,6 +358,36 @@ class LinkResolverTests(unittest.TestCase):
         self.assertEqual(result["details"]["legacy_url"], old_url)
         self.assertEqual(result["details"]["reddit"]["over_18"], True)
         self.assertIn(("GET_LIMITED", old_url), fake.calls)
+        self.assertIn(("GET_LIMITED", old_url, {"Cookie": "over18=1"}), fake.headers_by_call)
+
+    def test_reddit_media_resolver_uses_over18_cookie_for_direct_old_reddit_page(self) -> None:
+        page_url = "https://old.reddit.com/r/example/comments/abc123/title/"
+        media_url = "https://i.redd.it/abc123.jpeg"
+        fake = FakeLinkHttpClient()
+        fake.gets[page_url] = HttpResponse(
+            200,
+            {"Content-Type": "text/html"},
+            (
+                b'<div class="thing" data-fullname="t3_abc123" data-subreddit="example" '
+                b'data-author="alice" data-nsfw="true" data-url="https://i.redd.it/abc123.jpeg"></div>'
+            ),
+            page_url,
+        )
+        fake.heads[media_url] = HttpResponse(
+            200,
+            {"Content-Type": "image/jpeg", "Content-Length": "12"},
+            b"",
+        )
+
+        result = default_link_resolver_registry().resolve(
+            page_url,
+            request=ResolveRequest(http_client=fake, host_resolver=lambda host: ["151.101.1.140"]),
+        )
+
+        self.assertEqual(result["status"], "resolved")
+        self.assertEqual(result["remote_id"], "t3_abc123")
+        self.assertEqual(result["details"]["html_source"], "reddit")
+        self.assertIn(("GET_LIMITED", page_url, {"Cookie": "over18=1"}), fake.headers_by_call)
 
     def test_reddit_media_resolver_skips_gallery_without_public_candidates(self) -> None:
         page_url = "https://www.reddit.com/r/example/comments/abc123/gallery/"
