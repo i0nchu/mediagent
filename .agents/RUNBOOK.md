@@ -45,6 +45,46 @@ uv run --locked mediagent tools inspect instagram.link.resolve --json
 uv run --locked mediagent tools run x.auth.start --input examples/tools/x.auth.start.json --json
 ```
 
+## Agent Core V1 Smoke Checks
+
+Agent Core V1 uses Ollama by default:
+
+```bash
+export MEDIAGENT_LLM_PROVIDER=ollama
+export MEDIAGENT_OLLAMA_BASE_URL=http://127.0.0.1:11434
+export MEDIAGENT_OLLAMA_MODEL=qwen3:8b
+```
+
+Inspect built-in SKILLs:
+
+```bash
+uv run --locked mediagent agent skills list --json
+uv run --locked mediagent agent skills inspect telegram_inbox_download --json
+```
+
+Preview an explicit-link task:
+
+```bash
+uv run --locked mediagent agent run "download https://example.com/media.jpg" --skill explicit_link_download --dry-run --json
+```
+
+Unsupported tasks should fail before any tool call:
+
+```bash
+uv run --locked mediagent agent run "我目前有存在的 telegram inbox 嗎？" --dry-run --json
+```
+
+Expected shape: `status:"failure"`, `error.code:"unsupported_task"`, `skill:null`, and no tool steps.
+
+LLM transport failures should be structured, not Python tracebacks:
+
+```bash
+MEDIAGENT_OLLAMA_BASE_URL=http://127.0.0.1:9 MEDIAGENT_OLLAMA_TIMEOUT_SECONDS=0.2 \
+  uv run --locked mediagent agent run "download https://example.com/media.jpg" --skill explicit_link_download --json
+```
+
+Expected shape: `status:"failure"` with `error.code:"llm_request_failed"`.
+
 ## Initialize a Temporary Database
 
 ```bash
@@ -249,6 +289,8 @@ MEDIAGENT_PIXIV_LIBRARY_DIR=${MEDIAGENT_DATA_DIR}/pixiv
 ```
 
 Because this root is already Pixiv-specific, it uses the media/date layout below that root instead of adding `pixiv/pixiv`.
+
+Operator note: `MEDIAGENT_LIBRARY_DIR` changes only affect future target planning. With the same SQLite DB, already terminal Pixiv items remain deduped and will not be repopulated into the new root. Treat the DB and library files as one state bundle when moving deployments. To rebuild a new root, use a fresh DB/state reset or a future explicit rebuild/repair flow.
 
 Pixiv image examples:
 

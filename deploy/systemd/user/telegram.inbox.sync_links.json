@@ -1,0 +1,6 @@
+{
+  "limit": 100,
+  "write_sidecar_metadata": false,
+  "retry_failed": false,
+  "repair_missing_files": false
+}

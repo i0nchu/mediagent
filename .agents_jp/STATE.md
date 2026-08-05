@@ -8,6 +8,9 @@
 - Tool contract は `src/mediagent/core/tooling.py` にあります。
 - Tool registry は `src/mediagent/tools/defaults.py` にあります。
 - CLI bridge は `src/mediagent/cli.py` にあります。
+- Agent Core V1 は `src/mediagent/agent/` にあり、SKILL loading、strict JSON action parsing、Ollama integration、tool allowlist enforcement、dry-run/execute boundaries、compact/redacted tool-result feedback を含みます。
+- Built-in English agent SKILL files は `src/mediagent/agent/skills/builtin/` にあります。
+- Agent CLI commands は `mediagent agent run`、`mediagent agent skills list`、`mediagent agent skills inspect` です。
 - SQLite 初期化は `src/mediagent/core/db.py` にあり、現在の schema version は `7` です。old media item/file tables と stable `link_queue` lifecycle/retry/provenance fields の idempotent migration に対応しています。
 - ファイル安全 helper は `src/mediagent/core/filesystem.py` にあります。
 - credential/auth primitives は `src/mediagent/core/auth.py` にあります。
@@ -24,6 +27,7 @@
 - Reddit explicit-link support は `reddit_media_link` resolver で実装済みです。Direct `i.redd.it` image URLs、direct `v.redd.it` MP4 video-only URLs、Reddit post/share links、bounded anonymous HTML、static non-secret `over18=1` 付き `old.reddit.com` fallback、static galleries、preview-fallback galleries、manifest/login-wall cases の structured skips に対応しています。
 - Instagram platform support は `src/mediagent/platforms/instagram/` にあり、saved-session auth boundaries、explicit local login、bounded session repair、post/Reel URL parsing、post-level resource normalization を含みます。
 - Instagram explicit-link support は `instagram_media_link` resolver で実装済みです。Configured saved local session を使い、public `/p/<shortcode>/`、`/reel/<shortcode>/`、`/tv/<shortcode>/` URLs を resolve します。
+- Dedicated resolver を持つ known platform page domains は `reserved_platform_page` guard で受け止めます。そのため unsupported Instagram pages、Pixiv non-artwork pages、Imgur gallery/album-style pages は generic HTML/media resolution に fall through せず、structured skips を返します。既存 live DB/library の `instagram_com` rows は、この guard 追加前の historical residue です。
 - Deterministic sync helpers は `src/mediagent/core/sync.py` にあります。
 - Universal storage planning は `src/mediagent/core/storage.py` にあります。
 - Default shared-root storage layout は `scanner-friendly-v2` です: `<platform>/<media_type>/<yyyy>/<mm>/<filename>`。
@@ -32,7 +36,7 @@
 - Pixiv bookmark sync は collect -> upsert -> status filter -> storage path plan -> partial download finalization -> file record -> item status update に対応しています。
 - Pixiv bookmark sync は `media_types` filtering 使用時に、`bookmarks:public:photo` のような scoped cursor を保存します。
 - Telegram message sync は durable processing が成功した後に、`messages:saved_messages:photo-video` のような per-source scoped cursors を保存します。
-- Undocumented Telegram inbox link resolver support は experimental boundaries の後ろに実装済みです。Telegram は ingest provenance として扱い、解決後の `origin_source` を media item と storage layout の platform として使います。
+- Low-profile Telegram inbox link resolver support は Agent SKILL usage 向けの hidden stable tools として提供されています。Telegram は ingest provenance として扱い、解決後の `origin_source` を media item と storage layout の platform として使います。
 - Conservative cleanup/recovery support は `core.cleanup.media_state` で実装済みです。Media-state cleanup を plan し、DB reset 前に files を quarantine できます。
 - `media_files` は安定した非 null の `file_key` を使うため、`remote_url` または `local_path` が欠けても upsert は idempotent です。
 - `media_files` は library-relative path、storage layout version、file health、source timestamp、verification timestamp を保存できます。
@@ -76,8 +80,8 @@
 - `instagram.link.resolve`
 - `telegram.auth.login`
 - `telegram.auth.status`
-- `telegram.inbox.collect_links`（experimental）
-- `telegram.inbox.sync_links`（experimental）
+- `telegram.inbox.collect_links`（hidden stable）
+- `telegram.inbox.sync_links`（hidden stable）
 - `telegram.dialogs.list`
 - `telegram.messages.collect`
 - `telegram.media.download`
@@ -92,6 +96,60 @@
 - `x.auth.refresh`
 - `x.auth.status`
 - `x.bookmarks.collect`
+
+## Latest Agent Core V1 State
+
+- Agent Core V1 は LLM-driven であり、deterministic intent planner ではありません。選択された model が strict JSON action protocol を通じて SKILL actions を決めます。
+- Supported actions は `call_tool`、`final`、`ask_user` です。
+- 最初の LLM backend は Ollama です。Default local settings は `MEDIAGENT_LLM_PROVIDER=ollama`、`MEDIAGENT_OLLAMA_BASE_URL=http://127.0.0.1:11434`、`MEDIAGENT_OLLAMA_MODEL=qwen3:8b` です。
+- Built-in SKILL files は意図的に English で書かれており、user language を前提にしません。LLM が user の自然言語を理解して応答します。
+- Built-in skills は `explicit_link_download`、`instagram_link_download`、`library_health_check`、`pixiv_bookmark_sync`、`telegram_inbox_download` です。
+- SKILL frontmatter は `supported_intents`、`unsupported_intents`、`requires_initial_tool_call`、`supports_unbounded` により explicit intent boundaries を公開します。
+- Agent Core は selected SKILL が full-sync mode を明記している場合に限り full-source tasks を扱います。Telegram inbox と Pixiv bookmark SKILLs は、明示的な `full_sync:true` tool inputs により "all/complete/until-exhausted" requests を支援し、prompt は model に count/page limits を捏造しないよう指示します。
+- Pixiv bookmark sync SKILL text は、`limit` が bookmark item count であり downloaded file count ではないことを明記しています。Multi-page artworks は item limit より多い files を生成する場合があります。
+- Telegram inbox SKILL text は selected inbox workflow boundary を説明します。Explicit selector がない場合は tool に `MEDIAGENT_TELEGRAM_INBOX_*` を使わせ、V1 では inbox existence/configuration を inspect しないことを明記しています。
+- `telegram.inbox.collect_links` と `telegram.inbox.sync_links` は、Agent Core、cron、systemd timer runs の default inbox selector として `MEDIAGENT_TELEGRAM_INBOX_KEY` と `MEDIAGENT_TELEGRAM_INBOX_CHAT_ID`、`MEDIAGENT_TELEGRAM_INBOX_CHAT_USERNAME`、または `MEDIAGENT_TELEGRAM_INBOX_CHAT` を使えるようになりました。
+- `mediagent agent run "<task>"` は default で execute mode です。`--dry-run` は explicit preview/development mode であり、runner は tool actions を global runtime mode に normalize するため、model が execute runs を silent に dry-run previews へ downgrade することはできません。
+- LLM transport failures は Python tracebacks ではなく structured `llm_request_failed` agent errors として返ります。
+- Skill selection は、明確に一致する SKILL がない場合、any tool call の前に `unsupported_task` / tool-gap outcome を返せます。
+- Agent Core は user task に明示されていない `library_root`、`target_dir`、`target_path` を strip し、configured write roots 外の explicit destination paths を拒否します。
+- Long-running progress/logging と structured streaming は V2 以降に deferred のままです。
+- 現在の local `qwen3:8b` model は fake tools で検証済みです。English explicit-link task では `explicit_link_download`、Traditional Chinese inbox task では `telegram_inbox_download` を正しく選び、valid `call_tool` actions を生成し、global run mode を守り、successful tool feedback 後に `final` を返しました。
+- `telegram_inbox_download` は action tasks で initial tool call を要求するようになりました。`同期一次inbox的內容` に対する live Ollama dry-run では inbox SKILL が選ばれ、`--allow-experimental` なしで hidden stable `telegram.inbox.sync_links` が呼ばれました。
+- `我目前有存在的 telegram inbox 嗎？` に対する live Ollama dry-run は structured `unsupported_task`、`skill: null`、tool steps なしで返りました。
+
+## Latest Clean-State Agent Full-Source Verification
+
+- 2026-08-05 UTC、active `/home/ion/projects/mediagent/mediagent-data/library` と `/home/ion/projects/mediagent/mediagent-data/mediagent.sqlite3` を backup なしで削除し、rebuild しました。`mediagent-data/credentials/` 配下の credentials と session files は保持しました。
+- `mediagent agent run "下載所有 telegram inbox 內所有可下載的媒體來源"` は `telegram_inbox_download` を選択し、`telegram.inbox.sync_links` を `full_sync:true`、`store_cursor:false`、かつ捏造された `limit` / `max_messages` なしで呼びました。
+- 1 回目の Telegram run: 31 links collected/considered、27 resolved、4 skipped links、27 items queued/downloaded、79 files downloaded、474005235 bytes written、0 failed、0 partial。
+- Telegram rerun: 31 links considered、27 resolved、4 skipped links、27 skipped items、0 queued、0 files downloaded、0 bytes written。
+- `mediagent agent run "下載 pixiv bookmark 所有可下載媒體來源"` は `pixiv_bookmark_sync` を選択し、`pixiv.bookmarks.sync` を `full_sync:true`、`stop_on_known:false`、`store_cursor:false`、かつ捏造された `limit` / `max_pages` なしで呼びました。
+- 1 回目の Pixiv run: 11 pages scanned、309 items collected/discovered、`collection_stop_reason:end_of_feed`、307 items queued/downloaded、2 skipped items、1758 files downloaded、2946174301 bytes written、0 failed、0 partial。
+- Pixiv rerun: 11 pages scanned、309 collected/discovered、309 skipped、0 queued、0 files downloaded、0 bytes written。
+- `library.file.verify` は 1837 checked files、1837 valid、0 missing、0 corrupt、0 unknown を報告しました。Verification 後の active library は約 3.2G、active DB は約 2.8M です。
+- Verification 後の DB summary: downloaded media items は Pixiv 309、Redgifs 10、Instagram 8、Reddit 3、および少数の generic/source-host items を含みます。Downloaded media files は Pixiv 1800、Instagram 18、Redgifs 10、Reddit 5、および source-host/generic files を含みます。
+- Telegram inbox runs 中、Instagram resolver は大きな `JSONDecodeError in public_request` HTML diagnostics を stdout/stderr に出力しました。Runs は成功しましたが、open summary-only/logging hardening task の根拠として残ります。
+
+## Latest systemd Timer MVP State
+
+- Telegram inbox sync は最初の timer-deploy target ですが、formal deployment では direct deterministic tools ではなく `mediagent agent run "<task>"` 経由で起動するべきです。
+- `.env.example` は default inbox selection 用に `MEDIAGENT_TELEGRAM_INBOX_KEY` と、`MEDIAGENT_TELEGRAM_INBOX_CHAT_ID`、`MEDIAGENT_TELEGRAM_INBOX_CHAT_USERNAME`、または `MEDIAGENT_TELEGRAM_INBOX_CHAT` を document しています。
+- Local `.env` には current live test 用の non-secret Telegram inbox selector values として、`MEDIAGENT_TELEGRAM_INBOX_KEY=mediagent_inbox` と numeric inbox chat id を追加しました。
+- `telegram.inbox.collect_links` と `telegram.inbox.sync_links` は、default inbox env vars が設定されている場合、explicit `chat`/`chats` input なしで実行できます。
+- 2026-08-04 UTC の Telegram inbox execute live verification は selector key `mediagent_inbox` を使い、existing cursor `links:mediagent_inbox=34` を読み、3 new links を collect、3 links を resolve、3 video files を download、40603018 bytes を書き込み、cursor `links:mediagent_inbox=38` を保存しました。
+- Follow-up dry-run と `幫我同步更新下載 telegram inbox 中的內容` に対する Agent Core execute run は、cursor `38` の後に 0 new links と 0 queued downloads を返し、current inbox の rerun cursor continuation が正常であることを確認しました。
+- Pixiv bookmark sync は timer-safe `stop_on_known` scanning に対応しました。有効にすると newest bookmarks から scan し、bounded `max_pages` まで進み、known terminal media item を含む page に到達したら停止します。
+- `stop_on_known` mode では、Pixiv sync は known item で停止した時に API pagination cursor を保存しません。そのため Telegram-style continuation cursor と誤解されません。
+- Agent Core の Pixiv recurring sync は、invented default item `limit` ではなく、`stop_on_known:true` と bounded `max_pages` を指定した `pixiv.bookmarks.sync` を使います。
+- 2026-08-04 UTC の `幫我同步更新下載 pixiv bookmark 中的內容` に対する Pixiv Agent Core live dry-run は 1 page を scan し、30 known bookmark items を collect し、`collection_stop_reason: known_item_seen`、queued 0 downloads、0 files written を返しました。
+- Alternate `MEDIAGENT_LIBRARY_DIR` を使った direct Pixiv dry-run も queued 0 downloads で、library root の変更が DB-based media item dedupe を reset しないことを確認しました。
+- `deploy/systemd/user/` には local example user units、timers、JSON inputs、Telegram inbox sync と Pixiv bookmark sync 用の minimal runbook があります。
+- 2026-08-05 UTC の clean-state user-systemd verification では old library/live-test outputs を削除し、old SQLite DB を `mediagent-data/backups/mediagent.sqlite3.20260805014915.bak` に backup し、schema v7 を initialize し、credential files は保持しました。
+- 以前失敗していた exact full-source Agent Core tasks `下載所有 telegram inbox 內所有可下載的媒體來源` と `下載 pixiv bookmark 所有可下載媒體來源` は code 上で修正済みです。次の verification step は clean DB/library rebuild でこの 2 つの natural-language tasks を再実行することです。
+- `systemctl --user start mediagent-telegram-inbox.service` は clean DB で成功しました。First run は 31 links collected、27 resolved、4 skipped、79 files downloaded、474005235 bytes written、cursor `links:mediagent_inbox=39` stored。Second run は 0 new links、0 files downloaded でした。
+- `systemctl --user start mediagent-pixiv-bookmarks.service` は Telegram run 後に成功しました。First run は 1 page scanned、30 bookmarks collected、Telegram が先に explicit Pixiv item を 1 件 download 済みだったため 1 skipped、29 bookmark items を 293 files として download、447025170 bytes written。Known item で stop したため API pagination cursor は保存していません。Second run は queued 0、skipped 30 でした。
+- Verification 後の library state: 372 downloaded file records、372 valid files、0 missing、0 corrupt、0 unknown。Rebuilt library は約 880M です。
 
 ## Latest Repair-Mode State
 
@@ -125,6 +183,8 @@ uv run --locked mediagent tools inspect instagram.auth.status --json
 uv run --locked mediagent tools inspect instagram.link.resolve --json
 uv run --locked mediagent tools inspect pixiv.link.resolve --json
 uv run --locked mediagent tools inspect link.media.sync --json
+uv run --locked mediagent agent skills list --json
+uv run --locked mediagent agent skills inspect telegram_inbox_download --json
 uv run --locked mediagent tools run telegram.auth.login --input examples/tools/telegram.auth.login.json --dry-run --json
 uv run --locked mediagent tools run pixiv.auth.login --input examples/tools/pixiv.auth.login.start.json --dry-run --json
 PIXIV_ACCESS_TOKEN= PIXIV_REFRESH_TOKEN= PIXIV_CREDENTIALS_FILE= uv run --locked mediagent tools run pixiv.link.resolve --input examples/tools/pixiv.link.resolve.json --dry-run --json
@@ -132,12 +192,12 @@ uv run --locked mediagent tools run reddit.saved.collect --input examples/tools/
 uv run --locked mediagent tools run x.auth.start --input examples/tools/x.auth.start.json --json
 ```
 
-最新の local full suite は 200 tests passing です。
+最新の local full suite は 227 tests passing です。
 
 Phase 16 Telegram inbox link resolver verification:
 
-- `link.resolve.preview`、`link.resolve.to_media_item`、`telegram.inbox.collect_links`、`telegram.inbox.sync_links` は experimental tools として実装済みです。
-- 通常の `mediagent tools list` は experimental tools を隠し、`--include-experimental` を指定した場合だけ表示します。
+- `link.resolve.preview` と `link.resolve.to_media_item` は experimental tools として実装済みです。`telegram.inbox.collect_links` と `telegram.inbox.sync_links` は Agent SKILL usage 向けの hidden stable tools です。
+- 通常の `mediagent tools list` は experimental tools と low-profile hidden tools を隠します。`--include-experimental` は experimental tools を表示しますが、hidden tools は名前を知っていれば呼び出せます。
 - 通常の `mediagent tools run link.resolve.to_media_item` は `experimental_tool_not_allowed` で実行を拒否します。
 - Top-level `mediagent --help` は hidden `experimental` command path を露出しません。
 - Tests は URL normalization、`normalized_url` uniqueness、userinfo rejection、malformed URL skip behavior、unsafe schemes、localhost/private IP rejection、unresolved host rejection、redirect limits、unsupported MIME rejection、`.mov` / `video/quicktime`、generic single-media HTML discovery、HEAD-forbidden HTML fallback、X age/login wall skip behavior、Imgur single-page resolution、ambiguous multi-media skip、Pixiv artwork-link `requires_auth`、duplicate Telegram URL queueing、origin-source storage layout、raw message text を含まない Telegram provenance metadata、safe GET redirect revalidation、oversized GET body rejection、MOV redirect-to-non-media rejection を覆っています。
@@ -295,11 +355,10 @@ Phase 13 Telegram + Pixiv layout live verification は 2026-07-24 UTC に実行�
 - Pixiv localhost callback server
 - Instagram feed、saved-post、stories、profile scraping、messaging、posting、comments、likes、follows、broad account collection
 - Instagram session status TTL、および checkpoint/2FA/rate-limit/thumbnail-only Reel cases の追加 edge-case fixtures
-- LLM Agent Core
 - visual workflow editor
 
 ## 次の推奨作業
 
 File-health-aware repair mode は実装済みで、bounded live repair により resolve 可能な missing files は復元済みです。次の recommended task は、remaining 6 historical Reddit rows の扱いを決めることです。Known missing として残す、cleanup tooling で reset/quarantine する、または Reddit auth/resolver work を再開するまで deferred にします。
 
-Reddit OAuth/saved collection と X live auth verification は deferred legacy/advanced paths として扱います。User が明示的に workflow work を選ばない限り、link-first provider-adapter contract が少なくとももう 1 つの provider adapter または複数回の cron-style runs で安定するまで Workflow V1 や Agent Core は始めません。
+Reddit OAuth/saved collection と X live auth verification は deferred legacy/advanced paths として扱います。User が明示的に workflow work を選ばない限り、link-first provider-adapter contract が少なくとももう 1 つの provider adapter または複数回の cron-style runs で安定するまで Workflow V1、built-in scheduling、broad autonomous planning は始めません。

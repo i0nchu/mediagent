@@ -1,7 +1,8 @@
 {
   "restrict": "public",
   "library_root": "${MEDIAGENT_DATA_DIR}/library",
-  "limit": 10,
+  "max_pages": 5,
+  "stop_on_known": true,
   "overwrite": false,
   "retry_failed": false,
   "attempts": 3,

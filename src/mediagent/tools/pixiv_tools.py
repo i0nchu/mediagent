@@ -155,6 +155,8 @@ def definitions() -> list[ToolDefinition]:
                         "tag": {"type": "string"},
                         "limit": {"type": "integer"},
                         "max_pages": {"type": "integer"},
+                        "full_sync": {"type": "boolean"},
+                        "stop_on_known": {"type": "boolean"},
                         "media_types": {"type": "array", "items": {"type": "string", "enum": ["photo", "video", "audio"]}},
                         "overwrite": {"type": "boolean"},
                         "retry_failed": {"type": "boolean"},
@@ -561,6 +563,7 @@ async def bookmarks_sync(context: ToolContext, input_data: dict[str, Any]) -> To
             items=items,
             run_status="dry_run",
             max_pages_reached=pagination["max_pages_reached"],
+            known_item_seen=pagination["known_item_seen"],
         )
         return ToolResult.success(
             {
@@ -571,6 +574,10 @@ async def bookmarks_sync(context: ToolContext, input_data: dict[str, Any]) -> To
                     "collected": len(collected_items),
                     "pages_scanned": pagination["pages_scanned"],
                     "max_pages_reached": pagination["max_pages_reached"],
+                    "stop_on_known": pagination["stop_on_known"],
+                    "known_item_seen": pagination["known_item_seen"],
+                    "known_items_seen": pagination["known_items_seen"],
+                    "collection_stop_reason": pagination["stop_reason"],
                     "media_type_filtered": len(filtered_items),
                     "discovered": len(items),
                     "queued": len(items_to_sync),
@@ -598,6 +605,10 @@ async def bookmarks_sync(context: ToolContext, input_data: dict[str, Any]) -> To
         "collected": len(collected_items),
         "pages_scanned": pagination["pages_scanned"],
         "max_pages_reached": pagination["max_pages_reached"],
+        "stop_on_known": pagination["stop_on_known"],
+        "known_item_seen": pagination["known_item_seen"],
+        "known_items_seen": pagination["known_items_seen"],
+        "collection_stop_reason": pagination["stop_reason"],
         "media_type_filtered": len(filtered_items),
         "discovered": len(items),
         "queued": len(items_to_sync),
@@ -640,6 +651,7 @@ async def bookmarks_sync(context: ToolContext, input_data: dict[str, Any]) -> To
         items=items,
         run_status=run_status,
         max_pages_reached=pagination["max_pages_reached"],
+        known_item_seen=pagination["known_item_seen"],
     )
     if cursor_decision["should_store"]:
         cursor = _store_pixiv_sync_cursor(
@@ -743,14 +755,22 @@ async def _collect_sync_pages(
     db_path: Path,
     input_data: dict[str, Any],
 ) -> tuple[ToolResult, list[dict[str, Any]], dict[str, Any]]:
+    full_sync = bool(input_data.get("full_sync")) and input_data.get("max_pages") is None
     max_pages_limited = input_data.get("max_pages") is not None
-    max_pages = max(1, int(input_data.get("max_pages", 1)))
+    single_page_default = not full_sync and input_data.get("max_pages") is None
+    max_pages = max(1, int(input_data.get("max_pages", 1))) if not full_sync else None
+    stop_on_known = bool(input_data.get("stop_on_known", False))
     cursor = input_data.get("max_bookmark_id")
     collected_items: list[dict[str, Any]] = []
     last_result: ToolResult | None = None
     pages_scanned = 0
     max_pages_reached = False
-    for page_number in range(1, max_pages + 1):
+    known_items_seen = 0
+    stop_reason = "end_of_feed"
+    seen_cursors: set[str] = set()
+    page_number = 0
+    while True:
+        page_number += 1
         collect_input = {
             "db_path": str(db_path),
             "restrict": input_data.get("restrict", "public"),
@@ -774,17 +794,65 @@ async def _collect_sync_pages(
             }
         last_result = result
         pages_scanned = page_number
-        collected_items.extend(result.data.get("items", []))
+        page_items = result.data.get("items", [])
+        collected_items.extend(page_items)
+        if stop_on_known:
+            page_known = _known_items_in_page(
+                db_path,
+                page_items,
+                media_types=input_data.get("media_types"),
+                retry_failed=input_data.get("retry_failed", False),
+            )
+            known_items_seen += page_known
+            if page_known:
+                stop_reason = "known_item_seen"
+                break
         cursor = result.data.get("summary", {}).get("next_max_bookmark_id")
         if not cursor:
             break
-        if max_pages_limited and page_number == max_pages:
-            max_pages_reached = True
+        if max_pages is not None and page_number == max_pages:
+            if max_pages_limited:
+                max_pages_reached = True
+                stop_reason = "max_pages_reached"
+            if single_page_default:
+                stop_reason = "single_page_default"
+            break
+        cursor_key = str(cursor)
+        if cursor_key in seen_cursors:
+            stop_reason = "repeated_cursor"
+            break
+        seen_cursors.add(cursor_key)
     assert last_result is not None
     return last_result, collected_items, {
         "pages_scanned": pages_scanned,
         "max_pages_reached": max_pages_reached,
+        "stop_on_known": stop_on_known,
+        "known_item_seen": known_items_seen > 0,
+        "known_items_seen": known_items_seen,
+        "stop_reason": stop_reason,
     }
+
+
+def _known_items_in_page(
+    db_path: Path,
+    page_items: list[dict[str, Any]],
+    *,
+    media_types: Any,
+    retry_failed: bool,
+) -> int:
+    filtered = _filter_media_types(page_items, media_types)
+    if not filtered:
+        return 0
+    statuses = db.get_media_statuses(db_path, filtered)
+    return sum(1 for item in filtered if _is_known_stop_status(statuses.get((item["platform"], item["remote_id"])), retry_failed=retry_failed))
+
+
+def _is_known_stop_status(status: str | None, *, retry_failed: bool) -> bool:
+    if status is None:
+        return False
+    if status == "failed" and retry_failed:
+        return False
+    return status in TERMINAL_ITEM_STATUSES
 
 
 def _filter_media_types(items: list[dict[str, Any]], media_types: Any) -> list[dict[str, Any]]:
@@ -827,11 +895,18 @@ def _pixiv_sync_cursor_decision(
     items: list[dict[str, Any]],
     run_status: str,
     max_pages_reached: bool = False,
+    known_item_seen: bool = False,
 ) -> dict[str, Any]:
     if not input_data.get("store_cursor", True):
         return {"should_store": False, "reason": "disabled", "warning": None}
     if run_status == "dry_run":
         return {"should_store": False, "reason": "dry_run", "warning": None}
+    if input_data.get("stop_on_known") and known_item_seen:
+        return {
+            "should_store": False,
+            "reason": "known_item_seen",
+            "warning": None,
+        }
     if len(items) < len(available_items):
         return {
             "should_store": False,

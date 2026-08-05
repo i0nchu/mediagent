@@ -85,7 +85,7 @@ class FakeTelegramClient:
         *,
         chats: list[Any],
         after_by_source: dict[str, int | None],
-        limit: int,
+        limit: int | None,
         message_ids_by_source: dict[str, list[int]] | None,
         message_links: list[str] | None,
         include_protected: bool,
@@ -116,7 +116,9 @@ class FakeTelegramClient:
                 if after is not None and message_id <= after:
                     continue
                 selected.append(message)
-            selected = sorted(selected, key=lambda item: int(item["id"]))[:limit]
+            selected = sorted(selected, key=lambda item: int(item["id"]))
+            if limit is not None:
+                selected = selected[:limit]
             messages.extend(selected)
             source_summaries.append(
                 {
@@ -377,6 +379,67 @@ class TelegramToolTests(unittest.TestCase):
         self.assertEqual(result.data["items"][1]["metadata"]["telegram"]["grouped_id"], "album-77")
         self.assertEqual(result.data["items"][0]["metadata"]["files"][0]["download_ref"]["message_id"], "10")
         self.assertEqual(cursor["cursor_value"], "14")
+
+    def test_inbox_collect_links_full_sync_does_not_apply_default_message_limit(self) -> None:
+        registry = create_default_registry()
+        fake = FakeTelegramClient(
+            messages={
+                "saved_messages": [
+                    {
+                        "id": 10,
+                        "date": "2026-07-21T10:00:00+00:00",
+                        "chat": {"id": "saved_messages", "title": "Saved Messages", "type": "saved_messages"},
+                        "caption": "https://example.com/one.jpg",
+                    },
+                    {
+                        "id": 11,
+                        "date": "2026-07-21T10:05:00+00:00",
+                        "chat": {"id": "saved_messages", "title": "Saved Messages", "type": "saved_messages"},
+                        "caption": "https://example.com/two.jpg",
+                    },
+                ]
+            }
+        )
+        with TemporaryDirectory() as temp_dir:
+            context, _data_dir, db_path = _telegram_context(temp_dir, fake)
+
+            result = asyncio.run(
+                registry.run(
+                    "telegram.inbox.collect_links",
+                    {
+                        "db_path": str(db_path),
+                        "chat": "saved_messages",
+                        "full_sync": True,
+                    },
+                    context,
+                )
+            )
+
+        self.assertTrue(result.is_success)
+        self.assertEqual(result.data["summary"]["messages_scanned"], 2)
+        self.assertEqual(result.data["summary"]["links_found"], 2)
+        self.assertEqual(fake.calls[-1][1]["limit"], None)
+
+    def test_messages_collect_ignores_full_sync_outside_inbox_tools(self) -> None:
+        registry = create_default_registry()
+        fake = FakeTelegramClient(messages={"saved_messages": _telegram_messages_fixture()})
+        with TemporaryDirectory() as temp_dir:
+            context, _data_dir, db_path = _telegram_context(temp_dir, fake)
+
+            result = asyncio.run(
+                registry.run(
+                    "telegram.messages.collect",
+                    {
+                        "db_path": str(db_path),
+                        "chat": "saved_messages",
+                        "full_sync": True,
+                    },
+                    context,
+                )
+            )
+
+        self.assertTrue(result.is_success)
+        self.assertEqual(fake.calls[-1][1]["limit"], 100)
 
     def test_messages_collect_can_extract_media_from_curated_link_channel(self) -> None:
         registry = create_default_registry()
@@ -842,21 +905,24 @@ def _telegram_context(
     fake: FakeTelegramClient,
     *,
     dry_run: bool = False,
+    env_overrides: dict[str, str] | None = None,
 ) -> tuple[ToolContext, Path, Path]:
     data_dir = Path(temp_dir) / "data"
     db_path = data_dir / "mediagent.sqlite3"
     session_path = data_dir / "credentials" / "telegram.session"
     session_path.parent.mkdir(parents=True, exist_ok=True)
     session_path.write_text("fake-session", encoding="utf-8")
+    env = {
+        "MEDIAGENT_DATA_DIR": str(data_dir),
+        "MEDIAGENT_DB_PATH": str(db_path),
+        "TELEGRAM_API_ID": "12345",
+        "TELEGRAM_API_HASH": "secret-api-hash",
+        "TELEGRAM_PHONE_NUMBER": "+886912345678",
+        "TELEGRAM_SESSION_FILE": str(session_path),
+    }
+    env.update(env_overrides or {})
     context = ToolContext.from_env(
-        env={
-            "MEDIAGENT_DATA_DIR": str(data_dir),
-            "MEDIAGENT_DB_PATH": str(db_path),
-            "TELEGRAM_API_ID": "12345",
-            "TELEGRAM_API_HASH": "secret-api-hash",
-            "TELEGRAM_PHONE_NUMBER": "+886912345678",
-            "TELEGRAM_SESSION_FILE": str(session_path),
-        },
+        env=env,
         cwd=Path(temp_dir),
         dry_run=dry_run,
         http_client=fake,

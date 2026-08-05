@@ -55,6 +55,7 @@ REDDIT_HOSTS = tuple(
         | reddit_links.REDDIT_DIRECT_VIDEO_HOSTS
     )
 )
+RESERVED_PLATFORM_PAGE_HOSTS = PIXIV_HOSTS | INSTAGRAM_HOSTS | IMGUR_HOSTS
 HTML_MIME_TYPES = {"text/html", "application/xhtml+xml"}
 HTML_META_MEDIA_NAMES = {
     "og:image",
@@ -1221,6 +1222,33 @@ class RedgifsResolver(Resolver):
         return direct
 
 
+class ReservedPlatformPageResolver(Resolver):
+    spec = ResolverSpec(
+        name="reserved_platform_page",
+        allowed_domains=tuple(sorted(RESERVED_PLATFORM_PAGE_HOSTS)),
+        matching_rules="Known platform page domains that must not fall through to generic direct or HTML resolution.",
+    )
+
+    def matches(self, safe_url: SafeURL) -> bool:
+        return safe_url.host in RESERVED_PLATFORM_PAGE_HOSTS
+
+    def resolve(self, safe_url: SafeURL, request: ResolveRequest) -> dict[str, Any]:
+        platform = _reserved_platform_name(safe_url.host)
+        return skipped_resolution(
+            original_url=safe_url.original_url,
+            normalized_url=safe_url.normalized_url,
+            resolver=self.spec.name,
+            skip_reason=f"{platform}_url_unsupported",
+            origin_source=platform,
+            details={
+                "host": safe_url.host,
+                "reason": _reserved_platform_reason(platform, safe_url.normalized_url),
+                "retryable": False,
+                "user_action_required": False,
+            },
+        )
+
+
 class DirectMediaResolver(Resolver):
     spec = ResolverSpec(
         name="direct_media",
@@ -1393,6 +1421,7 @@ def default_link_resolver_registry() -> LinkResolverRegistry:
             ImgurSingleResolver(),
             RedgifsResolver(),
             RedditMediaLinkResolver(),
+            ReservedPlatformPageResolver(),
             DirectMediaResolver(),
             GenericHTMLMediaResolver(),
         ]
@@ -2116,6 +2145,27 @@ def origin_source_from_host(host: str) -> str:
     if text.startswith("www."):
         text = text[4:]
     return safe_storage_segment(text.replace(".", "_"), max_length=60)
+
+
+def _reserved_platform_name(host: str) -> str:
+    if host in INSTAGRAM_HOSTS:
+        return "instagram"
+    if host in PIXIV_HOSTS:
+        return "pixiv"
+    if host in IMGUR_HOSTS:
+        return "imgur"
+    return origin_source_from_host(host)
+
+
+def _reserved_platform_reason(platform: str, url: str) -> str:
+    if platform == "instagram":
+        kind = instagram_links.instagram_post_kind(url)
+        return f"{kind}_url_not_supported" if kind else "unsupported_instagram_url"
+    if platform == "pixiv":
+        return "unsupported_pixiv_url"
+    if platform == "imgur":
+        return "unsupported_imgur_url"
+    return "reserved_platform_url_not_supported"
 
 
 def normalized_url_hash(normalized_url: str) -> str:

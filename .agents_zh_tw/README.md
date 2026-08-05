@@ -29,15 +29,15 @@ Mediagent 目前是 agentic-ready 的工具底座，還不是完整 workflow age
 - Reddit OAuth config/auth tools 與 saved-media collection tools，但目前保留為 deferred legacy/advanced capability
 - first-class link-first tools：`link.queue.upsert` 與 `link.media.sync`，以及 direct media、bounded single-media HTML、Imgur、Pixiv artwork links、anonymous Reddit explicit links/static galleries、Redgifs direct/watch links 的 resolver foundations
 - Instagram explicit-link foundation tools：saved-session status/login/ensure-session，以及透過 `link.media.sync` 解析並下載整個 post/Reel
+- Agent Core V1 local preview，包含英文 SKILL files、Ollama-backed strict JSON action generation、tool allowlist enforcement、unsupported-task handling、execute/dry-run boundaries 與 destination path sanitization
 - unit tests、CLI smoke tests、fake HTTP clients 與 fixture responses
 
 尚未實作：
 
 - Workflow V1
 - 內建 scheduler
-- LLM Agent Core
 
-X auth/bookmark collection 與 Reddit auth/saved collection 已有 fake HTTP / fixture 測試，但它們不再是主要擴展路徑。Pixiv auth、collection、deterministic bookmark sync 與 universal storage layout 已有 fake HTTP / fixture 測試；Pixiv 也已完成使用者協助的 live storage verification，包含一次 100 個 items / 624 個 files 的 bounded `scanner-friendly-v2` layout run。Telegram foundation 已包含 explicit login、curated link-inbox support、stream-safe real downloads、layout placement、重跑去重，以及小型媒體與一小時影片 live verification。Instagram explicit-link foundation 已支援使用者提供的公開 post、carousel 與 Reel links，搭配本機 saved session，並已完成 live verification。
+Agent Core V1 已存在，但定位是 local preview，不是廣泛 autonomous planner 或 scheduler。X auth/bookmark collection 與 Reddit auth/saved collection 已有 fake HTTP / fixture 測試，但它們不再是主要擴展路徑。Pixiv auth、collection、deterministic bookmark sync 與 universal storage layout 已有 fake HTTP / fixture 測試；Pixiv 也已完成使用者協助的 live storage verification，包含一次 100 個 items / 624 個 files 的 bounded `scanner-friendly-v2` layout run。Telegram foundation 已包含 explicit login、curated link-inbox support、stream-safe real downloads、layout placement、重跑去重，以及小型媒體與一小時影片 live verification。Instagram explicit-link foundation 已支援使用者提供的公開 post、carousel 與 Reel links，搭配本機 saved session，並已完成 live verification。
 
 目前產品方向是 link-first：使用者、cron jobs、workflows、Telegram inboxes 與未來 agents 提供 explicit URLs；Mediagent 解析安全且可下載的 media candidates，然後重用既有 storage/download pipeline。除非使用者明確重啟，auth-assisted account collection 應視為 optional legacy/advanced behavior。Pixiv bookmarks 因為已能穩定運作，所以保留為實用例外。
 
@@ -57,9 +57,12 @@ uv run --locked mediagent tools inspect instagram.auth.status --json
 uv run --locked mediagent tools inspect instagram.link.resolve --json
 uv run --locked mediagent tools list --json --include-experimental
 uv run --locked mediagent tools inspect link.resolve.preview --json --allow-experimental
+uv run --locked mediagent agent skills list --json
+uv run --locked mediagent agent skills inspect telegram_inbox_download --json
+uv run --locked mediagent agent run "download https://example.com/media.jpg" --dry-run --json
 PYTHONPATH=src python3 -m unittest discover -s tests -v
 ```
 
 ## 重要方向
 
-除非使用者明確改變方向，下一步不要先做 Agent Core、Workflow V1、Reddit saved sync 或 X live auth verification。Link-first baseline 現在是主要產品路徑：stable `link.queue.upsert`、stable `link.media.sync`、public `mediagent link sync <url>`、queue claim/retry scheduling、canonical/media identity dedupe、Reddit external-provider delegation、Redgifs downloads、Instagram whole-post downloads，以及簡單 multi-candidate partial-success handling。Resolver behavior 預設應維持 bounded；未來平台工作應先擴充 explicit-link provider adapters，再考慮 account/bookmark collectors。
+除非使用者明確改變方向，下一步不要先做 Workflow V1、內建 scheduler、Reddit saved sync 或 X live auth verification。Agent Core V1 可以繼續 harden，但必須維持 SKILL-scoped 且透過 tool registry 呼叫工具。Link-first baseline 現在是主要產品路徑：stable `link.queue.upsert`、stable `link.media.sync`、public `mediagent link sync <url>`、queue claim/retry scheduling、canonical/media identity dedupe、Reddit external-provider delegation、Redgifs downloads、Instagram whole-post downloads，以及簡單 multi-candidate partial-success handling。Resolver behavior 預設應維持 bounded；未來平台工作應先擴充 explicit-link provider adapters，再考慮 account/bookmark collectors。

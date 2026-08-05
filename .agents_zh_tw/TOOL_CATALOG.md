@@ -14,6 +14,27 @@ uv run --locked mediagent tools run <tool-name> --input examples/tools/<tool-nam
 
 支援安全預覽的工具可以加上 `--dry-run`。
 
+## Agent Core V1 Commands
+
+Agent Core V1 是 local preview，會透過 SKILL allowlists 呼叫同一個 `ToolRegistry`。它不是獨立 platform layer，也不是 scheduler。
+
+```bash
+uv run --locked mediagent agent skills list --json
+uv run --locked mediagent agent skills inspect <skill-name> --json
+uv run --locked mediagent agent run "<natural language task>" --dry-run --json
+uv run --locked mediagent agent run "<natural language task>" --json
+```
+
+內建 SKILL：
+
+- `explicit_link_download`
+- `instagram_link_download`
+- `library_health_check`
+- `pixiv_bookmark_sync`
+- `telegram_inbox_download`
+
+當沒有 SKILL 明確符合時，Agent run 會在 tool call 前拒絕 unsupported tasks。Ollama transport failures 會回傳 structured `llm_request_failed`，且會移除模型憑空產生的 destination path fields，除非使用者明確提供那些路徑。
+
 ## Auth Tools
 
 - `auth.session.status`：檢查 provider session 是否可用，不輸出 secrets。X 會委派到 X auth status。
@@ -60,7 +81,7 @@ uv run --locked mediagent tools run <tool-name> --input examples/tools/<tool-nam
 - `pixiv.auth.refresh`：用明確提供的 refresh token 更新 Pixiv App API credentials，可寫入 configured write roots 內的 credential JSON。
 - `pixiv.link.resolve`：解析使用者提供的 Pixiv artwork URL 或 `illust_id`，回傳 normalized downloadable media candidates，但不下載檔案。它會使用已設定的 Pixiv session，不會自行啟動 browser login；若需要使用者重新登入或 refresh，會回傳 `pixiv_auth_missing_credentials` 這類 structured auth errors。
 - `pixiv.bookmarks.collect`：收集 configured account 的 Pixiv bookmarked illustrations/manga，normalize 單頁、多頁與 ugoira metadata，並可把 cursor 存入 SQLite。
-- `pixiv.bookmarks.sync`：收集 Pixiv bookmarks、upsert/filter media items、規劃 scanner-friendly storage paths、用 `.partial` finalization 下載每個 `metadata.files[]` 檔案、記錄 local media files，並把 parent item status 更新為 `downloaded`、`partial` 或 `failed`。JSON sidecar metadata 需用 `write_sidecar_metadata` 明確啟用。使用 `media_types` filtering 時，sync cursor 會依 filter scope 儲存，例如 `bookmarks:public:photo`，不會修改 unscoped bookmark cursor。
+- `pixiv.bookmarks.sync`：收集 Pixiv bookmarks、upsert/filter media items、規劃 scanner-friendly storage paths、用 `.partial` finalization 下載每個 `metadata.files[]` 檔案、記錄 local media files，並把 parent item status 更新為 `downloaded`、`partial` 或 `failed`。JSON sidecar metadata 需用 `write_sidecar_metadata` 明確啟用。使用 `media_types` filtering 時，sync cursor 會依 filter scope 儲存，例如 `bookmarks:public:photo`，不會修改 unscoped bookmark cursor。Timer-style recurring sync 應使用 `stop_on_known:true` 與 bounded `max_pages`，從最新 bookmarks 掃到已知 terminal item 所在頁後停止，並繼續依賴 SQLite media item state 去重。Explicit full bookmark rebuild 應使用 `full_sync:true`、省略 `limit` 與 `max_pages`，並設定 `stop_on_known:false`；直接 CLI/tool 呼叫若沒有 `full_sync:true`，仍維持保守的一頁預設。
 
 Pixiv collector 不會自己下載檔案。完整 bookmark 下載請用 `pixiv.bookmarks.sync`。Explicit artwork URLs 可以直接交給 `link.media.sync`，它會把一個作品 URL 視為一個 media item、預設解析所有頁、與 `pixiv.bookmarks.sync` 去重、在下載時套用必要的 Pixiv `Referer`，且不把 runtime headers 寫入 metadata。若要手動下載單一檔案，請使用回傳的 `metadata.files[].url` 搭配 `download.http`；Pixiv 圖片下載通常需要：
 
@@ -102,6 +123,8 @@ mediagent link sync <url> --json
 
 `link.media.sync` 是 deterministic，可由 Python、CLI、cron、workflows 與未來 Agent/SKILL integrations 呼叫。它必須把寫入限制在 configured project-local roots 內，且不得持久化 resolver candidates 內帶 credential 的 headers。
 
+已有 dedicated resolver 的已知平台頁面網域會保留給平台 resolver，不會 fallback 到 generic parser。Unsupported Instagram pages、Pixiv 非 artwork pages，以及 Imgur gallery/album 類 pages 會回傳 structured platform skips，而不是交給 `generic_html_media` 解析。
+
 ## Instagram Tools
 
 Instagram support 採 explicit-link first。它只使用 saved local session 解析使用者提供的公開 post/Reel URLs；不掃 feeds、saved posts、stories、profiles、messages、comments、likes、follows 或 account activity。
@@ -115,14 +138,18 @@ Instagram support 採 explicit-link first。它只使用 saved local session 解
 
 ## Experimental Link Tools
 
-這些工具在 public preview/compatibility story 確定前，仍屬 hidden/experimental helper surfaces。列出時使用 `--include-experimental`，inspect/run 時使用 `--allow-experimental`。
+這些工具在 public preview/compatibility story 確定前，仍屬 experimental helper surfaces。列出時使用 `--include-experimental`，inspect/run 時使用 `--allow-experimental`。
 
 - `link.resolve.preview`：安全 preview 一個 explicit URL，不下載。已支援 direct media、bounded single-media HTML，以及已實作的小型 provider-specific resolver behavior。
 - `link.resolve.to_media_item`：將 resolved link candidate 轉成 normalized media item，供既有 storage/download pipeline 使用。
-- `telegram.inbox.collect_links`：從 curated Telegram inbox 擷取 unique external URLs，不保存 raw message text。
-- `telegram.inbox.sync_links`：experimental wrapper。Telegram 只作為 URL ingest provenance；工具會解析 external links、下載明確 media results，並依 resolved origin platform 儲存檔案。
 
 目前不要把這些 experimental names 視為 stable public API。Promotion 必須保留既有 live-test commands 的 aliases，並同步更新 examples、本 catalog、`RUNBOOK.md` 與 localized handoff files。
+
+## Agent-Only Low-Profile Skills
+
+- `telegram.inbox.sync_links`：支援 selected inbox 的 `full_sync:true` full-source scan。此模式不會套用預設 100 messages scan limit；URL/media/file dedupe 仍由 tool layer 處理。
+
+- `telegram_inbox_download`：讓 Agent Core 處理 configured Telegram inbox，但不把直接工具入口記錄為 public workflow commands。底層工具是 hidden stable surfaces：預設不列出，但知道名稱的使用者或 agent 仍可呼叫。
 
 ## Reddit Tools
 

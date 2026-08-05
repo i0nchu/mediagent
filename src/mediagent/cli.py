@@ -9,6 +9,9 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from mediagent.agent import AgentRunner
+from mediagent.agent.llm import OllamaClient
+from mediagent.agent.skills import default_skill_registry
 from mediagent.core.tooling import ErrorCategory, ToolContext, ToolRegistryError
 from mediagent.tools.defaults import create_default_registry
 
@@ -95,6 +98,31 @@ def build_parser() -> argparse.ArgumentParser:
     tools_run.add_argument("--allow-experimental", action="store_true", help=argparse.SUPPRESS)
     tools_run.set_defaults(handler=handle_tools_run)
 
+    agent = subcommands.add_parser("agent", help="Run LLM-guided Mediagent skills.")
+    agent_commands = agent.add_subparsers(dest="agent_command")
+
+    agent_run = agent_commands.add_parser("run", help="Run a natural-language task through Agent Core.")
+    agent_run.add_argument("task", help="Natural-language task.")
+    agent_run.add_argument("--skill", default=None, help="Force a specific SKILL.")
+    agent_run.add_argument("--json", action="store_true", help="Emit machine-readable JSON.")
+    agent_run.add_argument("--dry-run", action="store_true", help="Preview tool calls without side effects.")
+    agent_run.add_argument("--execute", action="store_true", help="Execute mode is the default; kept for compatibility.")
+    agent_run.add_argument("--max-steps", type=int, default=4, help="Maximum LLM/tool steps.")
+    agent_run.add_argument("--allow-experimental", action="store_true", help="Allow experimental tools in SKILL allowlists.")
+    agent_run.set_defaults(handler=handle_agent_run)
+
+    agent_skills = agent_commands.add_parser("skills", help="Inspect local Agent Core SKILL files.")
+    agent_skill_commands = agent_skills.add_subparsers(dest="agent_skills_command")
+
+    agent_skills_list = agent_skill_commands.add_parser("list", help="List built-in SKILL files.")
+    agent_skills_list.add_argument("--json", action="store_true", help="Emit machine-readable JSON.")
+    agent_skills_list.set_defaults(handler=handle_agent_skills_list)
+
+    agent_skills_inspect = agent_skill_commands.add_parser("inspect", help="Inspect a built-in SKILL.")
+    agent_skills_inspect.add_argument("skill", help="SKILL name.")
+    agent_skills_inspect.add_argument("--json", action="store_true", help="Emit machine-readable JSON.")
+    agent_skills_inspect.set_defaults(handler=handle_agent_skills_inspect)
+
     return parser
 
 
@@ -168,6 +196,92 @@ def handle_link_sync(args: argparse.Namespace) -> int:
     )
 
 
+def handle_agent_skills_list(args: argparse.Namespace) -> int:
+    registry = default_skill_registry()
+    skills = [skill.summary() for skill in registry.list()]
+    if args.json:
+        print_json({"skills": skills})
+    else:
+        for skill in skills:
+            print(f"{skill['name']}\t{skill['description']}")
+    return EXIT_SUCCESS
+
+
+def handle_agent_skills_inspect(args: argparse.Namespace) -> int:
+    registry = default_skill_registry()
+    try:
+        skill = registry.get(args.skill)
+    except KeyError as exc:
+        return print_error(
+            {"code": "unknown_skill", "message": str(exc), "details": {"skill": args.skill}},
+            json_output=args.json,
+            exit_code=EXIT_VALIDATION_ERROR,
+        )
+    if args.json:
+        print_json({"skill": skill.to_dict()})
+    else:
+        print(f"{skill.name}")
+        print(f"  description: {skill.description}")
+        print(f"  allowed_tools: {', '.join(skill.allowed_tools)}")
+        print(f"  default_dry_run: {skill.default_dry_run}")
+        print(f"  risk_level: {skill.risk_level}")
+        print(f"  requires_initial_tool_call: {skill.requires_initial_tool_call}")
+        print(f"  supports_unbounded: {skill.supports_unbounded}")
+        if skill.supported_intents:
+            print(f"  supported_intents: {', '.join(skill.supported_intents)}")
+        if skill.unsupported_intents:
+            print(f"  unsupported_intents: {', '.join(skill.unsupported_intents)}")
+        print()
+        print(skill.body)
+    return EXIT_SUCCESS
+
+
+def handle_agent_run(args: argparse.Namespace) -> int:
+    if args.dry_run and args.execute:
+        return print_error(
+            {
+                "code": "invalid_agent_mode",
+                "message": "Use either --dry-run or --execute, not both.",
+                "details": {},
+            },
+            json_output=args.json,
+            exit_code=EXIT_VALIDATION_ERROR,
+        )
+    try:
+        llm_client = build_llm_client()
+    except ValueError as exc:
+        return print_error(
+            {"code": "invalid_llm_config", "message": str(exc), "details": {}},
+            json_output=args.json,
+            exit_code=EXIT_VALIDATION_ERROR,
+        )
+    execute = not args.dry_run
+    context = ToolContext.from_env(dry_run=args.dry_run)
+    runner = AgentRunner.default(
+        llm_client,
+        max_steps=args.max_steps,
+        allow_experimental=args.allow_experimental,
+    )
+    result = asyncio.run(
+        runner.run(
+            task=args.task,
+            context=context,
+            skill_name=args.skill,
+            execute=execute,
+        )
+    )
+    payload = result.to_dict()
+    if args.json:
+        print_json(payload)
+    else:
+        print_agent_human_result(payload)
+    if result.is_success:
+        return EXIT_SUCCESS
+    if result.status.value == "needs_user":
+        return EXIT_VALIDATION_ERROR
+    return EXIT_RUNTIME_FAILURE
+
+
 def run_tool_command(
     *,
     tool: str,
@@ -203,6 +317,20 @@ def run_tool_command(
     if result.error and result.error.category.value in VALIDATION_ERROR_CATEGORIES:
         return EXIT_VALIDATION_ERROR
     return EXIT_RUNTIME_FAILURE
+
+
+def build_llm_client() -> OllamaClient:
+    import os
+
+    provider = os.environ.get("MEDIAGENT_LLM_PROVIDER", "ollama").strip().lower()
+    if provider != "ollama":
+        raise ValueError(f"Unsupported LLM provider: {provider}")
+    return OllamaClient(
+        base_url=os.environ.get("MEDIAGENT_OLLAMA_BASE_URL", "http://127.0.0.1:11434"),
+        model=os.environ.get("MEDIAGENT_OLLAMA_MODEL", "qwen3:8b"),
+        timeout=float(os.environ.get("MEDIAGENT_OLLAMA_TIMEOUT_SECONDS", "60")),
+        num_predict=int(os.environ.get("MEDIAGENT_OLLAMA_NUM_PREDICT", "512")),
+    )
 
 
 def handle_experimental_telegram_sync_links(args: argparse.Namespace) -> int:
@@ -269,5 +397,24 @@ def print_human_result(payload: dict[str, Any]) -> None:
     if payload.get("warnings"):
         for warning in payload["warnings"]:
             print(f"warning: {warning}", file=sys.stderr)
+    if payload.get("error"):
+        print(f"error: {payload['error']['message']}", file=sys.stderr)
+
+
+def print_agent_human_result(payload: dict[str, Any]) -> None:
+    print(f"status: {payload['status']}")
+    print(f"skill: {payload.get('skill')}")
+    print(f"dry_run: {payload.get('dry_run')}")
+    if payload.get("message"):
+        print(payload["message"])
+    for step in payload.get("steps") or []:
+        action = step.get("action") or {}
+        print(f"step {step.get('index')}: {action.get('action')}")
+        if action.get("tool"):
+            print(f"  tool: {action['tool']}")
+        if step.get("tool_result"):
+            print(json.dumps(step["tool_result"], ensure_ascii=False, indent=2, sort_keys=True))
+        if step.get("error"):
+            print(f"  error: {step['error']['message']}", file=sys.stderr)
     if payload.get("error"):
         print(f"error: {payload['error']['message']}", file=sys.stderr)

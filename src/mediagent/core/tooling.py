@@ -136,6 +136,7 @@ class ToolSpec:
     permissions: tuple[Permission, ...]
     dry_run_supported: bool
     experimental: bool = False
+    hidden: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -146,6 +147,7 @@ class ToolSpec:
             "permissions": [permission.value for permission in self.permissions],
             "dry_run_supported": self.dry_run_supported,
             "experimental": self.experimental,
+            "hidden": self.hidden,
         }
 
 
@@ -256,10 +258,12 @@ class ToolRegistry:
             )
         self._tools[name] = definition
 
-    def list(self, *, include_experimental: bool = False) -> list[ToolSpec]:
+    def list(self, *, include_experimental: bool = False, include_hidden: bool = False) -> list[ToolSpec]:
         definitions = sorted(self._tools.values(), key=lambda item: item.spec.name)
         if not include_experimental:
             definitions = [definition for definition in definitions if not definition.spec.experimental]
+        if not include_hidden:
+            definitions = [definition for definition in definitions if not definition.spec.hidden]
         return [definition.spec for definition in definitions]
 
     def get(self, name: str, *, allow_experimental: bool = False) -> ToolDefinition:

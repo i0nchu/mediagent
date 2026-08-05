@@ -9,6 +9,7 @@ Mediagent 只負責蒐集與下載媒體。它不管理媒體庫、不瀏覽媒�
 ```text
 src/mediagent/
   cli.py
+  agent/
   core/
   tools/
   platforms/
@@ -44,6 +45,18 @@ Core code 不得包含平台特定 API 行為。
 - 避免洩漏 secrets
 
 CLI、未來 workflows、未來 Agent Core 都必須透過同一個 registry 呼叫工具。
+
+## Agent Core V1 Layer
+
+`src/mediagent/agent/` 包含目前的本機 Agent Core V1 preview：
+
+- `skills/`：Markdown SKILL loading 與內建英文 SKILL files
+- `llm/`：Ollama client boundary
+- `prompts.py`：strict JSON skill/action prompt builders
+- `actions.py` 與 `schema.py`：action parsing 與 structured agent run contracts
+- `core.py`：SKILL-scoped run loop
+
+Agent Core V1 不是 scheduler，也不是廣泛 autonomous planner。它必須選擇一個 SKILL、只透過 `ToolRegistry` 呼叫該 SKILL allowlist 中的工具、在沒有 SKILL 明確符合時於 tool call 前拒絕 unsupported tasks、把模型的 dry-run 選擇正規化到全域 runtime mode，並移除使用者沒有明確提供的 destination paths。
 
 ## Platform Layer
 
@@ -184,7 +197,7 @@ explicit URL source or collector
 -> sync/download pipeline
 ```
 
-LLM 或 Agent Core integration 可以協助使用者把自然語言意圖轉成 RuleSpec files，但 daemon 與 cron execution 應執行已儲存的 deterministic rules。Platform adapters 不應包含 quality scoring 或 content-preference logic。
+LLM 或 Agent Core integration 可以協助使用者把自然語言意圖轉成 explicit tool calls 或未來 RuleSpec files，但 daemon 與 cron execution 應執行已儲存的 deterministic rules。Platform adapters 不應包含 quality scoring 或 content-preference logic。
 
 ## Deferred Workflow Layer
 

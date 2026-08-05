@@ -7,30 +7,71 @@ When updating this TODO, update the Traditional Chinese and Japanese copies in t
 - `.agents_zh_tw/TODO.md`
 - `.agents_jp/TODO.md`
 
-## Current Focus: Remaining Missing-File Policy Decision
+## Recently Completed Gate: Clean-State Agent Full-Source Verification
 
-Goal: decide how to handle the 6 historical Reddit file records that still point to missing local files after the bounded repair run.
+Goal: prove Agent Core can interpret deployment-style natural-language tasks without downgrading "all" into arbitrary limits.
 
-The explicit repair path is implemented and live-tested. It repaired the resolvable missing files. The remaining records are not normal downloader failures; their source URLs now hit a Reddit login wall and resolve as `requires_auth:login_required`.
+Completed before returning to timer hardening:
 
-## Decision Tasks
+- [x] Rebuild the active SQLite DB and `mediagent-data/library` without preserving old live-test state.
+- [x] Run `mediagent agent run "下載所有 telegram inbox 內所有可下載的媒體來源"` in execute mode.
+- [x] Confirm the selected tool uses `telegram.inbox.sync_links` with `full_sync:true` and no invented `limit` / `max_messages`.
+- [x] Run `mediagent agent run "下載 pixiv bookmark 所有可下載媒體來源"` in execute mode.
+- [x] Confirm the selected tool uses `pixiv.bookmarks.sync` with `full_sync:true`, `stop_on_known:false`, and no invented `limit` / `max_pages`.
+- [x] Run the same two tasks again and confirm tool-layer dedupe prevents duplicate downloads.
+- [x] Verify downloaded file health with `library.file.verify`.
 
-- Decide whether to leave the 6 remaining Reddit rows as known historical missing records.
-- Decide whether to reset or quarantine those records with `core.cleanup.media_state`.
-- Decide whether Reddit login-wall repair is worth new resolver/auth work, or should stay deferred with Reddit OAuth/saved collection.
-- Do not run broad repair against the full live DB without a fresh dry-run and explicit user approval.
+## Current Focus: Agent-Mode systemd Timer Deploy MVP
 
-## Acceptance Notes
+Goal: make Mediagent deployable as a conservative timer-driven background service that invokes Agent Core before building a long-running daemon.
 
-- Current live verification should stay at 669 valid files and 6 missing files unless the user chooses cleanup or new Reddit auth/resolver work.
-- No agent should treat the remaining 6 rows as newly discovered downloadable media without first resolving the Reddit login-wall limitation.
-- The repair feature itself is considered complete; future work is product policy or provider capability, not the original DB-state bug.
+Production timer entries should call `mediagent agent run "<task>"`, not direct deterministic tools. Deterministic tools remain the safe bottom layer for Agent Core, regression tests, debugging, and explicit operator verification.
 
-## Deferred Candidates
+The first agent-mode service target is Telegram inbox sync because it represents recurring content intake: scan the configured inbox, resolve new links, download supported media, store DB/file state, and continue from the stored cursor on the next run.
 
-- X explicit post-link feasibility.
-- Instagram session-status TTL and long-running cron verification.
-- Telegram inbox promotion from experimental wrapper to documented URL input source.
-- Reddit/Redgifs follow-up only if new explicit-link examples require it.
-- Workflow V1 after link-first provider adapters remain stable through repeated runs.
-- Agent Core / SKILL integration after deterministic tools and workflow boundaries are stable.
+The second timer-safe source is Pixiv bookmark sync. Pixiv does not expose a simple "messages after cursor" model like Telegram, so the service path should scan from the newest bookmarks, stop when it reaches an already known terminal item, and use a bounded `max_pages` safety cap.
+
+## Remaining Deployment MVP Tasks
+
+- [ ] Add a deployment-oriented environment check profile for:
+  - `MEDIAGENT_DATA_DIR`
+  - `MEDIAGENT_DB_PATH`
+  - `MEDIAGENT_LIBRARY_DIR`
+  - `TELEGRAM_API_ID`
+  - `TELEGRAM_API_HASH`
+  - `TELEGRAM_SESSION_FILE`
+  - `MEDIAGENT_TELEGRAM_INBOX_KEY`
+  - one of `MEDIAGENT_TELEGRAM_INBOX_CHAT_ID`, `MEDIAGENT_TELEGRAM_INBOX_CHAT_USERNAME`, or `MEDIAGENT_TELEGRAM_INBOX_CHAT`
+- [ ] Add a run-lock or lease guard so overlapping timer runs cannot process the same inbox concurrently.
+- [ ] Add summary-only service output for `systemd` Agent Core runs. Current full JSON output is too large for journal because it includes full artifact lists and nested resolution payloads.
+- [ ] Make Pixiv `stop_on_known` source-aware so explicit Pixiv links downloaded from another source do not prematurely stop bookmark sync during clean-state rebuilds.
+- [ ] Add a timer-safe failure policy:
+  - auth/session failures stop the current run
+  - rate limits stop the current run without tight retry loops
+  - partial downloads do not advance the Telegram cursor
+
+## Acceptance Criteria
+
+- [x] A clean checkout can be configured from `.env.example`.
+- [ ] `core.env.check` or an equivalent CLI path can detect missing Telegram inbox deployment settings.
+- [ ] A dry-run agent-mode timer command resolves the configured inbox without requiring the user to pass `chat` in the tool input.
+- [x] An execute agent-mode timer command can download new inbox media and store `links:<inbox_key>` cursor state.
+- [x] A second run starts after the stored cursor and does not re-download the same inbox links.
+- [x] Pixiv bookmark timer runs scan newest bookmarks, stop on known terminal items, and do not re-download already downloaded artworks when `MEDIAGENT_LIBRARY_DIR` changes.
+- [ ] Overlapping timer runs are prevented or fail cleanly before downloading.
+- [x] The runbook explains where downloaded files are stored.
+
+## Deferred To V2 Or Later
+
+- Long-running daemon process.
+- Built-in scheduler.
+- Agentic scheduler.
+- RuleSpec generation.
+- Visual workflow editor.
+- Long-term memory.
+- Multi-turn conversation state.
+- Broad autonomous planning beyond the selected SKILL.
+- Workspace-scoped command execution.
+- Library rebuild / management workflows.
+- Long-running progress or structured streaming.
+- X explicit post-link support, because X API tweet reads currently require paid credits.

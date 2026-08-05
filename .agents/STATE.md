@@ -8,6 +8,9 @@
 - Tool contract exists in `src/mediagent/core/tooling.py`.
 - Tool registry exists through `src/mediagent/tools/defaults.py`.
 - CLI bridge exists in `src/mediagent/cli.py`.
+- Agent Core V1 exists under `src/mediagent/agent/` with SKILL loading, strict JSON action parsing, Ollama integration, tool allowlist enforcement, dry-run/execute boundaries, and compact redacted tool-result feedback.
+- Built-in English agent SKILL files exist under `src/mediagent/agent/skills/builtin/`.
+- Agent CLI commands exist: `mediagent agent run`, `mediagent agent skills list`, and `mediagent agent skills inspect`.
 - SQLite schema initialization exists in `src/mediagent/core/db.py`.
 - Current SQLite schema version is `7`, with idempotent migration support for old media item/file tables and the stable `link_queue` lifecycle/retry/provenance fields.
 - Filesystem safety helpers exist in `src/mediagent/core/filesystem.py`.
@@ -25,6 +28,7 @@
 - Reddit explicit-link support exists through the `reddit_media_link` resolver for direct `i.redd.it` image URLs, direct `v.redd.it` MP4 video-only URLs, Reddit post/share links, bounded anonymous HTML, `old.reddit.com` fallback with static non-secret `over18=1`, static galleries, preview-fallback galleries, and structured skips for manifest/login-wall cases.
 - Instagram platform support exists under `src/mediagent/platforms/instagram/` for saved-session auth boundaries, explicit local login, bounded session repair, post/Reel URL parsing, and post-level resource normalization.
 - Instagram explicit-link support exists through the `instagram_media_link` resolver for public `/p/<shortcode>/`, `/reel/<shortcode>/`, and `/tv/<shortcode>/` URLs using a configured saved local session.
+- Known platform page domains with dedicated resolvers are guarded by `reserved_platform_page`, so unsupported Instagram pages, Pixiv non-artwork pages, and Imgur gallery/album-style pages return structured skips instead of falling through to generic HTML/media resolution. Existing live DB/library rows with `instagram_com` are historical residue from before this guard.
 - Deterministic sync helpers exist in `src/mediagent/core/sync.py`.
 - Universal storage planning exists in `src/mediagent/core/storage.py`.
 - The default shared-root storage layout is `scanner-friendly-v2`: `<platform>/<media_type>/<yyyy>/<mm>/<filename>`.
@@ -33,7 +37,7 @@
 - Pixiv bookmark sync now performs collect -> upsert -> status filter -> storage path plan -> partial download finalization -> file record -> item status update.
 - Pixiv bookmark sync stores scoped cursors when `media_types` filtering is used, such as `bookmarks:public:photo`.
 - Telegram message sync stores per-source scoped cursors when durable processing succeeds, such as `messages:saved_messages:photo-video`.
-- Undocumented Telegram inbox link resolver support exists behind experimental boundaries. It treats Telegram as ingest provenance and uses the resolved `origin_source` for media items and storage layout.
+- Low-profile Telegram inbox link resolver support exists as hidden stable tools for Agent SKILL usage. It treats Telegram as ingest provenance and uses the resolved `origin_source` for media items and storage layout.
 - Conservative cleanup/recovery support exists through `core.cleanup.media_state` for planning media-state cleanup and quarantining files before DB reset.
 - Media file records use a stable non-null `file_key` so upserts remain idempotent even when `remote_url` or `local_path` is missing.
 - Media file records can store library-relative paths, storage layout version, file health, source timestamp, and verification timestamp.
@@ -77,8 +81,8 @@
 - `instagram.link.resolve`
 - `telegram.auth.login`
 - `telegram.auth.status`
-- `telegram.inbox.collect_links` (experimental)
-- `telegram.inbox.sync_links` (experimental)
+- `telegram.inbox.collect_links` (hidden stable)
+- `telegram.inbox.sync_links` (hidden stable)
 - `telegram.dialogs.list`
 - `telegram.messages.collect`
 - `telegram.media.download`
@@ -93,6 +97,60 @@
 - `x.auth.refresh`
 - `x.auth.status`
 - `x.bookmarks.collect`
+
+## Latest Agent Core V1 State
+
+- Agent Core V1 is LLM-driven, not a deterministic intent planner. The selected model chooses SKILL actions through a strict JSON action protocol.
+- Supported actions are `call_tool`, `final`, and `ask_user`.
+- The first LLM backend is Ollama. Default local settings are `MEDIAGENT_LLM_PROVIDER=ollama`, `MEDIAGENT_OLLAMA_BASE_URL=http://127.0.0.1:11434`, and `MEDIAGENT_OLLAMA_MODEL=qwen3:8b`.
+- Built-in SKILL files are intentionally written in English and do not assume the user's language. The LLM is expected to understand and respond to the user's natural language.
+- Built-in skills are `explicit_link_download`, `instagram_link_download`, `library_health_check`, `pixiv_bookmark_sync`, and `telegram_inbox_download`.
+- SKILL frontmatter now exposes explicit intent boundaries through `supported_intents`, `unsupported_intents`, `requires_initial_tool_call`, and `supports_unbounded`.
+- Agent Core supports full-source tasks only when the selected SKILL documents a full-sync mode. Telegram inbox and Pixiv bookmark SKILLs now support "all/complete/until-exhausted" requests through explicit `full_sync:true` tool inputs, while the prompt tells the model not to invent count/page limits for those tasks.
+- Pixiv bookmark sync SKILL text now states that `limit` means bookmark item count, not downloaded file count; multi-page artworks may produce more files than the item limit.
+- Telegram inbox SKILL text now describes the selected inbox workflow boundary, lets the tool use `MEDIAGENT_TELEGRAM_INBOX_*` when no explicit selector is named, and explicitly does not inspect inbox existence/configuration in V1.
+- `telegram.inbox.collect_links` and `telegram.inbox.sync_links` can now use `MEDIAGENT_TELEGRAM_INBOX_KEY` plus `MEDIAGENT_TELEGRAM_INBOX_CHAT_ID`, `MEDIAGENT_TELEGRAM_INBOX_CHAT_USERNAME`, or `MEDIAGENT_TELEGRAM_INBOX_CHAT` as the default inbox selector for Agent Core, cron, and systemd timer runs.
+- `mediagent agent run "<task>"` defaults to execute mode. `--dry-run` is an explicit preview/development mode, and the runner normalizes tool actions to the global runtime mode so the model cannot silently downgrade execute runs into dry-run previews.
+- LLM transport failures are returned as structured `llm_request_failed` agent errors instead of Python tracebacks.
+- Skill selection supports `unsupported_task` / tool-gap outcomes before any tool call when no SKILL clearly matches.
+- Agent Core strips `library_root`, `target_dir`, and `target_path` values that were not explicitly present in the user task, and rejects explicit destination paths outside configured write roots.
+- Long-running progress/logging and structured streaming remain deferred to V2 or later.
+- The current local `qwen3:8b` model was verified against fake tools. It correctly selected `explicit_link_download` for an English explicit-link task and `telegram_inbox_download` for a Traditional Chinese inbox task, produced valid `call_tool` actions, respected global run mode, and returned `final` after successful tool feedback.
+- `telegram_inbox_download` now requires an initial tool call for action tasks. A live Ollama dry-run for `同步一次inbox的內容` selected the inbox SKILL and called hidden stable `telegram.inbox.sync_links` without `--allow-experimental`.
+- A live Ollama dry-run for `我目前有存在的 telegram inbox 嗎？` returned structured `unsupported_task` with `skill: null` and no tool steps.
+
+## Latest Clean-State Agent Full-Source Verification
+
+- On 2026-08-05 UTC, the active `/home/ion/projects/mediagent/mediagent-data/library` and `/home/ion/projects/mediagent/mediagent-data/mediagent.sqlite3` were deleted and rebuilt without backup. Credentials and session files under `mediagent-data/credentials/` were preserved.
+- `mediagent agent run "下載所有 telegram inbox 內所有可下載的媒體來源"` selected `telegram_inbox_download` and called `telegram.inbox.sync_links` with `full_sync:true`, `store_cursor:false`, and no invented `limit` / `max_messages`.
+- First Telegram run: 31 links collected/considered, 27 resolved, 4 skipped links, 27 items queued/downloaded, 79 files downloaded, 474005235 bytes written, 0 failed, 0 partial.
+- Telegram rerun: 31 links considered, 27 resolved, 4 skipped links, 27 skipped items, 0 queued, 0 files downloaded, 0 bytes written.
+- `mediagent agent run "下載 pixiv bookmark 所有可下載媒體來源"` selected `pixiv_bookmark_sync` and called `pixiv.bookmarks.sync` with `full_sync:true`, `stop_on_known:false`, `store_cursor:false`, and no invented `limit` / `max_pages`.
+- First Pixiv run: 11 pages scanned, 309 items collected/discovered, `collection_stop_reason:end_of_feed`, 307 items queued/downloaded, 2 skipped items, 1758 files downloaded, 2946174301 bytes written, 0 failed, 0 partial.
+- Pixiv rerun: 11 pages scanned, 309 collected/discovered, 309 skipped, 0 queued, 0 files downloaded, 0 bytes written.
+- `library.file.verify` reported 1837 checked files, 1837 valid, 0 missing, 0 corrupt, and 0 unknown. The active library size after verification was about 3.2G, and the active DB size was about 2.8M.
+- DB summary after verification: downloaded media items by platform included Pixiv 309, Redgifs 10, Instagram 8, Reddit 3, and a few generic/source-host items. Downloaded media files included Pixiv 1800, Instagram 18, Redgifs 10, Reddit 5, and source-host/generic files.
+- During Telegram inbox runs, Instagram resolver output still printed large `JSONDecodeError in public_request` HTML diagnostics to stdout/stderr. The runs succeeded, but this remains evidence for the open summary-only/logging hardening task.
+
+## Latest systemd Timer MVP State
+
+- Telegram inbox sync is the first timer-deploy target, but formal deployment should invoke it through `mediagent agent run "<task>"` rather than by calling deterministic tools directly.
+- `.env.example` now documents `MEDIAGENT_TELEGRAM_INBOX_KEY` plus `MEDIAGENT_TELEGRAM_INBOX_CHAT_ID`, `MEDIAGENT_TELEGRAM_INBOX_CHAT_USERNAME`, or `MEDIAGENT_TELEGRAM_INBOX_CHAT` for default inbox selection.
+- Local `.env` was updated with non-secret Telegram inbox selector values for the current live test: `MEDIAGENT_TELEGRAM_INBOX_KEY=mediagent_inbox` and the numeric inbox chat id.
+- `telegram.inbox.collect_links` and `telegram.inbox.sync_links` can run without explicit `chat`/`chats` input when the default inbox env vars are configured.
+- Live Telegram inbox execute verification on 2026-08-04 UTC used selector key `mediagent_inbox`, read existing cursor `links:mediagent_inbox=34`, collected 3 new links, resolved 3 links, downloaded 3 video files, wrote 40603018 bytes, and stored cursor `links:mediagent_inbox=38`.
+- A follow-up dry-run and Agent Core execute run for `幫我同步更新下載 telegram inbox 中的內容` found 0 new links and 0 queued downloads after cursor `38`, confirming rerun cursor continuation for the current inbox.
+- Pixiv bookmark sync now supports timer-safe `stop_on_known` scanning. When enabled, it starts from the newest bookmarks, scans up to bounded `max_pages`, and stops after a page containing a known terminal media item.
+- In `stop_on_known` mode, Pixiv sync does not store the API pagination cursor when it stops on a known item, so the cursor cannot be mistaken for a Telegram-style continuation cursor.
+- Agent Core Pixiv recurring sync now uses `pixiv.bookmarks.sync` with `stop_on_known:true` and bounded `max_pages` instead of an invented default item `limit`.
+- Live Pixiv Agent Core dry-run on 2026-08-04 UTC for `幫我同步更新下載 pixiv bookmark 中的內容` scanned 1 page, collected 30 known bookmark items, reported `collection_stop_reason: known_item_seen`, queued 0 downloads, and wrote 0 files.
+- A direct Pixiv dry-run with an alternate `MEDIAGENT_LIBRARY_DIR` also queued 0 downloads, confirming that changing library root does not reset DB-based media item dedupe.
+- `deploy/systemd/user/` now contains local example user units, timers, JSON inputs, and a minimal runbook for Telegram inbox sync and Pixiv bookmark sync.
+- Clean-state user-systemd verification on 2026-08-05 UTC removed the old library/live-test outputs, backed up the old SQLite DB to `mediagent-data/backups/mediagent.sqlite3.20260805014915.bak`, initialized schema v7, and kept credential files intact.
+- The previous Agent Core failure for exact full-source tasks `下載所有 telegram inbox 內所有可下載的媒體來源` and `下載 pixiv bookmark 所有可下載媒體來源` has been addressed in code. The next verification step is a clean DB/library rebuild using those exact natural-language tasks.
+- `systemctl --user start mediagent-telegram-inbox.service` succeeded on the clean DB: first run collected 31 links, resolved 27, skipped 4, downloaded 79 files, wrote 474005235 bytes, and stored cursor `links:mediagent_inbox=39`; second run found 0 new links and downloaded 0 files.
+- `systemctl --user start mediagent-pixiv-bookmarks.service` succeeded after the Telegram run: first run scanned 1 page, collected 30 bookmarks, skipped 1 already-known explicit Pixiv item from Telegram, downloaded 29 bookmark items as 293 files, wrote 447025170 bytes, and did not store an API pagination cursor because it stopped on a known item; second run queued 0 and skipped 30.
+- Post-verification library state: 372 downloaded file records, 372 valid files, 0 missing, 0 corrupt, and 0 unknown. The rebuilt library is about 880M.
 
 ## Latest Repair-Mode State
 
@@ -126,6 +184,8 @@ uv run --locked mediagent tools inspect instagram.auth.status --json
 uv run --locked mediagent tools inspect instagram.link.resolve --json
 uv run --locked mediagent tools inspect pixiv.link.resolve --json
 uv run --locked mediagent tools inspect link.media.sync --json
+uv run --locked mediagent agent skills list --json
+uv run --locked mediagent agent skills inspect telegram_inbox_download --json
 uv run --locked mediagent tools run telegram.auth.login --input examples/tools/telegram.auth.login.json --dry-run --json
 uv run --locked mediagent tools run pixiv.auth.login --input examples/tools/pixiv.auth.login.start.json --dry-run --json
 PIXIV_ACCESS_TOKEN= PIXIV_REFRESH_TOKEN= PIXIV_CREDENTIALS_FILE= uv run --locked mediagent tools run pixiv.link.resolve --input examples/tools/pixiv.link.resolve.json --dry-run --json
@@ -133,12 +193,12 @@ uv run --locked mediagent tools run reddit.saved.collect --input examples/tools/
 uv run --locked mediagent tools run x.auth.start --input examples/tools/x.auth.start.json --json
 ```
 
-The latest local full suite has 200 passing tests.
+The latest local full suite has 227 passing tests.
 
 Phase 16 Telegram inbox link resolver verification:
 
-- `link.resolve.preview`, `link.resolve.to_media_item`, `telegram.inbox.collect_links`, and `telegram.inbox.sync_links` are implemented as experimental tools.
-- Normal `mediagent tools list` hides experimental tools; `--include-experimental` shows them.
+- `link.resolve.preview` and `link.resolve.to_media_item` are implemented as experimental tools. `telegram.inbox.collect_links` and `telegram.inbox.sync_links` are hidden stable tools for Agent SKILL usage.
+- Normal `mediagent tools list` hides experimental tools and hidden low-profile tools; `--include-experimental` shows experimental tools, while hidden tools remain callable by name.
 - Normal `mediagent tools run link.resolve.to_media_item` rejects execution with `experimental_tool_not_allowed`.
 - Top-level `mediagent --help` does not expose the hidden `experimental` command path.
 - Tests cover URL normalization, `normalized_url` uniqueness, userinfo rejection, malformed URL skip behavior, unsafe schemes, localhost/private IP rejection, unresolved host rejection, redirect limits, unsupported MIME rejection, `.mov` / `video/quicktime`, generic single-media HTML discovery, HEAD-forbidden HTML fallback, X age/login wall skip behavior, Imgur single-page resolution, ambiguous multi-media skip, Pixiv artwork-link `requires_auth`, duplicate Telegram URL queueing, origin-source storage layout, Telegram provenance metadata without raw message text, safe GET redirect revalidation, oversized GET body rejection, and MOV redirect-to-non-media rejection.
@@ -296,11 +356,10 @@ Phase 13 Telegram + Pixiv layout live verification ran on 2026-07-24 UTC:
 - Pixiv localhost callback server
 - Instagram feed, saved-post, stories, profile scraping, messaging, posting, comments, likes, follows, and broad account collection
 - Instagram session status TTL and extra edge-case fixtures for checkpoint/2FA/rate-limit/thumbnail-only Reel cases
-- LLM Agent Core
 - visual workflow editor
 
 ## Next Recommended Task
 
 File-health-aware repair mode is implemented and bounded live repair has restored the resolvable missing files. The next recommended task is deciding how to handle the 6 remaining historical Reddit rows that now hit `requires_auth:login_required`: leave them as known missing, reset/quarantine them with cleanup tooling, or defer them until Reddit auth/resolver work resumes.
 
-Treat Reddit OAuth/saved collection and X live auth verification as deferred legacy/advanced paths. Do not start Workflow V1 or Agent Core until the link-first provider-adapter contract remains stable through at least one more provider adapter or repeated cron-style runs, unless the user explicitly chooses workflow work next.
+Treat Reddit OAuth/saved collection and X live auth verification as deferred legacy/advanced paths. Do not start Workflow V1, built-in scheduling, or broad autonomous planning until the link-first provider-adapter contract remains stable through at least one more provider adapter or repeated cron-style runs, unless the user explicitly chooses workflow work next.

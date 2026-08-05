@@ -176,7 +176,7 @@ class TelethonTelegramClient:
         *,
         chats: list[Any],
         after_by_source: dict[str, int | None],
-        limit: int,
+        limit: int | None,
         message_ids_by_source: dict[str, list[int]] | None,
         message_links: list[str] | None,
         include_protected: bool,

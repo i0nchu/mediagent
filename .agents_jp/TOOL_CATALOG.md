@@ -14,6 +14,27 @@ uv run --locked mediagent tools run <tool-name> --input examples/tools/<tool-nam
 
 safe preview に対応する tool では `--dry-run` を付けます。
 
+## Agent Core V1 Commands
+
+Agent Core V1 は local preview で、SKILL allowlists を通じて同じ `ToolRegistry` を呼びます。Separate platform layer でも scheduler でもありません。
+
+```bash
+uv run --locked mediagent agent skills list --json
+uv run --locked mediagent agent skills inspect <skill-name> --json
+uv run --locked mediagent agent run "<natural language task>" --dry-run --json
+uv run --locked mediagent agent run "<natural language task>" --json
+```
+
+Built-in SKILLs:
+
+- `explicit_link_download`
+- `instagram_link_download`
+- `library_health_check`
+- `pixiv_bookmark_sync`
+- `telegram_inbox_download`
+
+明確に一致する SKILL がない場合、Agent run は tool call 前に unsupported tasks を拒否します。Ollama transport failures は structured `llm_request_failed` として返り、user が明示していない destination path fields は strip されます。
+
 ## Auth Tools
 
 - `auth.session.status`: provider session が利用可能か確認します。secrets は出力しません。`provider: "x"` では X auth status に委譲します。
@@ -60,7 +81,7 @@ safe preview に対応する tool では `--dry-run` を付けます。
 - `pixiv.auth.refresh`: 明示的に提供された refresh token で Pixiv App API credentials を更新し、configured write roots 内の credential JSON に書けます。
 - `pixiv.link.resolve`: user-provided Pixiv artwork URL または `illust_id` を normalized downloadable media candidates に resolve しますが、file は download しません。Configured Pixiv session を使い、自分で browser login は開始しません。login/refresh が必要な場合は `pixiv_auth_missing_credentials` のような structured auth errors を返します。
 - `pixiv.bookmarks.collect`: configured account の Pixiv bookmarked illustrations/manga を収集し、single-page、multi-page、ugoira metadata を normalize し、cursor を SQLite に保存できます。
-- `pixiv.bookmarks.sync`: Pixiv bookmarks を collect し、media items を upsert/filter し、scanner-friendly storage paths を plan し、各 `metadata.files[]` file を `.partial` finalization 付きで download し、local media files を記録し、parent item status を `downloaded`、`partial`、`failed` に更新します。JSON sidecar metadata は `write_sidecar_metadata` で明示的に有効化します。`media_types` filtering を使う場合、sync cursor は `bookmarks:public:photo` のように filter scope ごとに保存され、unscoped bookmark cursor は変更しません。
+- `pixiv.bookmarks.sync`: Pixiv bookmarks を collect し、media items を upsert/filter し、scanner-friendly storage paths を plan し、各 `metadata.files[]` file を `.partial` finalization 付きで download し、local media files を記録し、parent item status を `downloaded`、`partial`、`failed` に更新します。JSON sidecar metadata は `write_sidecar_metadata` で明示的に有効化します。`media_types` filtering を使う場合、sync cursor は `bookmarks:public:photo` のように filter scope ごとに保存され、unscoped bookmark cursor は変更しません。Timer-style recurring sync では `stop_on_known:true` と bounded `max_pages` を使い、newest bookmarks から known terminal item を含む page まで scan して停止し、SQLite media item state で dedupe します。Explicit full bookmark rebuild では `full_sync:true` を使い、`limit` と `max_pages` を省略し、`stop_on_known:false` を設定します。Direct CLI/tool calls は `full_sync:true` がない限り conservative one-page default を維持します。
 
 Pixiv collector は file を download しません。bookmark 全体の deterministic download には `pixiv.bookmarks.sync` を使います。Explicit artwork URLs は `link.media.sync` に直接渡せます。この path は 1 artwork URL を 1 media item として扱い、default で全 pages を resolve し、`pixiv.bookmarks.sync` と dedupe し、download 時に必要な Pixiv `Referer` を適用し、runtime headers を metadata に保存しません。単一 file を手動 download する場合は、戻り値の `metadata.files[].url` を `download.http` に渡します。Pixiv 画像 download には通常次が必要です。
 
@@ -102,6 +123,8 @@ mediagent link sync <url> --json
 
 `link.media.sync` は deterministic で、Python、CLI、cron、workflows、future Agent/SKILL integrations から呼び出せます。Writes は configured project-local roots 配下に制限し、resolver candidates の credential-bearing headers を永続化してはいけません。
 
+Dedicated resolver を持つ known platform page domains は platform resolver のために reserve され、generic fallback には渡しません。Unsupported Instagram pages、Pixiv non-artwork pages、Imgur gallery/album-style pages は `generic_html_media` ではなく structured platform skips を返します。
+
 ## Instagram Tools
 
 Instagram support は explicit-link first です。Saved local session は user-provided public post/Reel URLs を resolve するためだけに使います。Feeds、saved posts、stories、profiles、messages、comments、likes、follows、account activity は scan しません。
@@ -115,14 +138,18 @@ Instagram support は explicit-link first です。Saved local session は user-
 
 ## Experimental Link Tools
 
-これらの tools は public preview/compatibility story が決まるまで hidden/experimental helper surfaces として扱います。List には `--include-experimental`、inspect/run には `--allow-experimental` を使います。
+これらの tools は public preview/compatibility story が決まるまで experimental helper surfaces として扱います。List には `--include-experimental`、inspect/run には `--allow-experimental` を使います。
 
 - `link.resolve.preview`: Explicit URL 1 件を download せず安全に preview します。Direct media、bounded single-media HTML、実装済みの小さな provider-specific resolver behavior に対応します。
 - `link.resolve.to_media_item`: Resolved link candidate を normalized media item に変換し、既存 storage/download pipeline に渡します。
-- `telegram.inbox.collect_links`: Curated Telegram inbox から unique external URLs を抽出します。Raw message text は保存しません。
-- `telegram.inbox.sync_links`: Experimental wrapper です。Telegram は URL ingest provenance のみとして扱い、external links を resolve し、clear media results を download し、resolved origin platform 配下に保存します。
 
 現時点ではこれらの experimental names を stable public API として扱わないでください。Promotion では既存 live-test commands の aliases を保持し、examples、この catalog、`RUNBOOK.md`、localized handoff files を同時に更新する必要があります。
+
+## Agent-Only Low-Profile Skills
+
+- `telegram.inbox.sync_links`: selected inbox の `full_sync:true` full-source scan をサポートします。この mode では default 100-message scan limit を適用しません。URL/media/file dedupe は引き続き tool layer が扱います。
+
+- `telegram_inbox_download`: Agent Core が configured Telegram inbox を処理できるようにしますが、direct tool entry points は public workflow commands として文書化しません。Underlying tools は hidden stable surfaces です。Default list には表示されませんが、名前を知っている user/agent は呼び出せます。
 
 ## Reddit Tools
 

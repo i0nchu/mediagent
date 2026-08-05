@@ -14,6 +14,27 @@ uv run --locked mediagent tools run <tool-name> --input examples/tools/<tool-nam
 
 Add `--dry-run` when the tool supports safe preview.
 
+## Agent Core V1 Commands
+
+Agent Core V1 is a local preview that calls the same `ToolRegistry` through SKILL allowlists. It is not a separate platform layer and not a scheduler.
+
+```bash
+uv run --locked mediagent agent skills list --json
+uv run --locked mediagent agent skills inspect <skill-name> --json
+uv run --locked mediagent agent run "<natural language task>" --dry-run --json
+uv run --locked mediagent agent run "<natural language task>" --json
+```
+
+Built-in SKILLs:
+
+- `explicit_link_download`
+- `instagram_link_download`
+- `library_health_check`
+- `pixiv_bookmark_sync`
+- `telegram_inbox_download`
+
+Agent runs reject unsupported tasks before tool calls when no SKILL clearly matches. They also return structured `llm_request_failed` errors for Ollama transport failures and strip hallucinated destination path fields unless the user explicitly provided those paths.
+
 ## Auth Tools
 
 ### `auth.session.status`
@@ -269,6 +290,10 @@ Collects Pixiv bookmarks, upserts and filters media items, plans scanner-friendl
 
 When `media_types` filtering is used, sync cursors are scoped by filter, such as `bookmarks:public:photo`, so filtered syncs do not mutate the unscoped bookmark cursor.
 
+For timer-style recurring sync, use `stop_on_known:true` with a bounded `max_pages`. This scans from the newest bookmarks and stops after a page containing an already known terminal item, avoiding repeated full bookmark scans while still relying on SQLite media item state for dedupe.
+
+For explicit full bookmark rebuilds, use `full_sync:true`, omit `limit` and `max_pages`, and set `stop_on_known:false`. Direct CLI/tool calls without `full_sync:true` keep the conservative one-page default.
+
 Permissions:
 
 - `network`
@@ -373,6 +398,8 @@ This shortcut delegates to `link.media.sync`; it is the stable non-Telegram entr
 
 `link.media.sync` is deterministic and callable from Python, CLI, cron, workflows, and future Agent/SKILL integrations. It must keep writes under configured project-local roots and must not persist credential-bearing headers from resolver candidates.
 
+Known platform page domains with dedicated resolvers are reserved from generic fallback. Unsupported Instagram pages, Pixiv non-artwork pages, and Imgur gallery/album-style pages return structured platform skips instead of being parsed by `generic_html_media`.
+
 ## Instagram Tools
 
 Instagram support is explicit-link first. It uses a saved local session only for resolving user-provided public post/Reel URLs. It does not scan feeds, saved posts, stories, profiles, messages, comments, likes, follows, or account activity.
@@ -423,14 +450,17 @@ Permissions:
 
 ## Experimental Link Tools
 
-These tools remain hidden/experimental helper surfaces while the public preview/compatibility story is settled. Use `--include-experimental` for listing and `--allow-experimental` for inspect/run.
+These tools remain experimental helper surfaces while the public preview/compatibility story is settled. Use `--include-experimental` for listing and `--allow-experimental` for inspect/run.
 
 - `link.resolve.preview`: safely previews one explicit URL without downloading. It supports direct media, bounded single-media HTML, and small provider-specific resolver behavior where implemented.
 - `link.resolve.to_media_item`: converts a resolved link candidate into a normalized media item for the existing storage/download pipeline.
-- `telegram.inbox.collect_links`: extracts unique external URLs from a curated Telegram inbox without storing raw message text.
-- `telegram.inbox.sync_links`: experimental wrapper that uses Telegram only as URL ingest provenance, resolves external links, downloads clear media results, and stores files under the resolved origin platform.
 
 Do not treat these experimental names as stable public API yet. Promotion must preserve aliases for existing live-test commands and update examples, this catalog, `RUNBOOK.md`, and localized handoff files together.
+
+## Agent-Only Low-Profile Skills
+
+- `telegram_inbox_download`: lets Agent Core process the configured Telegram inbox without documenting the direct tool entry points as public workflow commands. The underlying tools are hidden stable surfaces: not listed by default, but callable by name for users or agents that already know them.
+- `telegram.inbox.sync_links`: accepts `full_sync:true` for selected-inbox full-source scans. In that mode the tool does not apply the default 100-message scan limit; URL/media/file dedupe still happens in the tool layer.
 
 ## Reddit Tools
 

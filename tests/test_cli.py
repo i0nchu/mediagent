@@ -19,6 +19,7 @@ class CliTests(unittest.TestCase):
         self.assertIn("tools", payload)
         self.assertIn("core.env.check", {tool["name"] for tool in payload["tools"]})
         self.assertNotIn("link.resolve.preview", {tool["name"] for tool in payload["tools"]})
+        self.assertNotIn("telegram.inbox.sync_links", {tool["name"] for tool in payload["tools"]})
 
     def test_tools_list_can_include_experimental_tools_explicitly(self) -> None:
         completed = self.run_cli("tools", "list", "--json", "--include-experimental")
@@ -26,7 +27,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 0)
         payload = json.loads(completed.stdout)
         self.assertIn("link.resolve.preview", {tool["name"] for tool in payload["tools"]})
-        self.assertIn("telegram.inbox.sync_links", {tool["name"] for tool in payload["tools"]})
+        self.assertNotIn("telegram.inbox.sync_links", {tool["name"] for tool in payload["tools"]})
 
     def test_tools_inspect_rejects_experimental_without_allow_flag(self) -> None:
         completed = self.run_cli("tools", "inspect", "link.resolve.preview", "--json")
