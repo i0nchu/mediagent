@@ -9,6 +9,7 @@ Mediagent collects and downloads media. It does not manage a media library, brow
 ```text
 src/mediagent/
   cli.py
+  agent/
   core/
   tools/
   platforms/
@@ -44,6 +45,18 @@ Every tool must:
 - avoid leaking secrets
 
 The CLI, future workflows, and future Agent Core must call tools through the same registry.
+
+## Agent Core V1 Layer
+
+`src/mediagent/agent/` contains the current local Agent Core V1 preview:
+
+- `skills/`: Markdown SKILL loading and built-in English SKILL files
+- `llm/`: the Ollama client boundary
+- `prompts.py`: strict JSON skill/action prompt builders
+- `actions.py` and `schema.py`: action parsing and structured agent run contracts
+- `core.py`: the SKILL-scoped run loop
+
+Agent Core V1 is not a scheduler and not a broad autonomous planner. It must choose a SKILL, call only tools allowed by that SKILL through `ToolRegistry`, reject unsupported tasks before tool calls when no SKILL clearly matches, normalize model dry-run choices to the global runtime mode, and strip destination paths that were not explicitly provided by the user.
 
 ## Platform Layer
 
@@ -186,7 +199,7 @@ explicit URL source or collector
 -> sync/download pipeline
 ```
 
-LLM or Agent Core integrations may help users turn natural-language intent into RuleSpec files, but daemon and cron execution should run stored deterministic rules. Platform adapters should not contain quality scoring or content-preference logic.
+LLM or Agent Core integrations may help users turn natural-language intent into explicit tool calls or future RuleSpec files, but daemon and cron execution should run stored deterministic rules. Platform adapters should not contain quality scoring or content-preference logic.
 
 ## Deferred Workflow Layer
 

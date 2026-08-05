@@ -7,7 +7,7 @@ import hashlib
 import mimetypes
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 from urllib.parse import urlparse
 
 from mediagent.core import db
@@ -55,30 +55,29 @@ def definitions() -> list[ToolDefinition]:
                 description="Collect unique external URLs from a configured Telegram inbox.",
                 input_schema={
                     "type": "object",
-                    "required_any": [["chat", "chats"]],
                     "properties": {
                         "db_path": {"type": "string"},
                         "chat": _chat_selector_schema(),
                         "chats": {"type": "array", "items": _chat_selector_schema()},
                         "after_message_id": {"type": "integer"},
                         "max_messages": {"type": "integer"},
+                        "full_sync": {"type": "boolean"},
                         "store_cursor": {"type": "boolean"},
                     },
                 },
                 output_schema={"type": "object"},
                 permissions=(Permission.READ_CREDENTIALS, Permission.READ_DB, Permission.WRITE_DB, Permission.NETWORK),
                 dry_run_supported=True,
-                experimental=True,
+                hidden=True,
             ),
             handler=inbox_collect_links,
         ),
         ToolDefinition(
             spec=ToolSpec(
                 name="telegram.inbox.sync_links",
-                description="Experimentally resolve and download safe single-media external links from a Telegram inbox.",
+                description="Resolve and download safe external media links from a configured Telegram inbox.",
                 input_schema={
                     "type": "object",
-                    "required_any": [["chat", "chats"]],
                     "properties": {
                         "db_path": {"type": "string"},
                         "library_root": {"type": "string"},
@@ -88,6 +87,7 @@ def definitions() -> list[ToolDefinition]:
                         "chats": {"type": "array", "items": _chat_selector_schema()},
                         "after_message_id": {"type": "integer"},
                         "max_messages": {"type": "integer"},
+                        "full_sync": {"type": "boolean"},
                         "limit": {"type": "integer"},
                         "overwrite": {"type": "boolean"},
                         "retry_failed": {"type": "boolean"},
@@ -111,7 +111,7 @@ def definitions() -> list[ToolDefinition]:
                     Permission.WRITE_FILES,
                 ),
                 dry_run_supported=True,
-                experimental=True,
+                hidden=True,
             ),
             handler=inbox_sync_links,
         ),
@@ -916,7 +916,13 @@ async def _inbox_collect_links(
     allow_cursor_store: bool,
 ) -> ToolResult:
     db_path = _db_path(context, input_data)
-    chats = _chat_selectors(input_data)
+    chats = _inbox_chat_selectors(context, input_data)
+    if not chats:
+        return ToolResult.failure(
+            "missing_telegram_inbox_chat",
+            "Provide chat/chats or set MEDIAGENT_TELEGRAM_INBOX_CHAT, MEDIAGENT_TELEGRAM_INBOX_CHAT_ID, or MEDIAGENT_TELEGRAM_INBOX_CHAT_USERNAME.",
+            category=ErrorCategory.VALIDATION,
+        )
     if context.dry_run and not _has_telegram_fake_client(context):
         return ToolResult.success(
             {
@@ -945,7 +951,7 @@ async def _inbox_collect_links(
             "telegram_collect_messages",
             chats=chats,
             after_by_source=after_by_source,
-            limit=_positive_int(input_data.get("max_messages"), default=100),
+            limit=_message_scan_limit(input_data, allow_full_sync=True),
             message_ids_by_source={},
             message_links=[],
             include_protected=False,
@@ -1037,7 +1043,7 @@ async def _messages_collect(
             "telegram_collect_messages",
             chats=chats,
             after_by_source=after_by_source,
-            limit=_positive_int(input_data.get("max_messages"), default=100),
+            limit=_message_scan_limit(input_data, allow_full_sync=False),
             message_ids_by_source=message_ids_by_source,
             message_links=input_data.get("message_links") or [],
             include_protected=input_data.get("include_protected", False),
@@ -1065,7 +1071,7 @@ async def _messages_collect(
                     "telegram_collect_messages",
                     chats=[],
                     after_by_source={},
-                    limit=_positive_int(input_data.get("max_messages"), default=100),
+                    limit=_message_scan_limit(input_data, allow_full_sync=False),
                     message_ids_by_source={},
                     message_links=extracted_message_links,
                     include_protected=input_data.get("include_protected", False),
@@ -1617,6 +1623,33 @@ def _chat_selectors(input_data: dict[str, Any]) -> list[Any]:
         if chat is not None:
             chats.append(chat)
     return chats
+
+
+def _inbox_chat_selectors(context: ToolContext, input_data: dict[str, Any]) -> list[Any]:
+    chats = _chat_selectors(input_data)
+    if chats:
+        return chats
+    selector = _default_inbox_chat_selector(context.env)
+    return [selector] if selector is not None else []
+
+
+def _default_inbox_chat_selector(env: Mapping[str, str]) -> dict[str, Any] | str | None:
+    generic = (env.get("MEDIAGENT_TELEGRAM_INBOX_CHAT") or "").strip()
+    chat_id = (env.get("MEDIAGENT_TELEGRAM_INBOX_CHAT_ID") or "").strip()
+    username = (env.get("MEDIAGENT_TELEGRAM_INBOX_CHAT_USERNAME") or "").strip()
+    key = (env.get("MEDIAGENT_TELEGRAM_INBOX_KEY") or "").strip()
+    if generic and not any((chat_id, username, key)):
+        return generic
+    selector: dict[str, Any] = {}
+    if key:
+        selector["key"] = key
+    if chat_id:
+        selector["id"] = chat_id
+    elif username:
+        selector["username"] = username
+    elif generic:
+        selector["id" if generic.lstrip("-").isdigit() else "username"] = generic
+    return selector or None
 
 
 def _message_ids_by_source(chats: list[Any], input_data: dict[str, Any]) -> dict[str, list[int]]:
@@ -2389,6 +2422,14 @@ def _positive_int(value: Any, *, default: int) -> int:
     if value is None:
         return default
     return max(1, int(value))
+
+
+def _message_scan_limit(input_data: dict[str, Any], *, allow_full_sync: bool) -> int | None:
+    if input_data.get("max_messages") is not None:
+        return max(1, int(input_data["max_messages"]))
+    if allow_full_sync and input_data.get("full_sync"):
+        return None
+    return 100
 
 
 def _safe_chat_selector(selector: Any) -> Any:

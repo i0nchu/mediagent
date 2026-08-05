@@ -9,6 +9,7 @@ Mediagent は media の収集と download だけを担当します。media libra
 ```text
 src/mediagent/
   cli.py
+  agent/
   core/
   tools/
   platforms/
@@ -44,6 +45,18 @@ Core code に platform-specific API behavior を入れてはいけません。
 - secrets を漏らさない
 
 CLI、future workflows、future Agent Core は同じ registry から tools を呼びます。
+
+## Agent Core V1 Layer
+
+`src/mediagent/agent/` は現在の local Agent Core V1 preview を含みます:
+
+- `skills/`: Markdown SKILL loading と built-in English SKILL files
+- `llm/`: Ollama client boundary
+- `prompts.py`: strict JSON skill/action prompt builders
+- `actions.py` と `schema.py`: action parsing と structured agent run contracts
+- `core.py`: SKILL-scoped run loop
+
+Agent Core V1 は scheduler でも broad autonomous planner でもありません。SKILL を選び、その SKILL allowlist 内の tools だけを `ToolRegistry` 経由で呼び、明確に一致する SKILL がない場合は tool call 前に unsupported tasks を拒否し、model の dry-run choices を global runtime mode に normalize し、user が明示していない destination paths を strip しなければなりません。
 
 ## Platform Layer
 
@@ -184,7 +197,7 @@ explicit URL source or collector
 -> sync/download pipeline
 ```
 
-LLM または Agent Core integrations は natural-language intent を RuleSpec files に変換する補助に使えます。ただし daemon / cron execution は stored deterministic rules を実行するべきです。Platform adapters に quality scoring や content-preference logic を入れてはいけません。
+LLM または Agent Core integrations は natural-language intent を explicit tool calls または future RuleSpec files に変換する補助に使えます。ただし daemon / cron execution は stored deterministic rules を実行するべきです。Platform adapters に quality scoring や content-preference logic を入れてはいけません。
 
 ## Deferred Workflow Layer
 

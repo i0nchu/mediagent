@@ -265,6 +265,38 @@ class LinkResolverTests(unittest.TestCase):
         self.assertEqual(result["status"], "skipped")
         self.assertEqual(result["skip_reason"], "ambiguous")
 
+    def test_reserved_imgur_gallery_does_not_fall_through_to_generic_html(self) -> None:
+        page_url = "https://imgur.com/gallery/abc123"
+        fake = FakeLinkHttpClient()
+
+        result = default_link_resolver_registry().resolve(
+            page_url,
+            request=ResolveRequest(http_client=fake, host_resolver=lambda host: ["151.101.0.193"]),
+        )
+
+        self.assertEqual(result["status"], "skipped")
+        self.assertEqual(result["resolver"], "reserved_platform_page")
+        self.assertEqual(result["skip_reason"], "imgur_url_unsupported")
+        self.assertEqual(result["origin_source"], "imgur")
+        self.assertEqual(result["details"]["reason"], "unsupported_imgur_url")
+        self.assertEqual(fake.calls, [])
+
+    def test_reserved_instagram_story_does_not_fall_through_to_generic_html(self) -> None:
+        page_url = "https://www.instagram.com/stories/alice/1234567890123456789?utm_source=ig_story_item_share"
+        fake = FakeLinkHttpClient()
+
+        result = default_link_resolver_registry().resolve(
+            page_url,
+            request=ResolveRequest(http_client=fake, host_resolver=lambda host: ["157.240.22.174"]),
+        )
+
+        self.assertEqual(result["status"], "skipped")
+        self.assertEqual(result["resolver"], "reserved_platform_page")
+        self.assertEqual(result["skip_reason"], "instagram_url_unsupported")
+        self.assertEqual(result["origin_source"], "instagram")
+        self.assertEqual(result["details"]["reason"], "unsupported_instagram_url")
+        self.assertEqual(fake.calls, [])
+
     def test_reddit_direct_image_resolver_preserves_reddit_platform(self) -> None:
         url = "https://i.redd.it/owv7awun2zfh1.jpeg"
         fake = FakeLinkHttpClient()
@@ -816,6 +848,21 @@ class LinkResolverTests(unittest.TestCase):
         self.assertEqual(result["origin_source"], "pixiv")
         self.assertEqual(result["remote_id"], "143734851")
 
+    def test_reserved_pixiv_non_artwork_url_does_not_fall_through_to_generic_html(self) -> None:
+        fake = FakeLinkHttpClient()
+
+        result = default_link_resolver_registry().resolve(
+            "https://www.pixiv.net/users/12345",
+            request=ResolveRequest(http_client=fake, host_resolver=lambda host: ["210.140.131.219"]),
+        )
+
+        self.assertEqual(result["status"], "skipped")
+        self.assertEqual(result["resolver"], "reserved_platform_page")
+        self.assertEqual(result["skip_reason"], "pixiv_url_unsupported")
+        self.assertEqual(result["origin_source"], "pixiv")
+        self.assertEqual(result["details"]["reason"], "unsupported_pixiv_url")
+        self.assertEqual(fake.calls, [])
+
     def test_link_resolve_preview_tool_returns_structured_resolution(self) -> None:
         registry = create_default_registry()
         url = f"https://{PUBLIC_TEST_IP}/photo.jpg"
@@ -898,6 +945,83 @@ class LinkQueueAndSyncTests(unittest.TestCase):
         self.assertEqual(result.data["summary"]["links_queued"], 1)
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["normalized_url"], f"https://{PUBLIC_TEST_IP}/photo.jpg")
+
+    def test_telegram_inbox_collect_links_uses_env_default_chat_and_cursor_key(self) -> None:
+        registry = create_default_registry()
+        old_url = f"https://{PUBLIC_TEST_IP}/old.jpg"
+        new_url = f"https://{PUBLIC_TEST_IP}/new.jpg"
+        fake = FakeTelegramClient(
+            messages={
+                "mediagent_inbox": [
+                    {
+                        "id": 34,
+                        "date": "2026-08-04T01:00:00+00:00",
+                        "chat": {"id": "3779502941", "title": "Inbox", "type": "channel"},
+                        "text": old_url,
+                        "media": [],
+                    },
+                    {
+                        "id": 35,
+                        "date": "2026-08-04T01:05:00+00:00",
+                        "chat": {"id": "3779502941", "title": "Inbox", "type": "channel"},
+                        "text": new_url,
+                        "media": [],
+                    },
+                ]
+            }
+        )
+        with TemporaryDirectory() as temp_dir:
+            context, _data_dir, db_path = _telegram_context(
+                temp_dir,
+                fake,
+                env_overrides={
+                    "MEDIAGENT_TELEGRAM_INBOX_KEY": "mediagent_inbox",
+                    "MEDIAGENT_TELEGRAM_INBOX_CHAT_ID": "3779502941",
+                },
+            )
+            db.initialize_database(db_path)
+            db.set_sync_cursor(
+                db_path,
+                platform="telegram",
+                cursor_name="links:mediagent_inbox",
+                cursor_value="34",
+            )
+
+            result = asyncio.run(
+                registry.run(
+                    "telegram.inbox.collect_links",
+                    {"db_path": str(db_path)},
+                    context,
+                    allow_experimental=True,
+                )
+            )
+            rows = db.list_links(db_path)
+            cursor = db.get_sync_cursor(db_path, platform="telegram", cursor_name="links:mediagent_inbox")
+
+        self.assertTrue(result.is_success)
+        self.assertEqual(fake.calls[0][1]["chats"], [{"key": "mediagent_inbox", "id": "3779502941"}])
+        self.assertEqual(fake.calls[0][1]["after_by_source"], {"mediagent_inbox": 34})
+        self.assertEqual(result.data["summary"]["links_found"], 1)
+        self.assertEqual(rows[0]["normalized_url"], new_url)
+        self.assertEqual(cursor["cursor_value"], "35")
+
+    def test_telegram_inbox_collect_links_requires_chat_or_env_default(self) -> None:
+        registry = create_default_registry()
+        fake = FakeTelegramClient(messages={})
+        with TemporaryDirectory() as temp_dir:
+            context, _data_dir, db_path = _telegram_context(temp_dir, fake)
+
+            result = asyncio.run(
+                registry.run(
+                    "telegram.inbox.collect_links",
+                    {"db_path": str(db_path)},
+                    context,
+                    allow_experimental=True,
+                )
+            )
+
+        self.assertFalse(result.is_success)
+        self.assertEqual(result.error.code, "missing_telegram_inbox_chat")
 
     def test_telegram_inbox_sync_links_downloads_with_origin_source_layout_and_metadata(self) -> None:
         registry = create_default_registry()

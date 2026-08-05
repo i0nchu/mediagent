@@ -1118,6 +1118,176 @@ class PixivToolTests(unittest.TestCase):
         self.assertEqual(result.data["summary"]["planned_files"], 4)
         self.assertEqual(result.data["summary"]["queued"], 3)
 
+    def test_pixiv_bookmarks_sync_without_max_pages_collects_until_feed_end(self) -> None:
+        registry = create_default_registry()
+        first_page = json.loads((FIXTURES / "pixiv" / "bookmarks_response.json").read_text(encoding="utf-8"))
+        second_page = {
+            "illusts": [
+                {
+                    **first_page["illusts"][0],
+                    "id": 2001,
+                    "title": "Second page image",
+                    "create_date": "2026-01-04T00:00:00+09:00",
+                    "meta_single_page": {
+                        "original_image_url": "https://i.pximg.net/img-original/img/2026/01/04/00/00/00/2001_p0.png"
+                    },
+                    "meta_pages": [],
+                }
+            ],
+            "next_url": None,
+        }
+        fake = FakePixivHttpClient()
+        fake.queue(HttpResponse(200, {}, (FIXTURES / "pixiv" / "token_response.json").read_bytes()))
+        fake.queue(HttpResponse(200, {}, json.dumps(first_page).encode()))
+        fake.queue(HttpResponse(200, {}, (FIXTURES / "pixiv" / "token_response.json").read_bytes()))
+        fake.queue(HttpResponse(200, {}, json.dumps(second_page).encode()))
+        with TemporaryDirectory() as temp_dir:
+            data_dir = Path(temp_dir) / "data"
+            db_path = data_dir / "mediagent.sqlite3"
+            context = ToolContext.from_env(
+                env={
+                    "MEDIAGENT_DATA_DIR": str(data_dir),
+                    "MEDIAGENT_DB_PATH": str(db_path),
+                    "PIXIV_REFRESH_TOKEN": "secret-refresh",
+                },
+                cwd=Path(temp_dir),
+                http_client=fake,
+                dry_run=True,
+            )
+
+            result = asyncio.run(
+                registry.run(
+                    "pixiv.bookmarks.sync",
+                    {
+                        "full_sync": True,
+                        "include_ugoira_metadata": False,
+                        "store_cursor": False,
+                    },
+                    context,
+                )
+            )
+
+        self.assertTrue(result.is_success)
+        self.assertEqual(result.data["summary"]["pages_scanned"], 2)
+        self.assertFalse(result.data["summary"]["max_pages_reached"])
+        self.assertEqual(result.data["summary"]["collection_stop_reason"], "end_of_feed")
+        self.assertEqual(result.data["summary"]["collected"], 4)
+
+    def test_pixiv_bookmarks_sync_stop_on_known_stops_after_known_page(self) -> None:
+        registry = create_default_registry()
+        fixture = json.loads((FIXTURES / "pixiv" / "bookmarks_response.json").read_text(encoding="utf-8"))
+        known_illust = fixture["illusts"][0]
+        new_illust = {
+            **known_illust,
+            "id": 9001,
+            "title": "Newer image",
+            "create_date": "2026-01-05T00:00:00+09:00",
+            "meta_single_page": {
+                "original_image_url": "https://i.pximg.net/img-original/img/2026/01/05/00/00/00/9001_p0.png"
+            },
+        }
+        first_page = {
+            "illusts": [new_illust, known_illust],
+            "next_url": "https://app-api.pixiv.net/v1/user/bookmarks/illust?user_id=99&restrict=public&max_bookmark_id=older",
+        }
+        fake = FakePixivHttpClient()
+        fake.queue(HttpResponse(200, {}, (FIXTURES / "pixiv" / "token_response.json").read_bytes()))
+        fake.queue(HttpResponse(200, {}, json.dumps(first_page).encode()))
+        with TemporaryDirectory() as temp_dir:
+            data_dir = Path(temp_dir) / "data"
+            db_path = data_dir / "mediagent.sqlite3"
+            db.initialize_database(db_path)
+            known_item = pixiv_parser.parse_illust(known_illust)
+            db.upsert_media_item(db_path, {**known_item, "status": "downloaded"})
+            context = ToolContext.from_env(
+                env={
+                    "MEDIAGENT_DATA_DIR": str(data_dir),
+                    "MEDIAGENT_DB_PATH": str(db_path),
+                    "PIXIV_REFRESH_TOKEN": "secret-refresh",
+                },
+                cwd=Path(temp_dir),
+                http_client=fake,
+                dry_run=True,
+            )
+
+            result = asyncio.run(
+                registry.run(
+                    "pixiv.bookmarks.sync",
+                    {
+                        "max_pages": 3,
+                        "stop_on_known": True,
+                        "include_ugoira_metadata": False,
+                    },
+                    context,
+                )
+            )
+
+        self.assertTrue(result.is_success)
+        self.assertEqual(result.data["summary"]["pages_scanned"], 1)
+        self.assertTrue(result.data["summary"]["known_item_seen"])
+        self.assertEqual(result.data["summary"]["known_items_seen"], 1)
+        self.assertEqual(result.data["summary"]["collection_stop_reason"], "known_item_seen")
+        self.assertEqual(result.data["summary"]["queued"], 1)
+        self.assertEqual(result.data["summary"]["skipped"], 1)
+        self.assertEqual(result.data["summary"]["planned_files"], 1)
+        self.assertEqual([request[0] for request in fake.requests], ["POST", "GET"])
+
+    def test_pixiv_bookmarks_sync_stop_on_known_does_not_store_pagination_cursor(self) -> None:
+        registry = create_default_registry()
+        fixture = json.loads((FIXTURES / "pixiv" / "bookmarks_response.json").read_text(encoding="utf-8"))
+        known_illust = fixture["illusts"][0]
+        new_illust = {
+            **known_illust,
+            "id": 9002,
+            "title": "Timer image",
+            "create_date": "2026-01-06T00:00:00+09:00",
+            "meta_single_page": {
+                "original_image_url": "https://i.pximg.net/img-original/img/2026/01/06/00/00/00/9002_p0.png"
+            },
+        }
+        first_page = {
+            "illusts": [new_illust, known_illust],
+            "next_url": "https://app-api.pixiv.net/v1/user/bookmarks/illust?user_id=99&restrict=public&max_bookmark_id=older",
+        }
+        fake = FakePixivHttpClient()
+        fake.queue(HttpResponse(200, {}, (FIXTURES / "pixiv" / "token_response.json").read_bytes()))
+        fake.queue(HttpResponse(200, {}, json.dumps(first_page).encode()))
+        fake.queue(HttpResponse(200, {"content-type": "image/png", "content-length": "4"}, b"new!"))
+        with TemporaryDirectory() as temp_dir:
+            data_dir = Path(temp_dir) / "data"
+            db_path = data_dir / "mediagent.sqlite3"
+            db.initialize_database(db_path)
+            known_item = pixiv_parser.parse_illust(known_illust)
+            db.upsert_media_item(db_path, {**known_item, "status": "downloaded"})
+            context = ToolContext.from_env(
+                env={
+                    "MEDIAGENT_DATA_DIR": str(data_dir),
+                    "MEDIAGENT_DB_PATH": str(db_path),
+                    "PIXIV_REFRESH_TOKEN": "secret-refresh",
+                },
+                cwd=Path(temp_dir),
+                http_client=fake,
+            )
+
+            result = asyncio.run(
+                registry.run(
+                    "pixiv.bookmarks.sync",
+                    {
+                        "max_pages": 3,
+                        "stop_on_known": True,
+                        "include_ugoira_metadata": False,
+                    },
+                    context,
+                )
+            )
+            cursor = db.get_sync_cursor(db_path, platform="pixiv", cursor_name="bookmarks:public")
+
+        self.assertTrue(result.is_success)
+        self.assertEqual(result.data["summary"]["downloaded"], 1)
+        self.assertFalse(result.data["summary"]["cursor_stored"])
+        self.assertEqual(result.data["summary"]["cursor_reason"], "known_item_seen")
+        self.assertIsNone(cursor)
+
     def test_pixiv_bookmarks_sync_partial_failure_marks_item_partial(self) -> None:
         registry = create_default_registry()
         fake = FakePixivHttpClient()

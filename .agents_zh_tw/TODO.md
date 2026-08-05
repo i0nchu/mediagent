@@ -7,30 +7,71 @@
 - `.agents/TODO.md`
 - `.agents_jp/TODO.md`
 
-## 目前焦點：剩餘 Missing File 策略決策
+## 最近完成的 Gate：乾淨狀態 Agent Full-Source Verification
 
-目標：決定 bounded repair 後仍指向 missing local files 的 6 筆歷史 Reddit file records 要如何處理。
+目標：證明 Agent Core 可以理解 deployment-style 自然語言任務，而不會把「全部」降級成任意限制。
 
-明確 repair path 已實作並完成 live test。可重新解析的 missing files 已修復。剩餘 records 不是一般 downloader failure；它們的 source URLs 目前會撞到 Reddit login wall，resolver 回傳 `requires_auth:login_required`。
+已在回到 timer hardening 前完成：
 
-## 決策任務
+- [x] 重建 active SQLite DB 與 `mediagent-data/library`，不用保留舊 live-test 狀態。
+- [x] 用 execute mode 執行 `mediagent agent run "下載所有 telegram inbox 內所有可下載的媒體來源"`。
+- [x] 確認 selected tool 使用 `telegram.inbox.sync_links`，並帶 `full_sync:true`，且沒有捏造 `limit` / `max_messages`。
+- [x] 用 execute mode 執行 `mediagent agent run "下載 pixiv bookmark 所有可下載媒體來源"`。
+- [x] 確認 selected tool 使用 `pixiv.bookmarks.sync`，並帶 `full_sync:true`、`stop_on_known:false`，且沒有捏造 `limit` / `max_pages`。
+- [x] 重跑同兩個任務，確認 tool-layer dedupe 會避免重複下載。
+- [x] 用 `library.file.verify` 驗證下載後的檔案健康狀態。
 
-- 決定是否把剩餘 6 筆 Reddit rows 保留為已知歷史 missing records。
-- 決定是否用 `core.cleanup.media_state` reset 或 quarantine 這些 records。
-- 決定 Reddit login-wall repair 是否值得新增 resolver/auth 工作，或應繼續和 Reddit OAuth/saved collection 一起延後。
-- 沒有新的 dry-run 與使用者明確核准前，不要對整個 live DB 執行 broad repair。
+## 目前焦點：Agent-Mode systemd Timer Deploy MVP
 
-## 驗收重點
+目標：先把 Mediagent 做成會呼叫 Agent Core 的保守 timer-driven 背景服務，再開始建立 long-running daemon。
 
-- 除非使用者選擇 cleanup 或新的 Reddit auth/resolver work，live verification 應維持 669 valid files 與 6 missing files。
-- 在解決 Reddit login-wall limitation 前，任何 agent 都不應把剩餘 6 筆 rows 當成新發現、可直接下載的 media。
-- Repair feature 本身視為完成；後續工作是產品策略或 provider capability，不是原本 DB-state bug。
+正式 timer entry 應呼叫 `mediagent agent run "<task>"`，而不是直接呼叫 deterministic tools。Deterministic tools 仍是 Agent Core、regression tests、debugging 與明確 operator verification 會使用的安全底層。
 
-## 延後候選
+第一個 agent-mode 服務化目標是 Telegram inbox sync，因為它代表會反覆更新的內容來源：掃描 configured inbox、解析新連結、下載支援的媒體、保存 DB/file state，並在下一次 run 從 stored cursor 之後繼續。
 
-- X explicit post-link feasibility。
-- Instagram session-status TTL 與長時間 cron 驗證。
-- Telegram inbox 從 experimental wrapper promoted 成 documented URL input source。
-- Reddit/Redgifs follow-up，僅在新的 explicit-link examples 需要時處理。
-- Workflow V1，等 link-first provider adapters 通過多次重複執行仍穩定後再做。
-- Agent Core / SKILL integration，等 deterministic tools 與 workflow boundaries 穩定後再做。
+第二個 timer-safe 來源是 Pixiv bookmark sync。Pixiv 不像 Telegram 有簡單的「從 cursor 之後的訊息」模型，因此服務化路徑應從最新 bookmarks 開始掃描，遇到已知 terminal item 就停止，並使用 bounded `max_pages` 作為安全上限。
+
+## 剩餘 Deployment MVP 任務
+
+- [ ] 新增部署導向的 environment check profile，檢查：
+  - `MEDIAGENT_DATA_DIR`
+  - `MEDIAGENT_DB_PATH`
+  - `MEDIAGENT_LIBRARY_DIR`
+  - `TELEGRAM_API_ID`
+  - `TELEGRAM_API_HASH`
+  - `TELEGRAM_SESSION_FILE`
+  - `MEDIAGENT_TELEGRAM_INBOX_KEY`
+  - `MEDIAGENT_TELEGRAM_INBOX_CHAT_ID`、`MEDIAGENT_TELEGRAM_INBOX_CHAT_USERNAME` 或 `MEDIAGENT_TELEGRAM_INBOX_CHAT` 其中之一
+- [ ] 新增 run-lock 或 lease guard，避免 overlapping timer runs 同時處理同一個 inbox。
+- [ ] 為 `systemd` Agent Core runs 新增 summary-only service output。目前完整 JSON output 對 journal 來說太大，因為它包含完整 artifact lists 與巢狀 resolution payloads。
+- [ ] 讓 Pixiv `stop_on_known` 具備 source-aware 判斷，避免其他來源下載的 explicit Pixiv links 在 clean-state rebuild 時過早停止 bookmark sync。
+- [ ] 新增 timer-safe failure policy：
+  - auth/session failures 會停止本輪
+  - rate limits 會停止本輪，不做密集 retry loop
+  - partial downloads 不會推進 Telegram cursor
+
+## 驗收標準
+
+- [x] 乾淨 checkout 可以依照 `.env.example` 完成設定。
+- [ ] `core.env.check` 或等價 CLI path 可以偵測缺少的 Telegram inbox deployment settings。
+- [ ] Dry-run agent-mode timer command 可以解析 configured inbox，不需要使用者在 tool input 傳入 `chat`。
+- [x] Execute agent-mode timer command 可以下載新的 inbox media，並保存 `links:<inbox_key>` cursor state。
+- [x] 第二次 run 會從 stored cursor 之後開始，不重複下載相同 inbox links。
+- [x] Pixiv bookmark timer runs 會從最新 bookmarks 掃描、遇到 known terminal items 停止，且 `MEDIAGENT_LIBRARY_DIR` 改變時不會重複下載已下載作品。
+- [ ] Overlapping timer runs 會被防止，或在下載前乾淨失敗。
+- [x] Runbook 說明下載後的檔案會放在哪裡。
+
+## 延後到 V2 或更後面
+
+- Long-running daemon process。
+- Built-in scheduler。
+- Agentic scheduler。
+- RuleSpec generation。
+- Visual workflow editor。
+- Long-term memory。
+- Multi-turn conversation state。
+- 超出 selected SKILL 的廣泛自主 planning。
+- Workspace-scoped command execution。
+- Library rebuild / management workflows。
+- Long-running progress 或 structured streaming。
+- X explicit post-link support，因為 X API tweet reads 目前需要付費 credits。

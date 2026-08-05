@@ -8,6 +8,9 @@
 - Tool contract 位於 `src/mediagent/core/tooling.py`。
 - Tool registry 位於 `src/mediagent/tools/defaults.py`。
 - CLI bridge 位於 `src/mediagent/cli.py`。
+- Agent Core V1 位於 `src/mediagent/agent/`，包含 SKILL loading、strict JSON action parsing、Ollama integration、tool allowlist enforcement、dry-run/execute boundaries，以及 compact/redacted tool-result feedback。
+- Built-in English agent SKILL files 位於 `src/mediagent/agent/skills/builtin/`。
+- Agent CLI commands 已建立：`mediagent agent run`、`mediagent agent skills list`、`mediagent agent skills inspect`。
 - SQLite 初始化位於 `src/mediagent/core/db.py`，目前 schema version 是 `7`，並支援舊 media item/file table 與 stable `link_queue` lifecycle/retry/provenance fields 的 idempotent migration。
 - 檔案安全 helper 位於 `src/mediagent/core/filesystem.py`。
 - credential/auth primitives 位於 `src/mediagent/core/auth.py`。
@@ -24,6 +27,7 @@
 - Reddit explicit-link support 已透過 `reddit_media_link` resolver 建立，支援 direct `i.redd.it` image URLs、direct `v.redd.it` MP4 video-only URLs、Reddit post/share links、bounded anonymous HTML、搭配靜態非敏感 `over18=1` 的 `old.reddit.com` fallback、static galleries、preview-fallback galleries，以及 manifest/login-wall cases 的 structured skips。
 - Instagram platform support 位於 `src/mediagent/platforms/instagram/`，包含 saved-session auth boundaries、explicit local login、bounded session repair、post/Reel URL parsing 與 post-level resource normalization。
 - Instagram explicit-link support 已透過 `instagram_media_link` resolver 建立，支援使用 configured saved local session 解析公開 `/p/<shortcode>/`、`/reel/<shortcode>/` 與 `/tv/<shortcode>/` URLs。
+- 已有 dedicated resolver 的已知平台頁面網域會被 `reserved_platform_page` guard 接住，因此 unsupported Instagram pages、Pixiv 非 artwork pages，以及 Imgur gallery/album 類 pages 會回傳 structured skips，而不是 fallback 到 generic HTML/media resolution。既有 live DB/library 中的 `instagram_com` rows 是加入此 guard 前的歷史殘留。
 - Deterministic sync helpers 位於 `src/mediagent/core/sync.py`。
 - Universal storage planning 位於 `src/mediagent/core/storage.py`。
 - 預設 shared-root storage layout 是 `scanner-friendly-v2`：`<platform>/<media_type>/<yyyy>/<mm>/<filename>`。
@@ -32,7 +36,7 @@
 - Pixiv bookmark sync 已支援 collect -> upsert -> status filter -> storage path plan -> partial download finalization -> file record -> item status update。
 - Pixiv bookmark sync 使用 `media_types` filtering 時會存入 scoped cursor，例如 `bookmarks:public:photo`。
 - Telegram message sync 會在 durable processing 成功後儲存 per-source scoped cursors，例如 `messages:saved_messages:photo-video`。
-- Undocumented Telegram inbox link resolver support 已放在 experimental boundaries 後方。它把 Telegram 視為 ingest provenance，並使用解析後的 `origin_source` 作為 media item 與 storage layout 的平台。
+- 低調的 Telegram inbox link resolver support 已作為 hidden stable tools 提供給 Agent SKILL 使用。它把 Telegram 視為 ingest provenance，並使用解析後的 `origin_source` 作為 media item 與 storage layout 的平台。
 - Conservative cleanup/recovery support 已透過 `core.cleanup.media_state` 建立，可規劃 media-state cleanup，並在 DB reset 前先 quarantine files。
 - `media_files` 使用穩定的非空 `file_key`，即使 `remote_url` 或 `local_path` 缺少也能保持 upsert idempotent。
 - `media_files` 可記錄 library-relative path、storage layout version、file health、source timestamp 與 verification timestamp。
@@ -76,8 +80,8 @@
 - `instagram.link.resolve`
 - `telegram.auth.login`
 - `telegram.auth.status`
-- `telegram.inbox.collect_links`（experimental）
-- `telegram.inbox.sync_links`（experimental）
+- `telegram.inbox.collect_links`（hidden stable）
+- `telegram.inbox.sync_links`（hidden stable）
 - `telegram.dialogs.list`
 - `telegram.messages.collect`
 - `telegram.media.download`
@@ -92,6 +96,60 @@
 - `x.auth.refresh`
 - `x.auth.status`
 - `x.bookmarks.collect`
+
+## 最新 Agent Core V1 狀態
+
+- Agent Core V1 是 LLM-driven，不是 deterministic intent planner。被選定的模型會透過 strict JSON action protocol 決定 SKILL actions。
+- 支援的 actions 是 `call_tool`、`final` 與 `ask_user`。
+- 第一個 LLM backend 是 Ollama。預設本機設定為 `MEDIAGENT_LLM_PROVIDER=ollama`、`MEDIAGENT_OLLAMA_BASE_URL=http://127.0.0.1:11434`、`MEDIAGENT_OLLAMA_MODEL=qwen3:8b`。
+- Built-in SKILL files 刻意使用英文撰寫，不預設使用者語言。由 LLM 理解並回應使用者的自然語言。
+- Built-in skills 包含 `explicit_link_download`、`instagram_link_download`、`library_health_check`、`pixiv_bookmark_sync` 與 `telegram_inbox_download`。
+- SKILL frontmatter 現在會透過 `supported_intents`、`unsupported_intents`、`requires_initial_tool_call` 與 `supports_unbounded` 暴露明確 intent boundaries。
+- Agent Core 只會在 selected SKILL 明確記錄 full-sync mode 時支援 full-source 任務。Telegram inbox 與 Pixiv bookmark SKILL 現在透過明確的 `full_sync:true` tool inputs 支援「全部/完整/until-exhausted」請求；prompt 也會要求模型不要為這類任務捏造 count/page limits。
+- Pixiv bookmark sync SKILL 文字現在明確說明 `limit` 代表 bookmark item count，不是 downloaded file count；多頁作品可能產生超過 item limit 的檔案數。
+- Telegram inbox SKILL 文字現在描述 selected inbox workflow 邊界；沒有明確 selector 時會讓工具使用 `MEDIAGENT_TELEGRAM_INBOX_*`，並明確說明 V1 不檢查 inbox 是否存在或如何設定。
+- `telegram.inbox.collect_links` 與 `telegram.inbox.sync_links` 現在可使用 `MEDIAGENT_TELEGRAM_INBOX_KEY` 搭配 `MEDIAGENT_TELEGRAM_INBOX_CHAT_ID`、`MEDIAGENT_TELEGRAM_INBOX_CHAT_USERNAME` 或 `MEDIAGENT_TELEGRAM_INBOX_CHAT` 作為 Agent Core、cron 與 systemd timer runs 的預設 inbox selector。
+- `mediagent agent run "<task>"` 預設是 execute mode。`--dry-run` 是明確的預覽/開發模式；runner 會把 tool actions 正規化到全域 runtime mode，因此模型不能偷偷把 execute run 降級成 dry-run preview。
+- LLM transport failures 會回傳 structured `llm_request_failed` agent errors，而不是 Python tracebacks。
+- Skill selection 支援在任何 tool call 前回傳 `unsupported_task` / tool-gap outcome，前提是沒有 SKILL 明確符合任務。
+- Agent Core 會移除使用者任務中沒有明確出現的 `library_root`、`target_dir` 與 `target_path`，並拒絕位於 configured write roots 外的 explicit destination paths。
+- Long-running progress/logging 與 structured streaming 仍延後到 V2 或更後面。
+- 目前本機 `qwen3:8b` model 已用 fake tools 驗證：英文 explicit-link 任務會選 `explicit_link_download`，繁體中文 inbox 任務會選 `telegram_inbox_download`，並能產生合法 `call_tool` action、遵守全域 run mode，且在 tool feedback 成功後回傳 `final`。
+- `telegram_inbox_download` 現在會在 action tasks 要求初始 tool call。一次針對 `同步一次inbox的內容` 的 live Ollama dry-run 已選擇 inbox SKILL，並在不加 `--allow-experimental` 的情況下呼叫 hidden stable `telegram.inbox.sync_links`。
+- 一次針對 `我目前有存在的 telegram inbox 嗎？` 的 live Ollama dry-run 已回傳 structured `unsupported_task`，且 `skill: null`、沒有 tool steps。
+
+## 最新乾淨狀態 Agent Full-Source Verification
+
+- 2026-08-05 UTC，active `/home/ion/projects/mediagent/mediagent-data/library` 與 `/home/ion/projects/mediagent/mediagent-data/mediagent.sqlite3` 已刪除並重建，沒有另外備份。`mediagent-data/credentials/` 內的 credentials 與 session files 已保留。
+- `mediagent agent run "下載所有 telegram inbox 內所有可下載的媒體來源"` 選擇 `telegram_inbox_download`，並呼叫 `telegram.inbox.sync_links`，輸入包含 `full_sync:true`、`store_cursor:false`，且沒有捏造 `limit` / `max_messages`。
+- 第一次 Telegram run：收集/處理 31 個 links，27 個 resolved，4 個 skipped links，27 個 items queued/downloaded，下載 79 個 files，寫入 474005235 bytes，0 failed，0 partial。
+- Telegram 重跑：處理 31 個 links，27 個 resolved，4 個 skipped links，27 個 skipped items，0 queued，0 files downloaded，0 bytes written。
+- `mediagent agent run "下載 pixiv bookmark 所有可下載媒體來源"` 選擇 `pixiv_bookmark_sync`，並呼叫 `pixiv.bookmarks.sync`，輸入包含 `full_sync:true`、`stop_on_known:false`、`store_cursor:false`，且沒有捏造 `limit` / `max_pages`。
+- 第一次 Pixiv run：掃描 11 頁，collected/discovered 309 items，`collection_stop_reason:end_of_feed`，307 items queued/downloaded，2 skipped items，下載 1758 files，寫入 2946174301 bytes，0 failed，0 partial。
+- Pixiv 重跑：掃描 11 頁，309 collected/discovered，309 skipped，0 queued，0 files downloaded，0 bytes written。
+- `library.file.verify` 回報 1837 checked files、1837 valid、0 missing、0 corrupt、0 unknown。驗證後 active library 約 3.2G，active DB 約 2.8M。
+- 驗證後 DB 摘要：downloaded media items 包含 Pixiv 309、Redgifs 10、Instagram 8、Reddit 3，以及少量 generic/source-host items。downloaded media files 包含 Pixiv 1800、Instagram 18、Redgifs 10、Reddit 5，以及 source-host/generic files。
+- Telegram inbox runs 期間，Instagram resolver 仍會輸出大型 `JSONDecodeError in public_request` HTML diagnostics 到 stdout/stderr。Run 本身成功，但這仍然是 open summary-only/logging hardening task 的證據。
+
+## 最新 systemd Timer MVP 狀態
+
+- Telegram inbox sync 是第一個 timer-deploy 目標，但正式部署應透過 `mediagent agent run "<task>"` 觸發，而不是直接呼叫 deterministic tools。
+- `.env.example` 現在已記錄 `MEDIAGENT_TELEGRAM_INBOX_KEY`，以及 `MEDIAGENT_TELEGRAM_INBOX_CHAT_ID`、`MEDIAGENT_TELEGRAM_INBOX_CHAT_USERNAME` 或 `MEDIAGENT_TELEGRAM_INBOX_CHAT` 作為 default inbox selector。
+- 本機 `.env` 已為目前 live test 加入非 secret 的 Telegram inbox selector values：`MEDIAGENT_TELEGRAM_INBOX_KEY=mediagent_inbox` 與 numeric inbox chat id。
+- `telegram.inbox.collect_links` 與 `telegram.inbox.sync_links` 在 default inbox env vars 已設定時，可不傳 explicit `chat`/`chats` input 執行。
+- 2026-08-04 UTC 的 Telegram inbox execute live verification 使用 selector key `mediagent_inbox`，讀取既有 cursor `links:mediagent_inbox=34`，收集 3 個新 links，解析 3 個 links，下載 3 個 video files，寫入 40603018 bytes，並保存 cursor `links:mediagent_inbox=38`。
+- 後續 dry-run 與針對 `幫我同步更新下載 telegram inbox 中的內容` 的 Agent Core execute run，在 cursor `38` 之後找到 0 個新 links 與 0 個 queued downloads，確認目前 inbox 的 rerun cursor continuation 正常。
+- Pixiv bookmark sync 現在支援 timer-safe `stop_on_known` scanning。啟用後會從最新 bookmarks 開始掃描、最多掃到 bounded `max_pages`，並在某頁包含 known terminal media item 後停止。
+- 在 `stop_on_known` mode 中，Pixiv sync 因 known item 停止時不會保存 API pagination cursor，避免被誤解成 Telegram-style continuation cursor。
+- Agent Core 的 Pixiv recurring sync 現在會使用 `pixiv.bookmarks.sync` 搭配 `stop_on_known:true` 與 bounded `max_pages`，而不是自行發明預設 item `limit`。
+- 2026-08-04 UTC 對 `幫我同步更新下載 pixiv bookmark 中的內容` 的 Pixiv Agent Core live dry-run 掃描 1 頁、收集 30 個已知 bookmark items、回報 `collection_stop_reason: known_item_seen`、queued 0 downloads，且寫入 0 files。
+- 直接用替代 `MEDIAGENT_LIBRARY_DIR` 執行 Pixiv dry-run 也 queued 0 downloads，確認改變 library root 不會重置 DB-based media item dedupe。
+- `deploy/systemd/user/` 現在包含本機 example user units、timers、JSON inputs，以及 Telegram inbox sync 與 Pixiv bookmark sync 的最小 runbook。
+- 2026-08-05 UTC 的 clean-state user-systemd verification 已移除舊 library/live-test outputs，將舊 SQLite DB 備份到 `mediagent-data/backups/mediagent.sqlite3.20260805014915.bak`，初始化 schema v7，並保留 credential files。
+- 先前精確 full-source 任務 `下載所有 telegram inbox 內所有可下載的媒體來源` 與 `下載 pixiv bookmark 所有可下載媒體來源` 的 Agent Core 失敗已在程式中修正。下一個驗證步驟是用乾淨 DB/library 重新執行這兩個自然語言任務。
+- `systemctl --user start mediagent-telegram-inbox.service` 在乾淨 DB 上成功：第一次 run 收集 31 links、解析 27、跳過 4、下載 79 files、寫入 474005235 bytes，並保存 cursor `links:mediagent_inbox=39`；第二次 run 找到 0 個新 links 並下載 0 files。
+- `systemctl --user start mediagent-pixiv-bookmarks.service` 在 Telegram run 後成功：第一次 run 掃描 1 頁、收集 30 bookmarks，因 Telegram 已先下載 1 個 explicit Pixiv item 而 skipped 1，下載 29 個 bookmark items、共 293 files、寫入 447025170 bytes；因為 stop-on-known，不保存 API pagination cursor；第二次 run queued 0 且 skipped 30。
+- 驗證後 library 狀態：372 筆 downloaded file records、372 valid files、0 missing、0 corrupt、0 unknown。重建後 library 約 880M。
 
 ## 最新 Repair Mode 狀態
 
@@ -125,6 +183,8 @@ uv run --locked mediagent tools inspect instagram.auth.status --json
 uv run --locked mediagent tools inspect instagram.link.resolve --json
 uv run --locked mediagent tools inspect pixiv.link.resolve --json
 uv run --locked mediagent tools inspect link.media.sync --json
+uv run --locked mediagent agent skills list --json
+uv run --locked mediagent agent skills inspect telegram_inbox_download --json
 uv run --locked mediagent tools run telegram.auth.login --input examples/tools/telegram.auth.login.json --dry-run --json
 uv run --locked mediagent tools run pixiv.auth.login --input examples/tools/pixiv.auth.login.start.json --dry-run --json
 PIXIV_ACCESS_TOKEN= PIXIV_REFRESH_TOKEN= PIXIV_CREDENTIALS_FILE= uv run --locked mediagent tools run pixiv.link.resolve --input examples/tools/pixiv.link.resolve.json --dry-run --json
@@ -132,12 +192,12 @@ uv run --locked mediagent tools run reddit.saved.collect --input examples/tools/
 uv run --locked mediagent tools run x.auth.start --input examples/tools/x.auth.start.json --json
 ```
 
-最新本機完整測試狀態是 200 個測試通過。
+最新本機完整測試狀態是 220 個測試通過。
 
 Phase 16 Telegram inbox link resolver verification：
 
-- `link.resolve.preview`、`link.resolve.to_media_item`、`telegram.inbox.collect_links` 與 `telegram.inbox.sync_links` 已實作為 experimental tools。
-- 一般 `mediagent tools list` 會隱藏 experimental tools；`--include-experimental` 才會顯示。
+- `link.resolve.preview` 與 `link.resolve.to_media_item` 已實作為 experimental tools。`telegram.inbox.collect_links` 與 `telegram.inbox.sync_links` 是供 Agent SKILL 使用的 hidden stable tools。
+- 一般 `mediagent tools list` 會隱藏 experimental tools 與低調的 hidden tools；`--include-experimental` 會顯示 experimental tools，而 hidden tools 仍可透過名稱呼叫。
 - 一般 `mediagent tools run link.resolve.to_media_item` 會以 `experimental_tool_not_allowed` 拒絕執行。
 - Top-level `mediagent --help` 不會暴露 hidden `experimental` command path。
 - Tests 覆蓋 URL normalization、`normalized_url` uniqueness、userinfo rejection、malformed URL skip behavior、unsafe schemes、localhost/private IP rejection、unresolved host rejection、redirect limits、unsupported MIME rejection、`.mov` / `video/quicktime`、generic single-media HTML discovery、HEAD-forbidden HTML fallback、X age/login wall skip behavior、Imgur single-page resolution、ambiguous multi-media skip、Pixiv artwork-link `requires_auth`、duplicate Telegram URL queueing、origin-source storage layout、沒有 raw message text 的 Telegram provenance metadata、safe GET redirect revalidation、oversized GET body rejection，以及 MOV redirect-to-non-media rejection。
@@ -295,11 +355,10 @@ Phase 13 Telegram + Pixiv layout live verification 已於 2026-07-24 UTC 執行�
 - Pixiv localhost callback server
 - Instagram feed、saved-post、stories、profile scraping、messaging、posting、comments、likes、follows 與廣泛 account collection
 - Instagram session status TTL，以及 checkpoint/2FA/rate-limit/thumbnail-only Reel cases 的額外 edge-case fixtures
-- LLM Agent Core
 - visual workflow editor
 
 ## 下一個建議任務
 
 File-health-aware repair mode 已實作，且 bounded live repair 已恢復可解析的 missing files。下一個建議任務是決定剩餘 6 筆歷史 Reddit rows 要如何處理：保留為 known missing、用 cleanup tooling reset/quarantine，或延後到 Reddit auth/resolver work 恢復時再處理。
 
-Reddit OAuth/saved collection 與 X live auth verification 都視為 deferred legacy/advanced paths。除非使用者明確要求，否則不要在 link-first provider-adapter contract 通過至少一個更多 provider adapter 或多次 cron-style runs 保持穩定前開始 Workflow V1 或 Agent Core。
+Reddit OAuth/saved collection 與 X live auth verification 都視為 deferred legacy/advanced paths。除非使用者明確要求，否則不要在 link-first provider-adapter contract 通過至少一個更多 provider adapter 或多次 cron-style runs 保持穩定前開始 Workflow V1、內建 scheduling 或廣泛 autonomous planning。

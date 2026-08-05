@@ -1,0 +1,8 @@
+{
+  "restrict": "public",
+  "max_pages": 5,
+  "stop_on_known": true,
+  "include_ugoira_metadata": true,
+  "write_sidecar_metadata": false,
+  "retry_failed": false
+}

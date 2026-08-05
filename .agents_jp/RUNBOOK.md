@@ -39,6 +39,46 @@ uv run --locked mediagent tools inspect instagram.link.resolve --json
 uv run --locked mediagent tools run x.auth.start --input examples/tools/x.auth.start.json --json
 ```
 
+## Agent Core V1 Smoke Checks
+
+Agent Core V1 は default で Ollama を使います:
+
+```bash
+export MEDIAGENT_LLM_PROVIDER=ollama
+export MEDIAGENT_OLLAMA_BASE_URL=http://127.0.0.1:11434
+export MEDIAGENT_OLLAMA_MODEL=qwen3:8b
+```
+
+Built-in SKILL を inspect します:
+
+```bash
+uv run --locked mediagent agent skills list --json
+uv run --locked mediagent agent skills inspect telegram_inbox_download --json
+```
+
+Explicit-link task を preview します:
+
+```bash
+uv run --locked mediagent agent run "download https://example.com/media.jpg" --skill explicit_link_download --dry-run --json
+```
+
+Unsupported tasks は any tool call の前に failure になるべきです:
+
+```bash
+uv run --locked mediagent agent run "我目前有存在的 telegram inbox 嗎？" --dry-run --json
+```
+
+Expected shape: `status:"failure"`、`error.code:"unsupported_task"`、`skill:null`、tool steps なし。
+
+LLM transport failures は Python traceback ではなく structured result にします:
+
+```bash
+MEDIAGENT_OLLAMA_BASE_URL=http://127.0.0.1:9 MEDIAGENT_OLLAMA_TIMEOUT_SECONDS=0.2 \
+  uv run --locked mediagent agent run "download https://example.com/media.jpg" --skill explicit_link_download --json
+```
+
+Expected shape: `status:"failure"` with `error.code:"llm_request_failed"`。
+
 ## 一時 database の初期化
 
 ```bash
@@ -243,6 +283,8 @@ MEDIAGENT_PIXIV_LIBRARY_DIR=${MEDIAGENT_DATA_DIR}/pixiv
 ```
 
 この root はすでに Pixiv-specific なので、その下では media/date layout を使い、`pixiv/pixiv` は追加しません。
+
+Operator note: `MEDIAGENT_LIBRARY_DIR` の変更は future target planning にだけ影響します。同じ SQLite DB を使う場合、すでに terminal state の Pixiv items は dedupe され、新しい root には自動で再配置されません。Deployment を移動する時は、DB と library files を 1 つの state bundle として扱ってください。新しい root を rebuild したい場合は、fresh DB/state reset、または将来の明示的 rebuild/repair flow を使います。
 
 Pixiv image examples:
 
