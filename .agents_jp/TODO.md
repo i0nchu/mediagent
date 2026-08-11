@@ -31,6 +31,14 @@ Production timer entry は direct deterministic tools ではなく、`mediagent 
 
 2 つ目の timer-safe source は Pixiv bookmark sync です。Pixiv は Telegram のような単純な "messages after cursor" model を持たないため、service path は newest bookmarks から scan し、known terminal item に到達したら停止し、bounded `max_pages` safety cap を使います。
 
+## P0 Gate: Telegram Inbox Message-Link Bridge
+
+- [x] Inbox 内の public `t.me/<channel>/<message_id>` と private `t.me/c/<chat>/<message_id>` links を Telegram message sync に渡し、external URLs は引き続き link resolver pipeline で処理します。
+- [x] Telegram native media に inbox chat/message/date/run provenance を保持し、protected または inaccessible な linked messages は structured skips として返します。
+- [x] `telegram.inbox.sync_links` と `link.media.sync` に `retry_auth_skipped` を追加し、platform session が usable になった後で旧 `requires_auth` / `login_wall` queue rows を再試行できるようにします。
+- [x] Public、private、inaccessible、protected、external と Telegram の mixed case、auth retry paths を fake-client tests でカバーします。
+- [ ] Public link、accessible private link、inaccessible link、session が復旧した downstream platform を含む bounded live inbox check を 1 回実施します。Production DB を手動 reset しないでください。
+
 ## Remaining Deployment MVP Tasks
 
 - [ ] Deployment-oriented environment check profile を追加します:

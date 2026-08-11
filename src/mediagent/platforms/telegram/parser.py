@@ -12,7 +12,8 @@ from mediagent.core.storage import safe_storage_segment
 SUPPORTED_MEDIA_TYPES = {"photo", "video", "audio"}
 MEDIA_TYPE_PREFIX = {"photo": "p", "video": "v", "audio": "a"}
 TELEGRAM_MESSAGE_LINK_PATTERN = re.compile(
-    r"https?://(?:t\.me|telegram\.me)/(?:c/\d+/\d+|[A-Za-z0-9_]{3,}/\d+)(?:[/?#][^\s<>()\"']*)?"
+    r"https?://(?:www\.)?(?:t\.me|telegram\.me)/(?:c/\d+/\d+|[A-Za-z0-9_]{3,}/\d+)(?:[/?#][^\s<>()\"']*)?",
+    re.IGNORECASE,
 )
 
 
@@ -170,9 +171,14 @@ def telegram_media_uri(download_ref: dict[str, Any]) -> str:
 
 
 def extract_message_links(messages: list[dict[str, Any]]) -> list[str]:
-    links: list[str] = []
+    return [record["original_url"] for record in extract_message_link_records(messages)]
+
+
+def extract_message_link_records(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     seen: set[str] = set()
+    records: list[dict[str, Any]] = []
     for message in messages:
+        chat = message.get("chat") if isinstance(message.get("chat"), dict) else {}
         for field in ("text", "caption"):
             value = message.get(field)
             if not isinstance(value, str):
@@ -181,8 +187,16 @@ def extract_message_links(messages: list[dict[str, Any]]) -> list[str]:
                 link = match.group(0).rstrip(".,;:!?)]}")
                 if link not in seen:
                     seen.add(link)
-                    links.append(link)
-    return links
+                    records.append(
+                        {
+                            "ingest_platform": "telegram",
+                            "original_url": link,
+                            "source_chat_id": str(chat.get("id") or message.get("chat_id") or ""),
+                            "source_message_id": str(message.get("id") or message.get("message_id") or ""),
+                            "source_message_date": message.get("date") or message.get("timestamp"),
+                        }
+                    )
+    return records
 
 
 def _media_entries(value: Any) -> list[dict[str, Any]]:

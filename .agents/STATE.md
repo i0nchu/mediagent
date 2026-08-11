@@ -164,6 +164,14 @@
 - A bounded non-dry repair run on 2026-08-03 UTC used the same 12-source scope, downloaded 8 repaired files across Danbooru, nhentai, Redgifs, and rule34, wrote 76755767 bytes, and had 0 failed/partial items.
 - Post-repair `library.file.verify` reports 669 valid files, 6 missing files, 0 corrupt, and 0 unknown across 675 downloaded file records. The remaining 6 missing rows are all Reddit records from 4 unique source URLs; a diagnostic dry-run reports `requires_auth:login_required` for those sources.
 
+## Telegram Inbox Message-Link Bridge State
+
+- `telegram.inbox.sync_links` now separates external URLs from Telegram message links in one inbox message. External URLs retain the shared resolver/download path; public and private `t.me` / `telegram.me` message links delegate to Telegram-native collect/sync/download logic.
+- Telegram-native items retain the inbox chat ID, source message ID/date, collector run ID, and merged source provenance without persisting inbox message text.
+- Protected, missing, private, deleted, or otherwise inaccessible linked messages return per-link structured skips instead of aborting the inbox run.
+- `retry_auth_skipped:true` on `link.media.sync` retries old auth-dependent queue rows; the same option on `telegram.inbox.sync_links` is scoped to Telegram-ingested rows. Both paths claim rows with leases and require explicit operator intent.
+- Fake-client regressions cover public, private, inaccessible, protected, mixed external-plus-Telegram, and old auth-skip retry paths. No live download was performed for this implementation.
+
 ## Verified
 
 Last known verification commands:

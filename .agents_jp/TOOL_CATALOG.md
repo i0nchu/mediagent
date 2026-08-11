@@ -111,7 +111,7 @@ Small curated media download、1 時間 linked video download、scanner-friendly
 これらの tools は Phase 19 link-first product path の stable entry points です。
 
 - `link.queue.upsert`: Explicit URLs を 1 件以上 queue し、normalized URL dedupe と source provenance merge を行います。Media の resolve や download は行いません。
-- `link.media.sync`: Explicit URLs または queued link records を resolve し、cron/daemon runs では ready queued records を claim し、retryable deferred records を schedule し、clear media candidates を normalized media items に変換し、known items を dedupe し、storage paths を plan し、files を download し、optional sidecar metadata を書き、media-file state を記録し、parent item status を更新します。
+- `link.media.sync`: Explicit URLs または queued link records を resolve し、cron/daemon runs では ready queued records を claim し、retryable deferred records を schedule し、clear media candidates を normalized media items に変換し、known items を dedupe し、storage paths を plan し、files を download し、optional sidecar metadata を書き、media-file state を記録し、parent item status を更新します。`retry_auth_skipped:true` は platform session が usable になった後で旧 `requires_auth` / `login_wall` rows を明示的に reclaim します。
 
 Public CLI shortcut:
 
@@ -147,7 +147,7 @@ Instagram support は explicit-link first です。Saved local session は user-
 
 ## Agent-Only Low-Profile Skills
 
-- `telegram.inbox.sync_links`: selected inbox の `full_sync:true` full-source scan をサポートします。この mode では default 100-message scan limit を適用しません。URL/media/file dedupe は引き続き tool layer が扱います。
+- `telegram.inbox.sync_links`: selected inbox の `full_sync:true` full-source scan をサポートします。この mode では default 100-message scan limit を適用しません。URL/media/file dedupe は引き続き tool layer が扱います。Inbox の `t.me` / `telegram.me` message links は inbox provenance を保持して Telegram native message sync に bridge され、protected/inaccessible links は structured skip になります。External URLs は link resolver pipeline を使い続けます。`retry_auth_skipped:true` は旧 Telegram-ingested auth-dependent rows を再試行します。
 
 - `telegram_inbox_download`: Agent Core が configured Telegram inbox を処理できるようにしますが、direct tool entry points は public workflow commands として文書化しません。Underlying tools は hidden stable surfaces です。Default list には表示されませんが、名前を知っている user/agent は呼び出せます。
 

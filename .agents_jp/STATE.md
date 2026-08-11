@@ -163,6 +163,14 @@
 - 2026-08-03 UTC の bounded non-dry repair は同じ 12-source scope を使い、Danbooru、nhentai、Redgifs、rule34 にまたがる 8 repaired files を download し、76755767 bytes を書き込み、failed/partial items は 0 件でした。
 - Repair 後の `library.file.verify` は、675 downloaded file records に対して 669 valid、6 missing、0 corrupt、0 unknown を報告しました。Remaining 6 missing rows はすべて Reddit records で、4 unique source URLs から来ています。Diagnostic dry-run はこれらの source に `requires_auth:login_required` を返しました。
 
+## Telegram Inbox Message-Link Bridge State
+
+- `telegram.inbox.sync_links` は同じ inbox message 内の external URLs と Telegram message links を分離します。External URLs は shared resolver/download path を維持し、public/private `t.me` / `telegram.me` message links は Telegram native collect/sync/download logic に delegate します。
+- Telegram native items は inbox chat ID、source message ID/date、collector run ID、merged source provenance を保持し、inbox message text は永続化しません。
+- Protected、missing、private、deleted、その他 inaccessible な linked messages は inbox run を abort せず、per-link structured skips を返します。
+- `link.media.sync` の `retry_auth_skipped:true` は旧 auth-dependent queue rows を retry し、`telegram.inbox.sync_links` の同 option は Telegram-ingested rows に限定されます。両 path は lease で claim し、explicit operator intent を必要とします。
+- Fake-client regressions は public、private、inaccessible、protected、external と Telegram の mixed case、old auth-skip retry paths をカバーします。この実装では live download を行っていません。
+
 ## 検証済み
 
 最後に確認した検証コマンド:

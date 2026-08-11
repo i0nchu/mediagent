@@ -118,6 +118,7 @@ def definitions() -> list[ToolDefinition]:
                         "limit": {"type": "integer"},
                         "overwrite": {"type": "boolean"},
                         "retry_failed": {"type": "boolean"},
+                        "retry_auth_skipped": {"type": "boolean"},
                         "repair_missing_files": {"type": "boolean"},
                         "lease_seconds": {"type": "integer"},
                         "timeout_seconds": {"type": "number"},
@@ -287,6 +288,7 @@ async def media_sync(context: ToolContext, input_data: dict[str, Any]) -> ToolRe
     resolved_items: list[dict[str, Any]] = []
     summary = {
         "links_considered": len(links),
+        "auth_links_retried": sum(1 for link in links if link.get("_auth_retry")),
         "resolved": 0,
         "skipped_links": 0,
         "queued": 0,
@@ -497,7 +499,8 @@ def _sync_input_links(db_path: Path, input_data: dict[str, Any], *, context: Too
         link = db.get_link(db_path, link_id=link_id)
         if link is not None:
             links.append(link)
-    if not links and db_path.exists():
+    has_explicit_links = bool(links)
+    if not has_explicit_links and db_path.exists():
         status = input_data.get("status") or "queued"
         if context.dry_run:
             links = db.list_ready_links(
@@ -513,6 +516,24 @@ def _sync_input_links(db_path: Path, input_data: dict[str, Any], *, context: Too
                 lease_owner=context.run_id,
                 lease_seconds=int(input_data.get("lease_seconds", 900)),
             )
+        if input_data.get("retry_auth_skipped"):
+            remaining = _remaining_limit(input_data.get("limit"), len(links))
+            if remaining != 0:
+                if context.dry_run:
+                    auth_links = db.list_auth_skipped_links(db_path, limit=remaining)
+                else:
+                    auth_links = db.claim_auth_skipped_links(
+                        db_path,
+                        limit=remaining,
+                        lease_owner=context.run_id,
+                        lease_seconds=int(input_data.get("lease_seconds", 900)),
+                    )
+                existing_ids = {link.get("id") for link in links}
+                links.extend(
+                    {**link, "_auth_retry": True}
+                    for link in auth_links
+                    if link.get("id") not in existing_ids
+                )
     if not links:
         raise ValueError("Provide url, urls, link_id, link_ids, or queued links in db_path.")
     return links
@@ -522,6 +543,12 @@ def _limited_items(items: list[dict[str, Any]], limit: Any) -> list[dict[str, An
     if limit is None:
         return items
     return items[: max(0, int(limit))]
+
+
+def _remaining_limit(limit: Any, used: int) -> int | None:
+    if limit is None:
+        return None
+    return max(0, int(limit) - used)
 
 
 def _sync_candidates(

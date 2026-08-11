@@ -386,7 +386,7 @@ Permissions:
 These tools are the stable entry points for the Phase 19 link-first product path.
 
 - `link.queue.upsert`: queues one or more explicit URLs with normalized URL dedupe and source provenance merge. It does not resolve or download media.
-- `link.media.sync`: resolves explicit URLs or queued link records, claims ready queued records for cron/daemon runs, schedules retryable deferred records, converts clear media candidates into normalized media items, dedupes known items, plans storage paths, downloads files, writes optional sidecar metadata, records media-file state, and updates parent item status.
+- `link.media.sync`: resolves explicit URLs or queued link records, claims ready queued records for cron/daemon runs, schedules retryable deferred records, converts clear media candidates into normalized media items, dedupes known items, plans storage paths, downloads files, writes optional sidecar metadata, records media-file state, and updates parent item status. `retry_auth_skipped:true` explicitly reclaims old `requires_auth` / `login_wall` rows after a platform session becomes usable.
 
 Public CLI shortcut:
 
@@ -460,7 +460,7 @@ Do not treat these experimental names as stable public API yet. Promotion must p
 ## Agent-Only Low-Profile Skills
 
 - `telegram_inbox_download`: lets Agent Core process the configured Telegram inbox without documenting the direct tool entry points as public workflow commands. The underlying tools are hidden stable surfaces: not listed by default, but callable by name for users or agents that already know them.
-- `telegram.inbox.sync_links`: accepts `full_sync:true` for selected-inbox full-source scans. In that mode the tool does not apply the default 100-message scan limit; URL/media/file dedupe still happens in the tool layer.
+- `telegram.inbox.sync_links`: accepts `full_sync:true` for selected-inbox full-source scans. In that mode the tool does not apply the default 100-message scan limit; URL/media/file dedupe still happens in the tool layer. Inbox `t.me` / `telegram.me` message links bridge to Telegram-native message sync with inbox provenance and structured protected/inaccessible skips, while external URLs keep using the link resolver pipeline. `retry_auth_skipped:true` retries old auth-dependent rows ingested from Telegram.
 
 ## Reddit Tools
 

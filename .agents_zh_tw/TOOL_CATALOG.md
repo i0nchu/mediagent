@@ -111,7 +111,7 @@ Curated Telegram 用法：把 `chat` 指向使用者自己的 private collection
 這些工具是 Phase 19 link-first 產品路徑的穩定入口。
 
 - `link.queue.upsert`：queue 一個或多個 explicit URLs，使用 normalized URL dedupe，並合併 source provenance。它不解析也不下載媒體。
-- `link.media.sync`：解析 explicit URLs 或 queued link records，會為 cron/daemon runs claim ready queued records、排程 retryable deferred records，將明確的 media candidates 轉成 normalized media items、dedupe known items、規劃 storage paths、下載 files、寫入 optional sidecar metadata、記錄 media-file state，並更新 parent item status。
+- `link.media.sync`：解析 explicit URLs 或 queued link records，會為 cron/daemon runs claim ready queued records、排程 retryable deferred records，將明確的 media candidates 轉成 normalized media items、dedupe known items、規劃 storage paths、下載 files、寫入 optional sidecar metadata、記錄 media-file state，並更新 parent item status。`retry_auth_skipped:true` 會在 platform session 可用後明確 reclaim 舊的 `requires_auth` / `login_wall` rows。
 
 Public CLI shortcut:
 
@@ -147,7 +147,7 @@ Instagram support 採 explicit-link first。它只使用 saved local session 解
 
 ## Agent-Only Low-Profile Skills
 
-- `telegram.inbox.sync_links`：支援 selected inbox 的 `full_sync:true` full-source scan。此模式不會套用預設 100 messages scan limit；URL/media/file dedupe 仍由 tool layer 處理。
+- `telegram.inbox.sync_links`：支援 selected inbox 的 `full_sync:true` full-source scan。此模式不會套用預設 100 messages scan limit；URL/media/file dedupe 仍由 tool layer 處理。Inbox 中的 `t.me` / `telegram.me` message links 會 bridge 到 Telegram 原生 message sync，保留 inbox provenance，並對 protected/inaccessible links structured skip；外部 URL 仍走 link resolver pipeline。`retry_auth_skipped:true` 會重試舊的 Telegram-ingested auth-dependent rows。
 
 - `telegram_inbox_download`：讓 Agent Core 處理 configured Telegram inbox，但不把直接工具入口記錄為 public workflow commands。底層工具是 hidden stable surfaces：預設不列出，但知道名稱的使用者或 agent 仍可呼叫。
 

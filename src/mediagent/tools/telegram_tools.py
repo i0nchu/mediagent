@@ -91,6 +91,7 @@ def definitions() -> list[ToolDefinition]:
                         "limit": {"type": "integer"},
                         "overwrite": {"type": "boolean"},
                         "retry_failed": {"type": "boolean"},
+                        "retry_auth_skipped": {"type": "boolean"},
                         "repair_missing_files": {"type": "boolean"},
                         "attempts": {"type": "integer"},
                         "timeout_seconds": {"type": "number"},
@@ -606,6 +607,10 @@ async def messages_sync(context: ToolContext, input_data: dict[str, Any]) -> Too
     if not collect_result.is_success:
         return collect_result
     collected_items = collect_result.data.get("items", [])
+    _apply_message_link_provenance(
+        collected_items,
+        input_data.get("_message_link_provenance") or [],
+    )
     items = _limited_items(collected_items, input_data.get("limit"))
 
     statuses = db.get_media_statuses(db_path, items)
@@ -637,6 +642,7 @@ async def messages_sync(context: ToolContext, input_data: dict[str, Any]) -> Too
                     include_platform_layer=include_platform_layer,
                 ),
                 "source_summaries": collect_result.data.get("source_summaries", []),
+                "message_links": collect_result.data.get("message_links", []),
             }
         )
 
@@ -720,6 +726,9 @@ async def messages_sync(context: ToolContext, input_data: dict[str, Any]) -> Too
         "target_dir": str(target_dir),
         "summary": summary,
         "items": item_results,
+        "collect_summary": collect_result.data.get("summary", {}),
+        "source_summaries": collect_result.data.get("source_summaries", []),
+        "message_links": collect_result.data.get("message_links", []),
     }
     if run_status == "success":
         return ToolResult.success(data, artifacts=artifacts, warnings=warnings)
@@ -753,6 +762,27 @@ async def inbox_sync_links(context: ToolContext, input_data: dict[str, Any]) -> 
         return collect_result
 
     links = _limited_items(collect_result.data.get("links", []), input_data.get("limit"))
+    if input_data.get("retry_auth_skipped") and db_path.exists():
+        if context.dry_run:
+            auth_links = db.list_auth_skipped_links(
+                db_path,
+                limit=input_data.get("limit"),
+                ingest_platform="telegram",
+            )
+        else:
+            auth_links = db.claim_auth_skipped_links(
+                db_path,
+                limit=input_data.get("limit"),
+                lease_owner=context.run_id,
+                ingest_platform="telegram",
+            )
+        links = _dedupe_link_records(
+            links + [{**link, "_auth_retry": True} for link in auth_links]
+        )
+    telegram_message_links = _limited_items(
+        collect_result.data.get("telegram_message_links", []),
+        input_data.get("limit"),
+    )
     policy = _link_safety_policy(input_data)
     resolver_request = ResolveRequest(
         http_client=context.http_client,
@@ -765,8 +795,16 @@ async def inbox_sync_links(context: ToolContext, input_data: dict[str, Any]) -> 
     resolutions: list[dict[str, Any]] = []
     resolved_items: list[dict[str, Any]] = []
     summary = {
-        "links_collected": collect_result.data.get("summary", {}).get("links_found", len(links)),
-        "links_considered": len(links),
+        "links_collected": (
+            collect_result.data.get("summary", {}).get("links_found", len(links))
+            + collect_result.data.get("summary", {}).get(
+                "telegram_message_links_found", len(telegram_message_links)
+            )
+        ),
+        "links_considered": len(links) + len(telegram_message_links),
+        "external_links_considered": len(links),
+        "telegram_links_considered": len(telegram_message_links),
+        "auth_links_retried": sum(1 for link in links if link.get("_auth_retry")),
         "resolved": 0,
         "skipped_links": 0,
         "queued": 0,
@@ -815,6 +853,45 @@ async def inbox_sync_links(context: ToolContext, input_data: dict[str, Any]) -> 
                 skip_reason=None,
             )
 
+    telegram_result: ToolResult | None = None
+    telegram_planned_downloads: list[dict[str, Any]] = []
+    telegram_item_results: list[dict[str, Any]] = []
+    telegram_artifacts: list[dict[str, str]] = []
+    telegram_link_results: list[dict[str, Any]] = []
+    telegram_summary: dict[str, Any] = {}
+    if telegram_message_links:
+        telegram_input = dict(input_data)
+        for key in ("chat", "chats", "after_message_id", "max_messages", "full_sync"):
+            telegram_input.pop(key, None)
+        telegram_input["message_links"] = [link["original_url"] for link in telegram_message_links]
+        telegram_input["store_cursor"] = False
+        telegram_input["_message_link_provenance"] = telegram_message_links
+        telegram_result = await messages_sync(context, telegram_input)
+        if not telegram_result.is_success and not telegram_result.data:
+            return telegram_result
+        telegram_summary = telegram_result.data.get("summary", {})
+        telegram_link_results = telegram_result.data.get("message_links", [])
+        telegram_planned_downloads = telegram_result.data.get("planned_downloads", [])
+        telegram_item_results = telegram_result.data.get("items", [])
+        telegram_artifacts = list(telegram_result.artifacts)
+        warnings.extend(telegram_result.warnings)
+        summary["resolved"] += sum(1 for result in telegram_link_results if result.get("status") == "resolved")
+        telegram_skipped = sum(1 for result in telegram_link_results if result.get("status") != "resolved")
+        summary["skipped_links"] += telegram_skipped
+        resolutions.extend(
+            {
+                "link": _safe_link_record(link),
+                "resolution": {
+                    "status": result.get("status"),
+                    "resolver": "telegram_message_link",
+                    "source_url": result.get("url"),
+                    "skip_reason": result.get("skip_reason"),
+                    "details": {"items": result.get("items", 0)},
+                },
+            }
+            for link, result in zip(telegram_message_links, telegram_link_results, strict=False)
+        )
+
     if context.dry_run:
         statuses = db.get_media_statuses(db_path, resolved_items)
         items_to_sync, candidate_summary = _sync_candidates(
@@ -826,10 +903,12 @@ async def inbox_sync_links(context: ToolContext, input_data: dict[str, Any]) -> 
             link_items=True,
         )
         summary.update(candidate_summary)
+        _merge_telegram_sync_summary(summary, telegram_summary)
         planned_downloads = []
         for item in items_to_sync:
             planned_downloads.extend(_planned_link_downloads(context, input_data, item))
-        summary["queued"] = len(items_to_sync)
+        planned_downloads.extend(telegram_planned_downloads)
+        summary["queued"] += len(items_to_sync)
         return ToolResult.success(
             {
                 "platform": "telegram",
@@ -854,10 +933,11 @@ async def inbox_sync_links(context: ToolContext, input_data: dict[str, Any]) -> 
         link_items=True,
     )
     summary.update(candidate_summary)
-    summary["queued"] = len(items_to_sync)
+    _merge_telegram_sync_summary(summary, telegram_summary)
+    summary["queued"] += len(items_to_sync)
 
-    item_results: list[dict[str, Any]] = []
-    artifacts: list[dict[str, str]] = []
+    item_results: list[dict[str, Any]] = list(telegram_item_results)
+    artifacts: list[dict[str, str]] = list(telegram_artifacts)
     for item in items_to_sync:
         result = await _sync_one_link_item(context, db_path, item, input_data)
         item_results.append(result)
@@ -897,6 +977,7 @@ async def inbox_sync_links(context: ToolContext, input_data: dict[str, Any]) -> 
         "summary": summary,
         "links": resolutions,
         "items": item_results,
+        "telegram_message_links": telegram_link_results,
     }
     if run_status == "success":
         return ToolResult.success(data, artifacts=artifacts, warnings=warnings)
@@ -965,6 +1046,7 @@ async def _inbox_collect_links(
     messages = payload.get("messages", []) if isinstance(payload, dict) else []
     source_summaries = payload.get("source_summaries", []) if isinstance(payload, dict) else []
     discovered = extract_external_links_from_messages(messages)
+    telegram_message_links = telegram_parser.extract_message_link_records(messages)
     queued_links: list[dict[str, Any]] = []
     seen: set[str] = set()
     duplicate_count = 0
@@ -978,6 +1060,10 @@ async def _inbox_collect_links(
             queued_links.append({**record, "id": None, "is_new": None})
             continue
         queued_links.append(db.upsert_link(db_path, record))
+    telegram_message_links = [
+        {**link, "collector_run_id": context.run_id}
+        for link in telegram_message_links
+    ]
     stored_cursors: list[dict[str, Any]] = []
     if input_data.get("store_cursor", True) and allow_cursor_store and input_data.get("after_message_id") is None:
         stored_cursors = _store_telegram_link_cursors(
@@ -990,10 +1076,12 @@ async def _inbox_collect_links(
             "platform": "telegram",
             "db_path": str(db_path),
             "links": queued_links,
+            "telegram_message_links": telegram_message_links,
             "summary": {
                 "messages_scanned": len(messages),
                 "links_found": len(discovered),
                 "links_queued": len(queued_links),
+                "telegram_message_links_found": len(telegram_message_links),
                 "duplicates_in_run": duplicate_count,
                 "cursor_stored": bool(stored_cursors),
             },
@@ -1106,6 +1194,13 @@ async def _messages_collect(
             "platform": "telegram",
             "db_path": str(db_path),
             "items": items,
+            "message_links": _message_link_results(
+                input_data.get("message_links") or [],
+                messages,
+                items,
+                source_summaries,
+                include_protected=input_data.get("include_protected", False),
+            ),
             "summary": {
                 **parser_summary,
                 "sources": len(source_summaries),
@@ -1799,6 +1894,35 @@ def _limited_items(items: list[dict[str, Any]], limit: Any) -> list[dict[str, An
     return items[: max(0, int(limit))]
 
 
+def _dedupe_link_records(links: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    deduped: dict[Any, dict[str, Any]] = {}
+    for link in links:
+        key = link.get("id") if link.get("id") is not None else link.get("normalized_url") or link.get("original_url")
+        deduped[key] = link
+    return list(deduped.values())
+
+
+def _merge_telegram_sync_summary(summary: dict[str, Any], telegram_summary: dict[str, Any]) -> None:
+    for key in (
+        "queued",
+        "skipped_items",
+        "skipped_healthy",
+        "repair_items",
+        "repair_files_missing",
+        "repair_files_corrupt",
+        "repair_files_unhealthy",
+        "repaired",
+        "still_missing_files",
+        "downloaded",
+        "partial",
+        "failed",
+        "files_downloaded",
+        "files_failed",
+        "bytes_written",
+    ):
+        summary[key] += int(telegram_summary.get(key, 0) or 0)
+
+
 def _planned_downloads(
     target_dir: Path,
     items: list[dict[str, Any]],
@@ -2377,6 +2501,97 @@ def _link_ingest_provenance(link: dict[str, Any]) -> dict[str, Any]:
         "collector_run_id": link.get("collector_run_id"),
         "link_id": link.get("id"),
     }
+
+
+def _apply_message_link_provenance(
+    items: list[dict[str, Any]],
+    link_records: list[dict[str, Any]],
+) -> None:
+    for item in items:
+        matching = [
+            _link_ingest_provenance(record)
+            for record in link_records
+            if _item_matches_message_link(item, record.get("original_url"))
+        ]
+        if not matching:
+            continue
+        metadata = dict(item.get("metadata") or {})
+        metadata["ingested_from"] = matching[0]
+        metadata["source_provenance"] = matching
+        item["metadata"] = metadata
+
+
+def _message_link_results(
+    message_links: list[str],
+    messages: list[dict[str, Any]],
+    items: list[dict[str, Any]],
+    source_summaries: list[dict[str, Any]],
+    *,
+    include_protected: bool,
+) -> list[dict[str, Any]]:
+    summaries_by_source: dict[str, list[dict[str, Any]]] = {}
+    for summary in source_summaries:
+        source_key = str(summary.get("source_key") or "")
+        summaries_by_source.setdefault(source_key, []).append(summary)
+    results = []
+    for link in message_links:
+        refs = telegram_client.parse_message_links([link])
+        ref = refs[0] if refs else None
+        matching_items = [item for item in items if _item_matches_message_link(item, link)]
+        matching_messages = [message for message in messages if _message_matches_link(message, link)]
+        summary = None
+        if ref:
+            candidates = summaries_by_source.get(str(ref["source_key"])) or []
+            summary = next(
+                (candidate for candidate in candidates if candidate.get("message_link") == link),
+                None,
+            )
+            if summary is None and candidates:
+                summary = candidates.pop(0)
+        if matching_items:
+            results.append({"url": link, "status": "resolved", "items": len(matching_items)})
+            continue
+        message = matching_messages[0] if matching_messages else None
+        if message and message.get("protected_content") and not include_protected:
+            skip_reason = "protected_content"
+        elif message and (message.get("unavailable") or message.get("media_unavailable")):
+            skip_reason = "inaccessible"
+        elif message:
+            skip_reason = "no_supported_media"
+        else:
+            skip_reason = (summary or {}).get("skip_reason") or "inaccessible"
+        results.append({"url": link, "status": "skipped", "skip_reason": skip_reason, "items": 0})
+    return results
+
+
+def _item_matches_message_link(item: dict[str, Any], link: Any) -> bool:
+    if not isinstance(link, str):
+        return False
+    if item.get("source_url") == link:
+        return True
+    refs = telegram_client.parse_message_links([link])
+    if not refs:
+        return False
+    ref = refs[0]
+    telegram = (item.get("metadata") or {}).get("telegram") or {}
+    message_id_matches = str(telegram.get("message_id")) == str(ref["message_id"])
+    chat_matches = str(telegram.get("chat_id")) == str(ref["chat"])
+    username_matches = str(telegram.get("chat_username") or "").lstrip("@").lower() == str(ref["chat"]).lower()
+    return message_id_matches and (chat_matches or username_matches)
+
+
+def _message_matches_link(message: dict[str, Any], link: str) -> bool:
+    if message.get("source_url") == link:
+        return True
+    refs = telegram_client.parse_message_links([link])
+    if not refs:
+        return False
+    ref = refs[0]
+    chat = message.get("chat") if isinstance(message.get("chat"), dict) else {}
+    message_id_matches = str(message.get("id") or message.get("message_id")) == str(ref["message_id"])
+    chat_matches = str(chat.get("id") or message.get("chat_id")) == str(ref["chat"])
+    username_matches = str(chat.get("username") or "").lstrip("@").lower() == str(ref["chat"]).lower()
+    return message_id_matches and (chat_matches or username_matches)
 
 
 def _safe_link_record(link: dict[str, Any]) -> dict[str, Any]:

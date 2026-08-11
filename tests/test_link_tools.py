@@ -1081,6 +1081,181 @@ class LinkQueueAndSyncTests(unittest.TestCase):
         self.assertEqual(len(sidecars), 1)
         self.assertNotIn("SECRET_INLINE_MESSAGE", sidecar_text)
 
+    def test_telegram_inbox_sync_bridges_public_message_link_alongside_external_url(self) -> None:
+        registry = create_default_registry()
+        external_url = f"https://{PUBLIC_TEST_IP}/mixed.jpg"
+        telegram_url = "https://t.me/source_channel/100"
+        http = FakeLinkHttpClient()
+        http.heads[external_url] = HttpResponse(
+            200,
+            {"Content-Type": "image/jpeg", "Content-Length": "8"},
+            b"",
+        )
+        http.gets[external_url] = HttpResponse(
+            200,
+            {"Content-Type": "image/jpeg", "Content-Length": "8"},
+            b"external",
+        )
+        fake = CombinedTelegramLinkClient(
+            messages={
+                "curated": [
+                    {
+                        "id": 20,
+                        "date": "2026-08-11T10:00:00+00:00",
+                        "chat": {"id": "curated", "title": "Inbox", "type": "channel"},
+                        "text": f"save {external_url} and {telegram_url}",
+                        "media": [],
+                    }
+                ],
+                "link:source_channel": [
+                    {
+                        "id": 100,
+                        "date": "2026-08-10T09:00:00+00:00",
+                        "chat": {
+                            "id": "source-channel-id",
+                            "title": "Source",
+                            "type": "channel",
+                            "username": "source_channel",
+                        },
+                        "media": [
+                            {
+                                "id": "photo-100",
+                                "kind": "photo",
+                                "mime_type": "image/jpeg",
+                                "download_ref": {
+                                    "chat_id": "source-channel-id",
+                                    "chat_username": "source_channel",
+                                    "message_id": "100",
+                                    "media_id": "photo-100",
+                                },
+                            }
+                        ],
+                    }
+                ],
+            },
+            http=http,
+        )
+        fake.downloads["source-channel-id:100:photo-100"] = b"telegram"
+        with TemporaryDirectory() as temp_dir:
+            context, _data_dir, db_path = _telegram_context(temp_dir, fake)
+
+            result = asyncio.run(
+                registry.run(
+                    "telegram.inbox.sync_links",
+                    {"db_path": str(db_path), "chat": "curated"},
+                    context,
+                )
+            )
+            with db.connect(db_path) as connection:
+                row = connection.execute(
+                    "SELECT metadata_json FROM media_items WHERE platform = 'telegram'"
+                ).fetchone()
+            metadata = json.loads(row["metadata_json"])
+
+        self.assertTrue(result.is_success)
+        self.assertEqual(result.data["summary"]["links_considered"], 2)
+        self.assertEqual(result.data["summary"]["resolved"], 2)
+        self.assertEqual(result.data["summary"]["downloaded"], 2)
+        self.assertEqual(result.data["summary"]["files_downloaded"], 2)
+        self.assertEqual(metadata["ingested_from"]["chat_id"], "curated")
+        self.assertEqual(metadata["ingested_from"]["message_id"], "20")
+        self.assertEqual(metadata["source_provenance"][0]["message_date"], "2026-08-11T10:00:00+00:00")
+
+    def test_telegram_inbox_sync_bridges_private_message_link(self) -> None:
+        registry = create_default_registry()
+        telegram_url = "https://t.me/c/123456789/55?single"
+        fake = CombinedTelegramLinkClient(
+            messages={
+                "curated": [
+                    {
+                        "id": 21,
+                        "chat": {"id": "curated", "type": "channel"},
+                        "text": telegram_url,
+                        "media": [],
+                    }
+                ],
+                "link:-100123456789": [
+                    {
+                        "id": 55,
+                        "chat": {"id": "-100123456789", "type": "channel"},
+                        "media": [
+                            {
+                                "id": "video-55",
+                                "kind": "video",
+                                "mime_type": "video/mp4",
+                                "download_ref": {
+                                    "chat_id": "-100123456789",
+                                    "message_id": "55",
+                                    "media_id": "video-55",
+                                },
+                            }
+                        ],
+                    }
+                ],
+            },
+            http=FakeLinkHttpClient(),
+        )
+        fake.downloads["-100123456789:55:video-55"] = b"private-video"
+        with TemporaryDirectory() as temp_dir:
+            context, _data_dir, db_path = _telegram_context(temp_dir, fake)
+
+            result = asyncio.run(
+                registry.run(
+                    "telegram.inbox.sync_links",
+                    {"db_path": str(db_path), "chat": "curated"},
+                    context,
+                )
+            )
+
+        self.assertTrue(result.is_success)
+        self.assertEqual(result.data["summary"]["telegram_links_considered"], 1)
+        self.assertEqual(result.data["summary"]["downloaded"], 1)
+        self.assertEqual(result.data["telegram_message_links"][0]["status"], "resolved")
+
+    def test_telegram_inbox_sync_structures_inaccessible_and_protected_message_link_skips(self) -> None:
+        registry = create_default_registry()
+        inaccessible_url = "https://telegram.me/c/123456789/55"
+        protected_url = "https://t.me/c/123456789/56"
+        fake = CombinedTelegramLinkClient(
+            messages={
+                "curated": [
+                    {
+                        "id": 22,
+                        "chat": {"id": "curated", "type": "channel"},
+                        "text": f"{inaccessible_url} {protected_url}",
+                        "media": [],
+                    }
+                ],
+                "link:-100123456789": [
+                    {
+                        "id": 56,
+                        "protected_content": True,
+                        "chat": {"id": "-100123456789", "type": "channel"},
+                        "media": [{"id": "photo-56", "kind": "photo", "mime_type": "image/jpeg"}],
+                    }
+                ],
+            },
+            http=FakeLinkHttpClient(),
+        )
+        with TemporaryDirectory() as temp_dir:
+            context, _data_dir, db_path = _telegram_context(temp_dir, fake)
+
+            result = asyncio.run(
+                registry.run(
+                    "telegram.inbox.sync_links",
+                    {"db_path": str(db_path), "chat": "curated"},
+                    context,
+                )
+            )
+
+        self.assertTrue(result.is_success)
+        self.assertEqual(result.data["summary"]["skipped_links"], 2)
+        self.assertEqual(
+            [entry["skip_reason"] for entry in result.data["telegram_message_links"]],
+            ["inaccessible", "protected_content"],
+        )
+        self.assertEqual(result.data["summary"]["downloaded"], 0)
+
     def test_telegram_inbox_sync_links_downloads_reddit_video_mp4_to_reddit_layout(self) -> None:
         registry = create_default_registry()
         url = "https://v.redd.it/abc123/DASH_720.mp4"
@@ -1589,6 +1764,95 @@ class LinkQueueAndSyncTests(unittest.TestCase):
         self.assertEqual(updated["status"], "failed")
         self.assertFalse(updated["retryable"])
         self.assertIsNone(updated["next_attempt_at"])
+
+    def test_link_media_sync_retries_previously_auth_skipped_link(self) -> None:
+        registry = create_default_registry()
+        url = f"https://{PUBLIC_TEST_IP}/auth-now-usable.jpg"
+        http = FakeLinkHttpClient()
+        http.heads[url] = HttpResponse(200, {"Content-Type": "image/jpeg", "Content-Length": "4"}, b"")
+        http.gets[url] = HttpResponse(200, {"Content-Type": "image/jpeg", "Content-Length": "4"}, b"data")
+        with TemporaryDirectory() as temp_dir:
+            data_dir = Path(temp_dir) / "data"
+            db_path = data_dir / "mediagent.sqlite3"
+            context = ToolContext.from_env(
+                env={"MEDIAGENT_DATA_DIR": str(data_dir), "MEDIAGENT_DB_PATH": str(db_path)},
+                cwd=Path(temp_dir),
+                http_client=http,
+            )
+            db.initialize_database(db_path)
+            link = db.upsert_link(
+                db_path,
+                {
+                    "ingest_platform": "cli",
+                    "original_url": url,
+                    "normalized_url": url,
+                },
+            )
+            db.update_link_resolution(
+                db_path,
+                link_id=link["id"],
+                status="skipped",
+                skip_reason="requires_auth",
+                resolution={"status": "skipped", "skip_reason": "requires_auth", "normalized_url": url},
+            )
+
+            result = asyncio.run(
+                registry.run(
+                    "link.media.sync",
+                    {"db_path": str(db_path), "retry_auth_skipped": True},
+                    context,
+                )
+            )
+            retried_link = db.get_link(db_path, link_id=link["id"])
+
+        self.assertTrue(result.is_success)
+        self.assertEqual(result.data["summary"]["auth_links_retried"], 1)
+        self.assertEqual(result.data["summary"]["downloaded"], 1)
+        self.assertEqual(retried_link["status"], "resolved")
+
+    def test_telegram_inbox_sync_retries_old_auth_skip_after_session_becomes_usable(self) -> None:
+        registry = create_default_registry()
+        url = f"https://{PUBLIC_TEST_IP}/old-auth-skip.jpg"
+        http = FakeLinkHttpClient()
+        http.heads[url] = HttpResponse(200, {"Content-Type": "image/jpeg", "Content-Length": "4"}, b"")
+        http.gets[url] = HttpResponse(200, {"Content-Type": "image/jpeg", "Content-Length": "4"}, b"data")
+        fake = CombinedTelegramLinkClient(messages={"curated": []}, http=http)
+        with TemporaryDirectory() as temp_dir:
+            context, _data_dir, db_path = _telegram_context(temp_dir, fake)
+            db.initialize_database(db_path)
+            link = db.upsert_link(
+                db_path,
+                {
+                    "ingest_platform": "telegram",
+                    "original_url": url,
+                    "normalized_url": url,
+                    "source_chat_id": "curated",
+                    "source_message_id": "5",
+                },
+            )
+            db.update_link_resolution(
+                db_path,
+                link_id=link["id"],
+                status="skipped",
+                skip_reason="requires_auth",
+                resolution={"status": "skipped", "skip_reason": "requires_auth", "normalized_url": url},
+            )
+
+            result = asyncio.run(
+                registry.run(
+                    "telegram.inbox.sync_links",
+                    {
+                        "db_path": str(db_path),
+                        "chat": "curated",
+                        "retry_auth_skipped": True,
+                    },
+                    context,
+                )
+            )
+
+        self.assertTrue(result.is_success)
+        self.assertEqual(result.data["summary"]["auth_links_retried"], 1)
+        self.assertEqual(result.data["summary"]["downloaded"], 1)
 
     def test_link_media_sync_claims_queued_links_and_clears_lease(self) -> None:
         registry = create_default_registry()

@@ -31,6 +31,14 @@ The first agent-mode service target is Telegram inbox sync because it represents
 
 The second timer-safe source is Pixiv bookmark sync. Pixiv does not expose a simple "messages after cursor" model like Telegram, so the service path should scan from the newest bookmarks, stop when it reaches an already known terminal item, and use a bounded `max_pages` safety cap.
 
+## P0 Gate: Telegram Inbox Message-Link Bridge
+
+- [x] Route public `t.me/<channel>/<message_id>` and private `t.me/c/<chat>/<message_id>` inbox links through Telegram message sync while external URLs keep using the link resolver pipeline.
+- [x] Preserve inbox chat/message/date/run provenance on Telegram-native media and return structured skips for protected or inaccessible linked messages.
+- [x] Add `retry_auth_skipped` to `telegram.inbox.sync_links` and `link.media.sync` so old `requires_auth` / `login_wall` queue rows can be retried after sessions become usable.
+- [x] Cover public, private, inaccessible, protected, mixed external-plus-Telegram, and auth-retry paths with fake-client tests.
+- [ ] Run one bounded live inbox check with a public link, an accessible private link, an inaccessible link, and one restored downstream platform session; do not reset the production DB manually.
+
 ## Remaining Deployment MVP Tasks
 
 - [ ] Add a deployment-oriented environment check profile for:

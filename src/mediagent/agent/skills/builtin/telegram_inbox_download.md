@@ -41,6 +41,7 @@ If the user does not provide values, use conservative defaults:
 - use `store_cursor`: false for full-source rebuild tasks; recurring update tasks may omit it so the tool can store cursors
 - `write_sidecar_metadata`: false
 - `retry_failed`: false
+- `retry_auth_skipped`: false; set true only after a downstream platform session becomes usable and the user wants old auth-dependent skips retried
 - `repair_missing_files`: false
 
 ## Tool Calling Strategy
@@ -54,13 +55,13 @@ Use `telegram.auth.status` only when a previous tool result reports missing, inv
 ## Example Dry-Run Action
 
 ```json
-{"action":"call_tool","tool":"telegram.inbox.sync_links","input":{"full_sync":true,"store_cursor":false,"write_sidecar_metadata":false,"retry_failed":false,"repair_missing_files":false},"dry_run":true,"reason":"Preview all downloadable media links from the configured Telegram inbox."}
+{"action":"call_tool","tool":"telegram.inbox.sync_links","input":{"full_sync":true,"store_cursor":false,"write_sidecar_metadata":false,"retry_failed":false,"retry_auth_skipped":false,"repair_missing_files":false},"dry_run":true,"reason":"Preview all downloadable media links from the configured Telegram inbox."}
 ```
 
 ## Example Execute Action
 
 ```json
-{"action":"call_tool","tool":"telegram.inbox.sync_links","input":{"full_sync":true,"store_cursor":false,"write_sidecar_metadata":false,"retry_failed":false,"repair_missing_files":false},"dry_run":false,"reason":"The user requested all downloadable inbox media, so the inbox sync may scan the configured inbox history and update state."}
+{"action":"call_tool","tool":"telegram.inbox.sync_links","input":{"full_sync":true,"store_cursor":false,"write_sidecar_metadata":false,"retry_failed":false,"retry_auth_skipped":false,"repair_missing_files":false},"dry_run":false,"reason":"The user requested all downloadable inbox media, so the inbox sync may scan the configured inbox history and update state."}
 ```
 
 ## Common Errors

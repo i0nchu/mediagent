@@ -31,6 +31,14 @@
 
 第二個 timer-safe 來源是 Pixiv bookmark sync。Pixiv 不像 Telegram 有簡單的「從 cursor 之後的訊息」模型，因此服務化路徑應從最新 bookmarks 開始掃描，遇到已知 terminal item 就停止，並使用 bounded `max_pages` 作為安全上限。
 
+## P0 Gate：Telegram Inbox Message-Link Bridge
+
+- [x] 將 inbox 中 public `t.me/<channel>/<message_id>` 與 private `t.me/c/<chat>/<message_id>` links 導入 Telegram message sync，外部 URL 則繼續使用 link resolver pipeline。
+- [x] 在 Telegram 原生媒體保留 inbox chat/message/date/run provenance，並對 protected 或 inaccessible linked messages 回傳 structured skips。
+- [x] 為 `telegram.inbox.sync_links` 與 `link.media.sync` 加入 `retry_auth_skipped`，讓 platform session 可用後能重試舊的 `requires_auth` / `login_wall` queue rows。
+- [x] 以 fake-client tests 覆蓋 public、private、inaccessible、protected、external 與 Telegram 混合，以及 auth retry paths。
+- [ ] 執行一次 bounded live inbox check，包含 public link、可存取 private link、inaccessible link 與一個已恢復 session 的 downstream platform；不要手動 reset production DB。
+
 ## 剩餘 Deployment MVP 任務
 
 - [ ] 新增部署導向的 environment check profile，檢查：

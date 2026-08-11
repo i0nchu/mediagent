@@ -163,6 +163,14 @@
 - 2026-08-03 UTC 的 bounded non-dry repair 使用同一個 12-source scope，成功下載 8 個 repaired files，分布於 Danbooru、nhentai、Redgifs 與 rule34，共寫入 76755767 bytes，0 failed/partial items。
 - Repair 後 `library.file.verify` 回報 675 筆 downloaded file records 中有 669 valid、6 missing、0 corrupt、0 unknown。剩餘 6 筆 missing rows 全部是 Reddit records，來自 4 個 unique source URLs；diagnostic dry-run 顯示這些 source 目前回 `requires_auth:login_required`。
 
+## Telegram Inbox Message-Link Bridge 狀態
+
+- `telegram.inbox.sync_links` 現在會在同一則 inbox message 中分流 external URLs 與 Telegram message links。External URLs 保留 shared resolver/download path；public 與 private `t.me` / `telegram.me` message links 則 delegate 到 Telegram 原生 collect/sync/download logic。
+- Telegram 原生 items 會保留 inbox chat ID、source message ID/date、collector run ID 與 merged source provenance，且不持久化 inbox message text。
+- Protected、missing、private、deleted 或其他 inaccessible linked messages 會回傳 per-link structured skips，不會中止整個 inbox run。
+- `link.media.sync` 的 `retry_auth_skipped:true` 會重試舊 auth-dependent queue rows；`telegram.inbox.sync_links` 的同名選項只處理 Telegram-ingested rows。兩條路徑都會使用 lease claim，且需要明確 operator intent。
+- Fake-client regressions 已覆蓋 public、private、inaccessible、protected、external 與 Telegram 混合，以及舊 auth-skip retry paths。本次實作沒有執行 live download。
+
 ## 已驗證
 
 最後已知通過的驗證命令：

@@ -1,5 +1,6 @@
 {
   "url": "https://example.com/path/to/media.jpg",
+  "retry_auth_skipped": false,
   "write_sidecar_metadata": true,
   "max_media_bytes": 1073741824
 }

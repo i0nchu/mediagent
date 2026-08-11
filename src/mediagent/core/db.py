@@ -658,6 +658,102 @@ def claim_links(
     return [_link_row_to_dict(row) for row in claimed]
 
 
+def list_auth_skipped_links(
+    db_path: Path,
+    *,
+    limit: int | None = None,
+    now: str | None = None,
+    ingest_platform: str | None = None,
+) -> list[dict[str, Any]]:
+    if not db_path.exists():
+        return []
+    now_value = now or datetime.now(UTC).isoformat()
+    where, params = _auth_skipped_link_where(now=now_value, ingest_platform=ingest_platform)
+    limit_sql = ""
+    if limit is not None:
+        limit_sql = " LIMIT ?"
+        params.append(max(0, int(limit)))
+    with connect(db_path) as connection:
+        rows = connection.execute(
+            f"""
+            SELECT id, ingest_platform, original_url, normalized_url, source_chat_id,
+                   source_message_id, source_message_date, collector_run_id, status,
+                   skip_reason, resolution_json, canonical_url, aliases_json,
+                   attempt_count, max_attempts, last_error, last_error_code,
+                   last_attempt_at, next_attempt_at, retryable, lease_owner,
+                   lease_expires_at, source_provenance_json, created_at, updated_at
+            FROM link_queue
+            WHERE {where}
+            ORDER BY id
+            {limit_sql}
+            """,
+            params,
+        ).fetchall()
+    return [_link_row_to_dict(row) for row in rows]
+
+
+def claim_auth_skipped_links(
+    db_path: Path,
+    *,
+    limit: int | None = None,
+    lease_owner: str,
+    lease_seconds: int = 900,
+    now: str | None = None,
+    ingest_platform: str | None = None,
+) -> list[dict[str, Any]]:
+    if not db_path.exists():
+        return []
+    now_dt = _parse_iso_datetime(now) if now else datetime.now(UTC)
+    now_value = now_dt.isoformat()
+    lease_expires_at = (now_dt + timedelta(seconds=max(1, int(lease_seconds)))).isoformat()
+    where, params = _auth_skipped_link_where(now=now_value, ingest_platform=ingest_platform)
+    limit_sql = ""
+    if limit is not None:
+        limit_sql = " LIMIT ?"
+        params.append(max(0, int(limit)))
+    with connect(db_path) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        rows = connection.execute(
+            f"""
+            SELECT id
+            FROM link_queue
+            WHERE {where}
+            ORDER BY id
+            {limit_sql}
+            """,
+            params,
+        ).fetchall()
+        link_ids = [int(row["id"]) for row in rows]
+        if not link_ids:
+            return []
+        placeholders = ", ".join("?" for _value in link_ids)
+        connection.execute(
+            f"""
+            UPDATE link_queue
+            SET lease_owner = ?,
+                lease_expires_at = ?,
+                updated_at = ?
+            WHERE id IN ({placeholders})
+            """,
+            (lease_owner, lease_expires_at, now_value, *link_ids),
+        )
+        claimed = connection.execute(
+            f"""
+            SELECT id, ingest_platform, original_url, normalized_url, source_chat_id,
+                   source_message_id, source_message_date, collector_run_id, status,
+                   skip_reason, resolution_json, canonical_url, aliases_json,
+                   attempt_count, max_attempts, last_error, last_error_code,
+                   last_attempt_at, next_attempt_at, retryable, lease_owner,
+                   lease_expires_at, source_provenance_json, created_at, updated_at
+            FROM link_queue
+            WHERE id IN ({placeholders})
+            ORDER BY id
+            """,
+            link_ids,
+        ).fetchall()
+    return [_link_row_to_dict(row) for row in claimed]
+
+
 def update_link_resolution(
     db_path: Path,
     *,
@@ -780,6 +876,19 @@ def _ready_link_where(*, status: str | None, now: str) -> tuple[str, list[Any]]:
             [now, now],
         )
     return (f"status = ? AND {lease_clause}", [status, now])
+
+
+def _auth_skipped_link_where(*, now: str, ingest_platform: str | None) -> tuple[str, list[Any]]:
+    where = """
+        status IN ('skipped', 'failed', 'deferred')
+        AND COALESCE(skip_reason, last_error_code) IN ('requires_auth', 'login_wall')
+        AND (lease_owner IS NULL OR lease_expires_at IS NULL OR lease_expires_at <= ?)
+    """
+    params: list[Any] = [now]
+    if ingest_platform:
+        where += " AND ingest_platform = ?"
+        params.append(ingest_platform)
+    return where, params
 
 
 def _next_link_attempt_at(now: str, attempt_count: int) -> str:

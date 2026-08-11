@@ -202,14 +202,27 @@ class TelethonTelegramClient:
                 messages.extend(chat_messages)
                 source_summaries.append(_source_summary(source_key, chat_messages))
             for ref in link_refs:
-                entity = await _get_entity_with_dialog_fallback(client, ref["chat"])
-                message = await client.get_messages(entity, ids=[ref["message_id"]])
-                raw_message = message[0] if isinstance(message, list) else message
-                if raw_message:
-                    normalized = _message_to_dict(raw_message, entity=entity)
-                    normalized["source_url"] = ref.get("source_url")
-                    messages.append(normalized)
-                    source_summaries.append(_source_summary(ref["source_key"], [normalized], cursor_eligible=False))
+                try:
+                    entity = await _get_entity_with_dialog_fallback(client, ref["chat"])
+                    message = await client.get_messages(entity, ids=[ref["message_id"]])
+                    raw_message = message[0] if isinstance(message, list) else message
+                except Exception as exc:
+                    skip_reason = _message_link_skip_reason(exc)
+                    if skip_reason is None:
+                        raise
+                    source_summaries.append(
+                        _message_link_source_summary(ref, [], status="skipped", skip_reason=skip_reason)
+                    )
+                    continue
+                if raw_message is None:
+                    source_summaries.append(
+                        _message_link_source_summary(ref, [], status="skipped", skip_reason="inaccessible")
+                    )
+                    continue
+                normalized = _message_to_dict(raw_message, entity=entity)
+                normalized["source_url"] = ref.get("source_url")
+                messages.append(normalized)
+                source_summaries.append(_message_link_source_summary(ref, [normalized], status="resolved"))
         return {
             "messages": messages,
             "source_summaries": source_summaries,
@@ -266,7 +279,7 @@ def parse_message_links(links: list[str]) -> list[dict[str, Any]]:
     refs = []
     for link in links:
         parsed = urlparse(link)
-        if parsed.netloc not in {"t.me", "telegram.me"}:
+        if parsed.netloc.lower() not in {"t.me", "telegram.me", "www.t.me", "www.telegram.me"}:
             continue
         parts = [part for part in parsed.path.split("/") if part]
         if len(parts) < 2:
@@ -288,6 +301,41 @@ def parse_message_links(links: list[str]) -> list[dict[str, Any]]:
             }
         )
     return refs
+
+
+def _message_link_source_summary(
+    ref: dict[str, Any],
+    messages: list[dict[str, Any]],
+    *,
+    status: str,
+    skip_reason: str | None = None,
+) -> dict[str, Any]:
+    return {
+        **_source_summary(ref["source_key"], messages, cursor_eligible=False),
+        "message_link": ref.get("source_url"),
+        "message_id": str(ref["message_id"]),
+        "status": status,
+        "skip_reason": skip_reason,
+    }
+
+
+def _message_link_skip_reason(exc: Exception) -> str | None:
+    if isinstance(exc, ValueError):
+        return "inaccessible"
+    if type(exc).__name__ in {
+        "ChannelInvalidError",
+        "ChannelPrivateError",
+        "ChatAdminRequiredError",
+        "InviteHashEmptyError",
+        "InviteHashExpiredError",
+        "InviteHashInvalidError",
+        "MessageIdInvalidError",
+        "PeerIdInvalidError",
+        "UsernameInvalidError",
+        "UsernameNotOccupiedError",
+    }:
+        return "inaccessible"
+    return None
 
 
 def download_entity_selector(download_ref: dict[str, Any]) -> Any:
