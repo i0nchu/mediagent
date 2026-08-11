@@ -279,7 +279,7 @@ Telegram foundation verification:
 - `telegram.messages.sync` は `.partial` 作成後の download cancellation も覆っています。failed file/item/run state を記録し、partial file を削除します。
 - Fake client を使った Telegram dry-run sync は DB と library files を書かないことを確認しています。
 - Telegram real login、auth status、curated link-inbox collection、小さな media download、long-video download、layout placement、`library.file.verify`、rerun dedupe は 2026-07-24 UTC に live-verified 済みです。
-- Telegram real downloads は `.partial` に直接 stream し、Telethon download call に `timeout_seconds` を enforce し、checksum は chunked で計算し、atomic move で finalize します。
+- Telegram real downloads は `.partial` に直接 stream し、`timeout_seconds` は no-progress idle timeout として扱い、checksum は chunked で計算し、atomic move で finalize します。
 
 Deterministic Pixiv sync verification:
 

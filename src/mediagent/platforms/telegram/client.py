@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import contextlib
 from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -15,6 +16,9 @@ from typing import Any
 from urllib.parse import urlparse
 
 from mediagent.platforms.telegram.auth import TelegramConfig
+
+
+MESSAGE_LINK_ALBUM_SCAN_RADIUS = 20
 
 
 class TelegramClientError(RuntimeError):
@@ -204,8 +208,7 @@ class TelethonTelegramClient:
             for ref in link_refs:
                 try:
                     entity = await _get_entity_with_dialog_fallback(client, ref["chat"])
-                    message = await client.get_messages(entity, ids=[ref["message_id"]])
-                    raw_message = message[0] if isinstance(message, list) else message
+                    raw_messages = await _collect_message_link_messages(client, entity, ref)
                 except Exception as exc:
                     skip_reason = _message_link_skip_reason(exc)
                     if skip_reason is None:
@@ -214,15 +217,18 @@ class TelethonTelegramClient:
                         _message_link_source_summary(ref, [], status="skipped", skip_reason=skip_reason)
                     )
                     continue
-                if raw_message is None:
+                if not raw_messages:
                     source_summaries.append(
                         _message_link_source_summary(ref, [], status="skipped", skip_reason="inaccessible")
                     )
                     continue
-                normalized = _message_to_dict(raw_message, entity=entity)
-                normalized["source_url"] = ref.get("source_url")
-                messages.append(normalized)
-                source_summaries.append(_message_link_source_summary(ref, [normalized], status="resolved"))
+                normalized_messages = []
+                for raw_message in raw_messages:
+                    normalized = _message_to_dict(raw_message, entity=entity)
+                    normalized["source_url"] = ref.get("source_url")
+                    normalized_messages.append(normalized)
+                messages.extend(normalized_messages)
+                source_summaries.append(_message_link_source_summary(ref, normalized_messages, status="resolved"))
         return {
             "messages": messages,
             "source_summaries": source_summaries,
@@ -246,12 +252,14 @@ class TelethonTelegramClient:
             if raw_message is None:
                 raise TelegramClientError("Telegram message was not found.")
             try:
-                downloaded_path = await asyncio.wait_for(
-                    client.download_media(raw_message, file=str(destination)),
-                    timeout=timeout_seconds,
+                downloaded_path = await _download_media_with_idle_timeout(
+                    client,
+                    raw_message,
+                    destination=destination,
+                    idle_timeout_seconds=timeout_seconds,
                 )
             except TimeoutError as exc:
-                raise TelegramClientError("Telegram download timed out.") from exc
+                raise TelegramClientError("Telegram download made no progress before timing out.") from exc
         if downloaded_path is None:
             raise TelegramClientError("Telegram message does not have downloadable media.")
         return {"path": str(downloaded_path or destination), "mime_type": None}
@@ -317,6 +325,108 @@ def _message_link_source_summary(
         "status": status,
         "skip_reason": skip_reason,
     }
+
+
+async def _collect_message_link_messages(client: Any, entity: Any, ref: dict[str, Any]) -> list[Any]:
+    message = await client.get_messages(entity, ids=[ref["message_id"]])
+    raw_message = message[0] if isinstance(message, list) else message
+    if raw_message is None:
+        return []
+
+    grouped_id = getattr(raw_message, "grouped_id", None)
+    if not grouped_id:
+        return [raw_message]
+
+    message_id = _int_or_none(getattr(raw_message, "id", None))
+    if message_id is None:
+        return [raw_message]
+
+    start_id = max(1, message_id - MESSAGE_LINK_ALBUM_SCAN_RADIUS)
+    end_id = message_id + MESSAGE_LINK_ALBUM_SCAN_RADIUS
+    nearby = await client.get_messages(entity, ids=list(range(start_id, end_id + 1)))
+    nearby_list = nearby if isinstance(nearby, list) else [nearby]
+    grouped_messages = [
+        item
+        for item in nearby_list
+        if item is not None and getattr(item, "grouped_id", None) == grouped_id
+    ]
+    if not grouped_messages:
+        return [raw_message]
+    return sorted(
+        _dedupe_raw_messages(grouped_messages),
+        key=lambda item: _int_or_none(getattr(item, "id", None)) or 0,
+    )
+
+
+def _dedupe_raw_messages(messages: list[Any]) -> list[Any]:
+    seen: set[int] = set()
+    deduped: list[Any] = []
+    for message in messages:
+        message_id = _int_or_none(getattr(message, "id", None))
+        marker = message_id if message_id is not None else id(message)
+        if marker in seen:
+            continue
+        seen.add(marker)
+        deduped.append(message)
+    return deduped
+
+
+async def _download_media_with_idle_timeout(
+    client: Any,
+    raw_message: Any,
+    *,
+    destination: Path,
+    idle_timeout_seconds: float,
+) -> Any:
+    if idle_timeout_seconds <= 0:
+        return await client.download_media(raw_message, file=str(destination))
+
+    loop = asyncio.get_running_loop()
+    last_progress_at = loop.time()
+    last_reported_bytes = -1
+
+    def mark_progress(current: Any = None, _total: Any = None) -> None:
+        nonlocal last_progress_at, last_reported_bytes
+        try:
+            current_bytes = int(current)
+        except (TypeError, ValueError):
+            current_bytes = None
+        if current_bytes is None or current_bytes > last_reported_bytes:
+            if current_bytes is not None:
+                last_reported_bytes = current_bytes
+            last_progress_at = loop.time()
+
+    task = asyncio.create_task(
+        client.download_media(
+            raw_message,
+            file=str(destination),
+            progress_callback=mark_progress,
+        )
+    )
+    poll_interval = min(1.0, max(0.05, idle_timeout_seconds / 10))
+    last_file_size = _file_size(destination)
+    while True:
+        try:
+            return await asyncio.wait_for(asyncio.shield(task), timeout=poll_interval)
+        except TimeoutError:
+            current_size = _file_size(destination)
+            if current_size is not None and current_size > (last_file_size or 0):
+                last_file_size = current_size
+                last_progress_at = loop.time()
+                continue
+            if loop.time() - last_progress_at < idle_timeout_seconds:
+                continue
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+            raise TimeoutError
+
+
+def _file_size(path: Path) -> int | None:
+    try:
+        return path.stat().st_size
+    except FileNotFoundError:
+        return None
 
 
 def _message_link_skip_reason(exc: Exception) -> str | None:

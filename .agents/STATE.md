@@ -280,7 +280,7 @@ Telegram foundation verification:
 - `telegram.messages.sync` is covered for download cancellation after `.partial` creation: it records failed file/item/run state and removes the partial file.
 - Telegram dry-run sync with a fake client proves no DB or library files are written.
 - Telegram real login, auth status, curated link-inbox collection, small media download, long-video download, layout placement, `library.file.verify`, and rerun dedupe were live-verified on 2026-07-24 UTC.
-- Telegram real downloads now stream directly to `.partial`, enforce `timeout_seconds` around the Telethon download call, compute checksums in chunks, and finalize with an atomic move.
+- Telegram real downloads now stream directly to `.partial`, treat `timeout_seconds` as a no-progress idle timeout, compute checksums in chunks, and finalize with an atomic move.
 
 Deterministic Pixiv sync verification:
 

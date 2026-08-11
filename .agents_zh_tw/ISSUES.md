@@ -82,7 +82,7 @@
 - Phase 13E cleanup/recovery foundation 已透過 `core.cleanup.media_state` 實作。它支援 dry-run planning、explicit apply confirmation、quarantine-before-DB-reset behavior、credential path protection、selector validation 與 path-safety tests。
 - Direct Telegram `download_ref` validation 已完成。`telegram.media.download` 現在會在 dry-run 或 network work 前驗證 direct 與 nested refs，至少要求 chat selector、`message_id` 與 `media_id`，並已補上 empty、partially populated 與 missing nested refs 的 regression coverage。
 - Telegram sync cancellation recovery 已在 item boundary 實作。若 streaming media download 在建立 `.partial` 後被取消，sync 會記錄 failed file、把 item 標成 failed/retryable、插入 failed run record、移除 partial file，並停止目前 run，不再繼續下載其他檔案。
-- Telegram stream-safe real downloads 已實作。真實 Telethon adapter 會直接寫入 `.partial`，download call 外層會 enforce `timeout_seconds`，checksum 會分塊計算，並已於 2026-07-24 UTC 成功下載一支一小時 Telegram 影片。
+- Telegram stream-safe real downloads 已實作。真實 Telethon adapter 會直接寫入 `.partial`，`timeout_seconds` 代表無進度 idle timeout，checksum 會分塊計算，並已於 2026-07-24 UTC 成功下載一支一小時 Telegram 影片。
 - Telegram real live verification 已完成目前階段目標。2026-07-24 UTC 已用真實 user session 驗證 `telegram.auth.login`、`telegram.auth.status`、curated link-inbox collection、兩個小型 media downloads、一支長影片下載、scanner-friendly layout placement、`library.file.verify` 與第二次執行去重。
 - 真實 Telethon client 在 `telegram.auth.login start` 時不會再進入 Telethon interactive prompt；adapter 已改用 explicit connect/disconnect boundaries。
 - Private Telegram `t.me/c/...` download links 現在會在下載 linked media 時正確解析 numeric `-100...` chat IDs。

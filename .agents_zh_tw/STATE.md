@@ -279,7 +279,7 @@ Telegram foundation verification：
 - `telegram.messages.sync` 已覆蓋 `.partial` 建立後 download cancellation：會記錄 failed file/item/run state，並移除 partial file。
 - Telegram dry-run sync 搭配 fake client 已證明不會寫入 DB 或 library files。
 - Telegram real login、auth status、curated link-inbox collection、小型媒體下載、長影片下載、layout placement、`library.file.verify` 與重跑去重已於 2026-07-24 UTC 完成 live verification。
-- Telegram 真實下載現在會直接 stream 到 `.partial`，在 Telethon download call 外層 enforce `timeout_seconds`，分塊計算 checksum，並用 atomic move finalization。
+- Telegram 真實下載現在會直接 stream 到 `.partial`，`timeout_seconds` 代表無進度 idle timeout，分塊計算 checksum，並用 atomic move finalization。
 
 Deterministic Pixiv sync 驗證：
 

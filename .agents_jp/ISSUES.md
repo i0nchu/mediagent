@@ -82,7 +82,7 @@
 - Phase 13E cleanup/recovery foundation は `core.cleanup.media_state` で実装済みです。Dry-run planning、explicit apply confirmation、quarantine-before-DB-reset behavior、credential path protection、selector validation、path-safety tests に対応しています。
 - Direct Telegram `download_ref` validation は完了しました。`telegram.media.download` は dry-run または network work の前に direct / nested refs を検証し、chat selector、`message_id`、`media_id` を必須にします。empty、partially populated、missing nested refs の regression coverage も追加済みです。
 - Telegram sync cancellation recovery は item boundary で実装済みです。Streaming media download が `.partial` 作成後に cancel された場合、sync は failed file を記録し、item を failed/retryable にし、failed run record を挿入し、partial file を削除し、追加 download を続けず current run を停止します。
-- Telegram stream-safe real downloads は実装済みです。Real Telethon adapter は `.partial` に直接書き込み、download call は `timeout_seconds` を enforce し、checksum は chunked で計算します。2026-07-24 UTC に 1 時間の Telegram video download が成功しました。
+- Telegram stream-safe real downloads は実装済みです。Real Telethon adapter は `.partial` に直接書き込み、`timeout_seconds` は no-progress idle timeout として扱い、checksum は chunked で計算します。2026-07-24 UTC に 1 時間の Telegram video download が成功しました。
 - Telegram real live verification は現在 phase の目標として完了しました。2026-07-24 UTC に real user session で `telegram.auth.login`、`telegram.auth.status`、curated link-inbox collection、2 件の小さな media downloads、1 件の long video download、scanner-friendly layout placement、`library.file.verify`、second-run dedupe を検証しました。
 - Real Telethon client は `telegram.auth.login start` 中に Telethon interactive prompt へ入らなくなりました。Adapter は explicit connect/disconnect boundaries を使います。
 - Private Telegram `t.me/c/...` download links は linked media の download 時に numeric `-100...` chat IDs として正しく解決されます。

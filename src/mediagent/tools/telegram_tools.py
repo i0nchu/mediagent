@@ -183,6 +183,7 @@ def definitions() -> list[ToolDefinition]:
                         "media_types": {"type": "array", "items": {"type": "string", "enum": MEDIA_TYPES}},
                         "include_protected": {"type": "boolean"},
                         "extract_message_links": {"type": "boolean"},
+                        "max_message_link_depth": {"type": "integer"},
                         "store_cursor": {"type": "boolean"},
                     },
                 },
@@ -240,6 +241,7 @@ def definitions() -> list[ToolDefinition]:
                         "media_types": {"type": "array", "items": {"type": "string", "enum": MEDIA_TYPES}},
                         "include_protected": {"type": "boolean"},
                         "extract_message_links": {"type": "boolean"},
+                        "max_message_link_depth": {"type": "integer"},
                         "overwrite": {"type": "boolean"},
                         "retry_failed": {"type": "boolean"},
                         "repair_missing_files": {"type": "boolean"},
@@ -1148,36 +1150,51 @@ async def _messages_collect(
     source_summaries = payload.get("source_summaries", []) if isinstance(payload, dict) else []
     extracted_message_links: list[str] = []
     linked_messages_count = 0
-    if input_data.get("extract_message_links"):
-        extracted_message_links = _new_message_links(
+    message_link_depth_reached = 0
+    message_link_depth_limit_reached = 0
+    seen_message_links = set(input_data.get("message_links") or [])
+    pending_message_links: list[str] = []
+    if input_data.get("extract_message_links") or input_data.get("message_links"):
+        pending_message_links = _new_message_links(
             telegram_parser.extract_message_links(messages),
-            input_data.get("message_links") or [],
+            seen_message_links,
         )
-        if extracted_message_links:
-            try:
-                linked_payload = await _telegram_call(
-                    context,
-                    config,
-                    "telegram_collect_messages",
-                    chats=[],
-                    after_by_source={},
-                    limit=_message_scan_limit(input_data, allow_full_sync=True),
-                    message_ids_by_source={},
-                    message_links=extracted_message_links,
-                    include_protected=input_data.get("include_protected", False),
-                )
-            except telegram_client.TelegramClientError as exc:
-                return ToolResult.failure(
-                    "telegram_message_link_collect_failed",
-                    str(exc),
-                    category=ErrorCategory.NETWORK,
-                )
-            linked_messages = linked_payload.get("messages", []) if isinstance(linked_payload, dict) else []
-            linked_messages_count = len(linked_messages)
-            messages.extend(linked_messages)
-            for source in linked_payload.get("source_summaries", []) if isinstance(linked_payload, dict) else []:
-                source["cursor_eligible"] = False
-                source_summaries.append(source)
+    max_message_link_depth = _message_link_follow_depth(input_data)
+    while pending_message_links and message_link_depth_reached < max_message_link_depth:
+        message_link_depth_reached += 1
+        current_message_links = pending_message_links
+        extracted_message_links.extend(current_message_links)
+        seen_message_links.update(current_message_links)
+        try:
+            linked_payload = await _telegram_call(
+                context,
+                config,
+                "telegram_collect_messages",
+                chats=[],
+                after_by_source={},
+                limit=_message_scan_limit(input_data, allow_full_sync=True),
+                message_ids_by_source={},
+                message_links=current_message_links,
+                include_protected=input_data.get("include_protected", False),
+            )
+        except telegram_client.TelegramClientError as exc:
+            return ToolResult.failure(
+                "telegram_message_link_collect_failed",
+                str(exc),
+                category=ErrorCategory.NETWORK,
+            )
+        linked_messages = linked_payload.get("messages", []) if isinstance(linked_payload, dict) else []
+        linked_messages_count += len(linked_messages)
+        messages.extend(linked_messages)
+        for source in linked_payload.get("source_summaries", []) if isinstance(linked_payload, dict) else []:
+            source["cursor_eligible"] = False
+            source_summaries.append(source)
+        pending_message_links = _new_message_links(
+            telegram_parser.extract_message_links(linked_messages),
+            seen_message_links,
+        )
+    if pending_message_links:
+        message_link_depth_limit_reached = len(pending_message_links)
     items, parser_summary = telegram_parser.normalize_messages(
         messages,
         media_types=input_data.get("media_types"),
@@ -1208,6 +1225,8 @@ async def _messages_collect(
                 "sources": len(source_summaries),
                 "extracted_message_links": len(extracted_message_links),
                 "linked_messages": linked_messages_count,
+                "message_link_depth_reached": message_link_depth_reached,
+                "message_link_depth_limit_reached": message_link_depth_limit_reached,
                 "cursor_stored": bool(stored_cursors),
             },
             "source_summaries": source_summaries,
@@ -2653,6 +2672,12 @@ def _message_scan_limit(input_data: dict[str, Any], *, allow_full_sync: bool) ->
     if allow_full_sync and input_data.get("full_sync"):
         return None
     return 100
+
+
+def _message_link_follow_depth(input_data: dict[str, Any]) -> int:
+    if input_data.get("max_message_link_depth") is not None:
+        return max(0, int(input_data["max_message_link_depth"]))
+    return 5
 
 
 def _safe_chat_selector(selector: Any) -> Any:

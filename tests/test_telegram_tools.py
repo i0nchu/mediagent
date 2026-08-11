@@ -128,11 +128,21 @@ class FakeTelegramClient:
                 }
             )
         for ref in telegram_client.parse_message_links(message_links or []):
+            source_messages = self.messages.get(ref["source_key"], [])
             selected = [
-                message
-                for message in self.messages.get(ref["source_key"], [])
+                dict(message)
+                for message in source_messages
                 if int(message["id"]) == int(ref["message_id"])
             ]
+            if selected and selected[0].get("grouped_id"):
+                grouped_id = selected[0]["grouped_id"]
+                selected = [
+                    dict(message)
+                    for message in source_messages
+                    if message.get("grouped_id") == grouped_id
+                ]
+            for message in selected:
+                message["source_url"] = ref["source_url"]
             messages.extend(selected)
             source_summaries.append(
                 {
@@ -547,6 +557,115 @@ class TelegramToolTests(unittest.TestCase):
         self.assertEqual(inbox_cursor["cursor_value"], "50")
         self.assertIsNone(link_cursor)
 
+    def test_messages_collect_expands_album_message_link(self) -> None:
+        registry = create_default_registry()
+        fake = FakeTelegramClient(
+            messages={
+                "curated": [
+                    {
+                        "id": 50,
+                        "date": "2026-07-22T01:00:00+00:00",
+                        "chat": {"id": "curated", "title": "Mediagent Inbox", "type": "channel"},
+                        "text": "save this album https://t.me/source_channel/100",
+                        "media": [],
+                    }
+                ],
+                "link:source_channel": _telegram_album_messages_fixture("source_channel", start_id=100),
+            }
+        )
+        with TemporaryDirectory() as temp_dir:
+            context, _data_dir, db_path = _telegram_context(temp_dir, fake)
+
+            result = asyncio.run(
+                registry.run(
+                    "telegram.messages.collect",
+                    {
+                        "db_path": str(db_path),
+                        "chat": "curated",
+                        "extract_message_links": True,
+                        "media_types": ["photo"],
+                    },
+                    context,
+                )
+            )
+
+        self.assertTrue(result.is_success)
+        self.assertEqual(result.data["summary"]["extracted_message_links"], 1)
+        self.assertEqual(result.data["summary"]["linked_messages"], 3)
+        self.assertEqual(result.data["summary"]["message_link_depth_reached"], 1)
+        self.assertEqual(len(result.data["items"]), 3)
+        self.assertEqual(
+            [item["metadata"]["telegram"]["message_id"] for item in result.data["items"]],
+            ["100", "101", "102"],
+        )
+
+    def test_messages_collect_follows_nested_message_links(self) -> None:
+        registry = create_default_registry()
+        fake = FakeTelegramClient(
+            messages={
+                "link:first_channel": [
+                    {
+                        "id": 100,
+                        "date": "2026-07-22T01:00:00+00:00",
+                        "chat": {
+                            "id": "first_channel",
+                            "title": "First",
+                            "type": "channel",
+                            "username": "first_channel",
+                        },
+                        "text": "nested https://t.me/second_channel/200",
+                        "media": [],
+                    }
+                ],
+                "link:second_channel": [
+                    {
+                        "id": 200,
+                        "date": "2026-07-22T01:05:00+00:00",
+                        "chat": {
+                            "id": "second_channel",
+                            "title": "Second",
+                            "type": "channel",
+                            "username": "second_channel",
+                        },
+                        "media": [
+                            {
+                                "id": "photo-200",
+                                "kind": "photo",
+                                "mime_type": "image/jpeg",
+                                "download_ref": {
+                                    "chat_id": "second_channel",
+                                    "chat_username": "second_channel",
+                                    "message_id": "200",
+                                    "media_id": "photo-200",
+                                },
+                            }
+                        ],
+                    }
+                ],
+            }
+        )
+        with TemporaryDirectory() as temp_dir:
+            context, _data_dir, db_path = _telegram_context(temp_dir, fake)
+
+            result = asyncio.run(
+                registry.run(
+                    "telegram.messages.collect",
+                    {
+                        "db_path": str(db_path),
+                        "message_links": ["https://t.me/first_channel/100"],
+                        "media_types": ["photo"],
+                    },
+                    context,
+                )
+            )
+
+        self.assertTrue(result.is_success)
+        self.assertEqual(result.data["summary"]["extracted_message_links"], 1)
+        self.assertEqual(result.data["summary"]["linked_messages"], 1)
+        self.assertEqual(result.data["summary"]["message_link_depth_reached"], 1)
+        self.assertEqual(len(result.data["items"]), 1)
+        self.assertEqual(result.data["items"][0]["remote_id"], "second_channel:200:photo-200")
+
     def test_telegram_message_links_include_private_channel_links(self) -> None:
         refs = telegram_client.parse_message_links(
             [
@@ -574,6 +693,56 @@ class TelegramToolTests(unittest.TestCase):
         self.assertEqual(telegram_client._entity_selector("-1003779502941"), -1003779502941)
         self.assertEqual(telegram_client._entity_selector("saved_messages"), "me")
         self.assertEqual(telegram_client._entity_selector("@source_channel"), "@source_channel")
+
+    def test_telegram_download_idle_timeout_allows_slow_progress(self) -> None:
+        class SlowDownloadClient:
+            async def download_media(self, raw_message: Any, *, file: str, progress_callback: Any = None) -> str:
+                path = Path(file)
+                path.parent.mkdir(parents=True, exist_ok=True)
+                written = 0
+                for chunk in (b"one", b"two", b"three"):
+                    await asyncio.sleep(0.01)
+                    with path.open("ab") as handle:
+                        handle.write(chunk)
+                    written += len(chunk)
+                    if progress_callback:
+                        progress_callback(written, 11)
+                return str(path)
+
+        with TemporaryDirectory() as temp_dir:
+            destination = Path(temp_dir) / "slow.partial"
+
+            result = asyncio.run(
+                telegram_client._download_media_with_idle_timeout(
+                    SlowDownloadClient(),
+                    object(),
+                    destination=destination,
+                    idle_timeout_seconds=0.02,
+                )
+            )
+            content = destination.read_bytes()
+
+        self.assertEqual(result, str(destination))
+        self.assertEqual(content, b"onetwothree")
+
+    def test_telegram_download_idle_timeout_fails_without_progress(self) -> None:
+        class StalledDownloadClient:
+            async def download_media(self, raw_message: Any, *, file: str, progress_callback: Any = None) -> str:
+                await asyncio.sleep(1)
+                return file
+
+        with TemporaryDirectory() as temp_dir:
+            destination = Path(temp_dir) / "stalled.partial"
+
+            with self.assertRaises(TimeoutError):
+                asyncio.run(
+                    telegram_client._download_media_with_idle_timeout(
+                        StalledDownloadClient(),
+                        object(),
+                        destination=destination,
+                        idle_timeout_seconds=0.02,
+                    )
+                )
 
     def test_media_download_writes_final_file_and_removes_partial(self) -> None:
         registry = create_default_registry()
@@ -834,6 +1003,39 @@ class TelegramToolTests(unittest.TestCase):
         self.assertTrue(str(written_media[0]).endswith(".jpg"))
         self.assertIn("/library/telegram/photo/2026/07/", str(written_media[0]))
 
+    def test_messages_sync_downloads_all_album_media_from_message_link(self) -> None:
+        registry = create_default_registry()
+        fake = FakeTelegramClient(
+            messages={"link:source_channel": _telegram_album_messages_fixture("source_channel", start_id=100)},
+            downloads={
+                "source_channel:100:photo-100": {"content": b"photo-100", "mime_type": "image/jpeg"},
+                "source_channel:101:photo-101": {"content": b"photo-101", "mime_type": "image/jpeg"},
+                "source_channel:102:photo-102": {"content": b"photo-102", "mime_type": "image/jpeg"},
+            },
+        )
+        with TemporaryDirectory() as temp_dir:
+            context, data_dir, db_path = _telegram_context(temp_dir, fake)
+
+            result = asyncio.run(
+                registry.run(
+                    "telegram.messages.sync",
+                    {
+                        "db_path": str(db_path),
+                        "message_links": ["https://t.me/source_channel/100"],
+                        "media_types": ["photo"],
+                    },
+                    context,
+                )
+            )
+            written_media = sorted(path for path in (data_dir / "library").rglob("*.jpg"))
+
+        self.assertTrue(result.is_success)
+        self.assertEqual(result.data["summary"]["collected"], 3)
+        self.assertEqual(result.data["summary"]["downloaded"], 3)
+        self.assertEqual(result.data["summary"]["files_downloaded"], 3)
+        self.assertEqual(result.data["message_links"][0], {"url": "https://t.me/source_channel/100", "status": "resolved", "items": 3})
+        self.assertEqual(len(written_media), 3)
+
     def test_messages_sync_partial_failure_does_not_advance_cursor(self) -> None:
         registry = create_default_registry()
         fake = FakeTelegramClient(
@@ -1040,6 +1242,31 @@ def _telegram_messages_fixture() -> list[dict[str, Any]]:
             "chat": {"id": "saved_messages", "title": "Saved Messages", "type": "saved_messages"},
             "media": [{"id": "doc-14", "kind": "document", "mime_type": "application/pdf"}],
         },
+    ]
+
+
+def _telegram_album_messages_fixture(chat_id: str, *, start_id: int) -> list[dict[str, Any]]:
+    return [
+        {
+            "id": start_id + index,
+            "date": f"2026-07-22T01:0{index}:00+00:00",
+            "chat": {"id": chat_id, "title": "Source", "type": "channel", "username": chat_id},
+            "grouped_id": "album-telegram-realistic",
+            "media": [
+                {
+                    "id": f"photo-{start_id + index}",
+                    "kind": "photo",
+                    "mime_type": "image/jpeg",
+                    "download_ref": {
+                        "chat_id": chat_id,
+                        "chat_username": chat_id,
+                        "message_id": str(start_id + index),
+                        "media_id": f"photo-{start_id + index}",
+                    },
+                }
+            ],
+        }
+        for index in range(3)
     ]
 
 
