@@ -7,28 +7,30 @@
 - `.agents/TODO.md`
 - `.agents_zh_tw/TODO.md`
 
-## Remaining Focus: Instagram 保存済みメディア Live Verification
+## Current Focus: systemd Timer Hardening
 
-Offline foundation は実装済みで `STATE.md` に記録されています。残作業は以下の operator-controlled live-test gate のみです。
+Goal: 別の long-running source または scheduler layer を追加する前に、既存の Agent-mode timer deployment を強化します。
 
-## Local Live-Test Gate
+- [ ] Enabled Telegram inbox、Pixiv bookmark、optional Instagram saved-media sources 用の deployment-oriented environment-check profile を追加します。
+- [ ] Overlapping timer runs が collection/download の開始前に clean failure するよう、run lock または lease guard を追加します。
+- [ ] Systemd journal 向け Agent Core summary-only output を追加し、full artifact と nested resolution payloads は default で省略します。
+- [ ] Pixiv `stop_on_known` を source-aware にし、別 source から download された explicit Pixiv link が bookmark sync を早期停止しないようにします。
+- [ ] 一貫した timer-safe failure policy を適用します:
+  - auth/session と checkpoint failures は current platform run を停止します
+  - rate limits は tight retry loop を行わず停止します
+  - partial downloads は durable source state を進めません
+  - successful recurring runs は DB/file state で dedupe されます
+- [ ] Hourly Telegram/Pixiv tasks と optional conservative Instagram saved-media task の system-level deployment examples を追加または更新します。
 
-- [ ] `/home/ion/projects/mediagent` の configuration、DB、temporary library、saved Instagram session だけを使います。Development verification 中に `/data/services` または `/data/nas` へアクセスしません。
-- [ ] Saved session を 1 回 check し、private URLs や account details を log せず bounded 1 page だけ collect します。
-- [ ] 少数の bounded saved posts を dedicated local live-test library に sync します。
-- [ ] Bounded sample に carousel と Reel/video が含まれる場合、carousel の全 resources と有効な Reel/video file を確認します。
-- [ ] 同じ bounded sync を再実行し、healthy files が dedupe され duplicate download が 0 であることを確認します。
-- [ ] Dedicated live-test scope に対して `library.file.verify` を実行します。
-- [ ] Redacted summary を記録後、local live-test media、DB、temporary output を削除します。
-- [ ] Automated verification と bounded live test が通った後だけ feature branch を `main` に merge します。
+## Acceptance Criteria
 
-## After This Focus
-
-- Systemd deployment MVP environment-check profile を完成します。
-- Overlapping timer runs を防ぐ run lock または lease guard を追加します。
-- Systemd journal 用 Agent Core summary-only output を追加します。
-- Pixiv `stop_on_known` を source-aware にします。
-- 文書化済みの timer-safe auth、rate-limit、cursor failure policy を追加します。
+- [ ] Clean checkout は platform に接続せず、enabled timer settings をすべて検証できます。
+- [ ] 同じ source の 2 つの overlapping runs は concurrent download できません。
+- [ ] Journal output は run ごとに 1 つの concise redacted final summary を出します。
+- [ ] Existing Telegram/Pixiv recurring commands は intended source state から続行し、duplicate download を行いません。
+- [ ] Instagram saved-media recurring sync は `stop_on_known:true` と bounded page cap を使い、item limit を捏造しません。
+- [ ] Auth、checkpoint、rate-limit、partial-download、lock-contention paths に focused offline tests があります。
+- [ ] `uv run --locked python -m unittest discover -s tests`、`uv lock --check`、`git diff --check` が通ります。
 
 ## Deferred To V2 Or Later
 

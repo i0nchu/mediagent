@@ -6,11 +6,13 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
+from unittest.mock import patch
 
 from mediagent.core.http import HttpResponse
 from mediagent.core import db
 from mediagent.core.links import ResolveRequest, default_link_resolver_registry, resolution_to_media_item
 from mediagent.core.tooling import ToolContext
+from mediagent.platforms.instagram import client as instagram_client
 from mediagent.tools.defaults import create_default_registry
 
 
@@ -79,6 +81,47 @@ class FakeInstagramClient:
 
 
 class InstagramToolTests(unittest.TestCase):
+    def test_real_saved_page_adapter_does_not_truncate_before_opaque_cursor(self) -> None:
+        class StubClient:
+            def load_settings(self, path: Path) -> None:
+                self.path = path
+
+            def collection_medias_v1_chunk(self, collection: str, max_id: str = "") -> tuple[list[str], str]:
+                return ["first", "second", "third"], "opaque-next"
+
+        with TemporaryDirectory() as temp_dir:
+            session = Path(temp_dir) / "instagram_session.json"
+            session.write_text("{}", encoding="utf-8")
+            with patch("instagrapi.Client", StubClient):
+                items, cursor = instagram_client.get_saved_page(
+                    env={"INSTAGRAM_SESSION_FILE": str(session)},
+                    cwd=Path(temp_dir),
+                    amount=1,
+                )
+
+        self.assertEqual(items, ["first", "second", "third"])
+        self.assertEqual(cursor, "opaque-next")
+
+    def test_saved_collect_rejects_outside_db_path_before_network(self) -> None:
+        registry = create_default_registry()
+        fake = FakeInstagramClient()
+        fake.saved_pages = {None: {"items": [], "next_cursor": None}}
+        with TemporaryDirectory() as temp_dir, TemporaryDirectory() as outside_dir:
+            context = _ready_saved_context(temp_dir, fake)
+            outside_db = Path(outside_dir) / "outside.sqlite3"
+            result = asyncio.run(
+                registry.run(
+                    "instagram.saved.collect",
+                    {"db_path": str(outside_db), "store_cursor": True},
+                    context,
+                )
+            )
+
+            self.assertFalse(result.is_success)
+            self.assertEqual(result.error.code, "unsafe_db_path")
+            self.assertEqual(fake.calls, [])
+            self.assertFalse(outside_db.exists())
+
     def test_saved_collect_paginates_dedupes_and_redacts_runtime_urls(self) -> None:
         registry = create_default_registry(); fake = FakeInstagramClient()
         first = _saved_post("SavedA", resources=1); duplicate = _saved_post("SavedA", resources=1)
@@ -93,6 +136,65 @@ class InstagramToolTests(unittest.TestCase):
         self.assertEqual(result.data["summary"]["items"], 2)
         self.assertEqual(result.data["summary"]["resources"], 4)
         self.assertNotIn(PUBLIC_TEST_IP, json.dumps(result.to_dict()))
+
+    def test_saved_collect_limit_does_not_expose_cursor_past_unreturned_page_items(self) -> None:
+        registry = create_default_registry()
+        fake = FakeInstagramClient()
+        fake.saved_pages = {
+            None: {
+                "items": [
+                    _saved_post("First", resources=1),
+                    _saved_post("Second", resources=1),
+                    _saved_post("Third", resources=1),
+                ],
+                "next_cursor": "unsafe-next-page",
+            }
+        }
+        with TemporaryDirectory() as temp_dir:
+            context = _ready_saved_context(temp_dir, fake)
+            result = asyncio.run(
+                registry.run(
+                    "instagram.saved.collect",
+                    {"limit": 1, "store_cursor": True},
+                    context,
+                )
+            )
+            db_path = context.db_path
+            assert db_path
+            cursor = db.get_sync_cursor(db_path, platform="instagram", cursor_name="saved")
+
+        self.assertTrue(result.is_success)
+        self.assertEqual(result.data["summary"]["stop_reason"], "limit_reached")
+        self.assertIsNone(result.data["summary"]["next_cursor"])
+        self.assertIsNone(cursor)
+
+    def test_saved_collect_stores_cursor_after_complete_bounded_page(self) -> None:
+        registry = create_default_registry()
+        fake = FakeInstagramClient()
+        fake.saved_pages = {
+            None: {
+                "items": [_saved_post("CompletePage", resources=1)],
+                "next_cursor": "safe-next-page",
+            }
+        }
+        with TemporaryDirectory() as temp_dir:
+            context = _ready_saved_context(temp_dir, fake)
+            result = asyncio.run(
+                registry.run(
+                    "instagram.saved.collect",
+                    {"max_pages": 1, "store_cursor": True},
+                    context,
+                )
+            )
+            db_path = context.db_path
+            assert db_path
+            cursor = db.get_sync_cursor(db_path, platform="instagram", cursor_name="saved")
+
+        self.assertTrue(result.is_success)
+        self.assertEqual(result.data["summary"]["stop_reason"], "max_pages_reached")
+        self.assertEqual(result.data["summary"]["next_cursor"], "safe-next-page")
+        self.assertTrue(result.data["summary"]["cursor_stored"])
+        self.assertEqual(cursor["cursor_value"], "safe-next-page")
 
     def test_saved_collect_dry_run_does_not_read_session_or_network(self) -> None:
         registry = create_default_registry(); fake = FakeInstagramClient()
@@ -164,6 +266,32 @@ class InstagramToolTests(unittest.TestCase):
             result = asyncio.run(registry.run("instagram.saved.sync", {"max_pages": 1, "store_cursor": True}, context))
             cursor = db.get_sync_cursor(db_path, platform="instagram", cursor_name="saved")
         self.assertTrue(result.is_success); self.assertFalse(result.data["summary"]["cursor_stored"])
+        self.assertIsNone(cursor)
+
+    def test_saved_sync_partial_carousel_failure_does_not_store_cursor(self) -> None:
+        registry = create_default_registry()
+        fake = FakeInstagramClient()
+        fake.saved_pages = {None: {"items": [_saved_post("Partial", resources=3)], "next_cursor": None}}
+        for suffix in ("0.jpg", "1.jpg"):
+            url = f"https://{PUBLIC_TEST_IP}/{suffix}"
+            fake.gets[url] = HttpResponse(200, {"Content-Type": "image/jpeg"}, b"media", url)
+
+        with TemporaryDirectory() as temp_dir:
+            context = _ready_saved_context(temp_dir, fake)
+            db_path = context.db_path
+            assert db_path
+            result = asyncio.run(
+                registry.run(
+                    "instagram.saved.sync",
+                    {"full_sync": True, "store_cursor": True},
+                    context,
+                )
+            )
+            cursor = db.get_sync_cursor(db_path, platform="instagram", cursor_name="saved")
+
+        self.assertFalse(result.is_success)
+        self.assertEqual(result.data["summary"]["partial"], 1)
+        self.assertFalse(result.data["summary"]["cursor_stored"])
         self.assertIsNone(cursor)
 
     def test_auth_status_reports_missing_session_with_agent_decidable_error(self) -> None:

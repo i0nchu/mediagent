@@ -78,6 +78,8 @@
 - `instagram.auth.status`
 - `instagram.auth.ensure_session`
 - `instagram.link.resolve`
+- `instagram.saved.collect`
+- `instagram.saved.sync`
 - `telegram.auth.login`
 - `telegram.auth.status`
 - `telegram.inbox.collect_links`（hidden stable）
@@ -200,7 +202,7 @@ uv run --locked mediagent tools run reddit.saved.collect --input examples/tools/
 uv run --locked mediagent tools run x.auth.start --input examples/tools/x.auth.start.json --json
 ```
 
-最新の local full suite は 227 tests passing です。
+最新の local full suite は 259 tests passing です。
 
 Phase 16 Telegram inbox link resolver verification:
 
@@ -351,14 +353,20 @@ Phase 13 Telegram + Pixiv layout live verification は 2026-07-24 UTC に実行�
 - Filesystem verification は Pixiv files 624、Telegram files 3、`.partial` files 0 を確認しました。
 - 同じ bounded input の Pixiv second dry-run は queued downloads 0、already-downloaded items 100 件を skipped でした。
 
-## 未実装または未検証
+## Instagram Saved Media Foundation
 
-Instagram saved-media foundation は 2026-08-11 UTC に offline 実装を完了しました。
+Instagram saved-media foundation と bounded local live verification は 2026-08-11 UTC に完了しました。
 
 - Opaque pagination を維持し、structured session/checkpoint/rate-limit failures を返す sequential one-page saved-feed client を追加しました。
 - `instagram.saved.collect` と `instagram.saved.sync`、photo/Reel/video/carousel の whole-post normalization、runtime-only signed URLs、共通 scanner-friendly storage/download/status/repair、安全な cursor advancement、sidecar support を追加しました。
 - Tools を登録し、bounded/recurring/full JSON examples と英語 `instagram_saved_sync` Agent SKILL を追加しました。Saved-feed intent は explicit Instagram links と分離し、「all saved media」に架空の制限を加えません。
-- Fake-client tests は pagination、dedupe、carousel resources、dry-run isolation、auth/rate-limit errors、download、second-run dedupe を cover します。この worktree では live network/private saved-media test は実施していません。
+- Review hardening により configured write roots 外の explicit DB paths を拒否し、page limit truncation が opaque cursor の後ろにある未返却 posts を skip しないようにしました。
+- Locked offline suite は 259 tests が pass し、pagination、dedupe、carousel resources、partial failure、cursor safety、dry-run isolation、auth/rate-limit errors、download、retry、repair、Agent intent boundaries を cover します。
+- Local-only bounded live run は saved-feed 1 page を読み、先頭 2 posts を sync しました。両方とも Reels/videos で、2 files、合計 16,746,907 bytes を正常に download しました。
+- 同じ run の 2 回目は queued/downloaded が 0、healthy items 2 件を skip し、`library.file.verify` は valid 2、missing 0、corrupt 0 を報告しました。
+- SQLite inspection では persisted runtime CDN/session/auth markers は 0 件でした。Dedicated local live-test DB、library、temporary output は後で削除しました。Bounded sample に carousel は含まれなかったため、real carousel download はこの live run ではなく offline tests で cover します。
+
+## 未実装または未検証
 
 - Workflow V1 runner
 - built-in scheduler
@@ -374,6 +382,4 @@ Instagram saved-media foundation は 2026-08-11 UTC に offline 実装を完了�
 
 ## 次の推奨作業
 
-File-health-aware repair mode は実装済みで、bounded live repair により resolve 可能な missing files は復元済みです。次の recommended task は、remaining 6 historical Reddit rows の扱いを決めることです。Known missing として残す、cleanup tooling で reset/quarantine する、または Reddit auth/resolver work を再開するまで deferred にします。
-
-Reddit OAuth/saved collection と X live auth verification は deferred legacy/advanced paths として扱います。User が明示的に workflow work を選ばない限り、link-first provider-adapter contract が少なくとももう 1 つの provider adapter または複数回の cron-style runs で安定するまで Workflow V1、built-in scheduling、broad autonomous planning は始めません。
+`TODO.md` の systemd timer-hardening focus に進みます: deployment environment validation、overlapping-run protection、concise journal output、source-aware Pixiv stop-on-known、一貫した timer-safe failure policy。Reddit OAuth/saved collection と X live auth verification は deferred legacy/advanced paths のままです。

@@ -29,6 +29,7 @@ uv run --locked mediagent agent run "<natural language task>" --json
 
 - `explicit_link_download`
 - `instagram_link_download`
+- `instagram_saved_sync`
 - `library_health_check`
 - `pixiv_bookmark_sync`
 - `telegram_inbox_download`
@@ -127,7 +128,7 @@ mediagent link sync <url> --json
 
 ## Instagram Tools
 
-Instagram support 採 explicit-link first。它只使用 saved local session 解析使用者提供的公開 post/Reel URLs；不掃 feeds、saved posts、stories、profiles、messages、comments、likes、follows 或 account activity。
+Instagram support 包含 explicit post/Reel links，以及 configured account 的 saved-media feed；不掃 stories、profiles、messages、comments、likes、follows 或更廣泛 account activity。
 
 一個 Instagram post URL 代表整個貼文。Carousel posts 預設下載所有 media resources；`img_index` 只保留為 source metadata，除非未來加入明確選項改變行為。Signed Instagram CDN URLs 是 runtime-only download data，不得持久化到 SQLite、sidecar metadata、logs、snapshots 或 tool output。
 
@@ -135,6 +136,8 @@ Instagram support 採 explicit-link first。它只使用 saved local session 解
 - `instagram.auth.login`：使用明確本機 username/password credentials 建立或替換 saved local Instagram session。Session file 必須位於 allowed credential/data roots，並以嚴格權限寫入。
 - `instagram.auth.ensure_session`：檢查 saved session，且只在 credentials 存在、cooldown 允許時低頻重新登入。Checkpoint 與 2FA 會停止自動化；rate-limit 與 temporary-block states 應延後工作。
 - `instagram.link.resolve`：解析一個公開 Instagram `/p/<shortcode>/`、`/reel/<shortcode>/` 或 `/tv/<shortcode>/` URL 成 normalized media candidates。它不會自行執行 password login；非 Instagram hosts 或缺少 shortcode 會回傳 `instagram_media_unsupported`，missing/invalid session 會回傳可供 agent 判斷的 auth errors。
+- `instagram.saved.collect`：透過 configured saved session sequentially 讀取收藏貼文並回傳 normalized whole-post items，不下載檔案。支援 bounded `limit` / `max_pages` 與 explicit full pagination；opaque cursors、session errors、checkpoints 與 rate limits 會保持 structured，runtime CDN URLs 不會出現在 public output。
+- `instagram.saved.sync`：將 saved-feed collection 與共用 SQLite dedupe、scanner-friendly storage、downloads、file/item status、retry 與 missing-file repair 組合。Recurring runs 應使用 `stop_on_known:true` 與保守 page cap；explicit full sync 使用 `full_sync:true`，不捏造 item/page limit。
 
 ## Experimental Link Tools
 
@@ -179,7 +182,7 @@ Saved-collection slice 只讀 OAuth identity/history 資料並收集 direct medi
 - Pixiv credentials 可來自 `PIXIV_CREDENTIALS_FILE`、`PIXIV_REFRESH_TOKEN` 或 `PIXIV_ACCESS_TOKEN`。第一次本機 setup 優先使用 `pixiv.auth.login`。
 - Telegram credentials 來自 `TELEGRAM_API_ID`、`TELEGRAM_API_HASH` 與 `TELEGRAM_SESSION_FILE`；session file 是 credential，應放在 `${MEDIAGENT_DATA_DIR}/credentials/` 底下。第一次本機 setup 優先使用 `telegram.auth.login`。
 - Reddit credentials 可來自 `REDDIT_CREDENTIALS_FILE` 或 token 環境變數。只有在明確驗證 deferred auth-assisted path 時才使用 `reddit.auth.start` + `reddit.auth.exchange`，且一定要使用 unique descriptive `REDDIT_USER_AGENT`。
-- Instagram credentials 來自 `INSTAGRAM_ACCOUNT`、`INSTAGRAM_SECRET` 與 `INSTAGRAM_SESSION_FILE`；session file 是 credential，應放在 `${MEDIAGENT_DATA_DIR}/credentials/` 底下。Link sync 前優先使用 `instagram.auth.ensure_session`，只有明確建立本機 session 時才用 `instagram.auth.login`。
+- Instagram credentials 來自 `INSTAGRAM_ACCOUNT`、`INSTAGRAM_SECRET` 與 `INSTAGRAM_SESSION_FILE`；session file 是 credential，應放在 `${MEDIAGENT_DATA_DIR}/credentials/` 底下。Link 或 saved-media sync 前優先使用 `instagram.auth.ensure_session`，只有明確建立本機 session 時才用 `instagram.auth.login`。
 - `X_CREDENTIALS_FILE`、`PIXIV_CREDENTIALS_FILE`、`TELEGRAM_SESSION_FILE`、`REDDIT_CREDENTIALS_FILE` 與 `INSTAGRAM_SESSION_FILE` 應指向使用者明確管理的檔案。
 - token exchange 與 refresh 的輸出不包含 raw tokens。
 - SQLite run records 不得保存 raw access tokens、refresh tokens、cookies、sessions 或 bot tokens。

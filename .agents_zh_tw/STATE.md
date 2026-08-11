@@ -78,6 +78,8 @@
 - `instagram.auth.status`
 - `instagram.auth.ensure_session`
 - `instagram.link.resolve`
+- `instagram.saved.collect`
+- `instagram.saved.sync`
 - `telegram.auth.login`
 - `telegram.auth.status`
 - `telegram.inbox.collect_links`（hidden stable）
@@ -200,7 +202,7 @@ uv run --locked mediagent tools run reddit.saved.collect --input examples/tools/
 uv run --locked mediagent tools run x.auth.start --input examples/tools/x.auth.start.json --json
 ```
 
-最新本機完整測試狀態是 220 個測試通過。
+最新本機完整測試狀態是 259 個測試通過。
 
 Phase 16 Telegram inbox link resolver verification：
 
@@ -351,14 +353,20 @@ Phase 13 Telegram + Pixiv layout live verification 已於 2026-07-24 UTC 執行�
 - Filesystem verification 顯示 624 個 Pixiv files、3 個 Telegram files、0 個 `.partial` files。
 - 使用相同 bounded input 的 Pixiv 第二次 dry-run queued 0 downloads，並 skip 100 個已下載 items。
 
-## 尚未實作或尚未驗證
+## Instagram 收藏媒體 Foundation
 
-Instagram 收藏媒體 foundation 已於 2026-08-11 UTC 完成離線實作：
+Instagram 收藏媒體 foundation 與 bounded 本機 live verification 已於 2026-08-11 UTC 完成：
 
 - 新增 sequential 單頁 saved-feed client，保留 opaque pagination，並提供 structured session、checkpoint 與 rate-limit failures。
 - 新增 `instagram.saved.collect` 與 `instagram.saved.sync`；支援 photo、Reel/video、carousel 的 whole-post normalization、runtime-only signed URLs、共用 scanner-friendly storage/download/status/repair、safe cursor advancement 與 sidecar。
 - 註冊 tools，新增 bounded/recurring/full JSON examples，以及英文 `instagram_saved_sync` Agent SKILL；saved-feed intent 與 explicit Instagram links 保持分離，且「all saved media」不會被加上虛構限制。
-- Fake-client tests 涵蓋 pagination、dedupe、carousel resources、dry-run isolation、auth/rate-limit errors、download 與 second-run dedupe。本 worktree 未進行 live network 或 private saved-media test。
+- Review hardening 會拒絕 configured write roots 之外的 explicit DB paths，也會避免 page limit 截斷後透過 opaque cursor 跳過未回傳貼文。
+- Locked offline suite 通過 259 tests，涵蓋 pagination、dedupe、carousel resources、partial failure、cursor safety、dry-run isolation、auth/rate-limit errors、download、retry、repair 與 Agent intent boundaries。
+- Local-only bounded live run 讀取一個 saved-feed page，並同步前 2 個貼文；兩者都是 Reels/videos，共成功下載 2 個檔案、16,746,907 bytes。
+- 第二次相同執行 queued/downloaded 都是 0，跳過 2 個健康 items；`library.file.verify` 回報 2 valid、0 missing、0 corrupt。
+- SQLite 檢查發現 0 個持久化 runtime CDN/session/auth markers。專用本機 live-test DB、library 與暫存輸出已於測試後移除。Bounded sample 未包含 carousel，因此真實 carousel 下載仍由離線測試覆蓋。
+
+## 尚未實作或尚未驗證
 
 - Workflow V1 runner
 - 內建 scheduler
@@ -374,6 +382,4 @@ Instagram 收藏媒體 foundation 已於 2026-08-11 UTC 完成離線實作：
 
 ## 下一個建議任務
 
-File-health-aware repair mode 已實作，且 bounded live repair 已恢復可解析的 missing files。下一個建議任務是決定剩餘 6 筆歷史 Reddit rows 要如何處理：保留為 known missing、用 cleanup tooling reset/quarantine，或延後到 Reddit auth/resolver work 恢復時再處理。
-
-Reddit OAuth/saved collection 與 X live auth verification 都視為 deferred legacy/advanced paths。除非使用者明確要求，否則不要在 link-first provider-adapter contract 通過至少一個更多 provider adapter 或多次 cron-style runs 保持穩定前開始 Workflow V1、內建 scheduling 或廣泛 autonomous planning。
+依照 `TODO.md` 進行 systemd timer hardening：deployment environment validation、overlapping-run protection、精簡 journal output、source-aware Pixiv stop-on-known，以及一致的 timer-safe failure policy。Reddit OAuth/saved collection 與 X live auth verification 維持 deferred legacy/advanced paths。

@@ -79,6 +79,8 @@
 - `instagram.auth.status`
 - `instagram.auth.ensure_session`
 - `instagram.link.resolve`
+- `instagram.saved.collect`
+- `instagram.saved.sync`
 - `telegram.auth.login`
 - `telegram.auth.status`
 - `telegram.inbox.collect_links` (hidden stable)
@@ -201,7 +203,7 @@ uv run --locked mediagent tools run reddit.saved.collect --input examples/tools/
 uv run --locked mediagent tools run x.auth.start --input examples/tools/x.auth.start.json --json
 ```
 
-The latest local full suite has 227 passing tests.
+The latest local full suite has 259 passing tests.
 
 Phase 16 Telegram inbox link resolver verification:
 
@@ -352,14 +354,20 @@ Phase 13 Telegram + Pixiv layout live verification ran on 2026-07-24 UTC:
 - Filesystem verification found 624 Pixiv files, 3 Telegram files, and 0 `.partial` files.
 - A Pixiv second dry-run with the same bounded input queued 0 downloads and skipped 100 already-downloaded items.
 
-## Not Implemented
+## Instagram Saved Media Foundation
 
-Instagram saved-media foundation completed offline on 2026-08-11 UTC:
+Instagram saved-media foundation and bounded local live verification completed on 2026-08-11 UTC:
 
 - Added a sequential one-page saved-feed client with opaque pagination and structured session, checkpoint, and rate-limit failures.
 - Added `instagram.saved.collect` and `instagram.saved.sync`, whole-post normalization for photos, Reels/videos, and carousels, runtime-only signed URLs, shared scanner-friendly storage/download/status/repair behavior, safe cursor advancement, and sidecar support.
 - Registered the tools, added bounded/recurring/full JSON examples, and added an English `instagram_saved_sync` Agent SKILL that keeps saved-feed intent separate from explicit Instagram links and preserves unbounded “all saved media” requests.
-- Fake-client tests cover pagination, dedupe, carousel resources, dry-run isolation, auth/rate-limit errors, downloading, and second-run dedupe. No live network or private saved-media test was performed in this worktree.
+- Review hardening prevents explicit DB paths outside configured write roots and prevents page-limit truncation from skipping unreturned posts behind an opaque cursor.
+- The locked offline suite passes 259 tests, including pagination, dedupe, carousel resources, partial failure, cursor safety, dry-run isolation, auth/rate-limit errors, downloading, retry, repair, and Agent intent boundaries.
+- A local-only bounded live run used one saved-feed page and synchronized the first 2 posts. Both were Reels/videos; 2 files totaling 16,746,907 bytes downloaded successfully.
+- The second identical run queued and downloaded 0 files, skipped both healthy items, and `library.file.verify` reported 2 valid, 0 missing, and 0 corrupt files.
+- SQLite inspection found 0 persisted runtime CDN/session/auth markers. The dedicated local live-test DB, library, and temporary output were removed afterward. The bounded sample did not contain a carousel, so real carousel downloading remains covered offline rather than by this live run.
+
+## Not Implemented
 
 - Workflow V1 runner
 - built-in scheduler
@@ -375,6 +383,4 @@ Instagram saved-media foundation completed offline on 2026-08-11 UTC:
 
 ## Next Recommended Task
 
-File-health-aware repair mode is implemented and bounded live repair has restored the resolvable missing files. The next recommended task is deciding how to handle the 6 remaining historical Reddit rows that now hit `requires_auth:login_required`: leave them as known missing, reset/quarantine them with cleanup tooling, or defer them until Reddit auth/resolver work resumes.
-
-Treat Reddit OAuth/saved collection and X live auth verification as deferred legacy/advanced paths. Do not start Workflow V1, built-in scheduling, or broad autonomous planning until the link-first provider-adapter contract remains stable through at least one more provider adapter or repeated cron-style runs, unless the user explicitly chooses workflow work next.
+Proceed with the systemd timer-hardening focus in `TODO.md`: deployment environment validation, overlapping-run protection, concise journal output, source-aware Pixiv stop-on-known behavior, and one consistent timer-safe failure policy. Reddit OAuth/saved collection and X live auth verification remain deferred legacy/advanced paths.

@@ -99,6 +99,7 @@ Agent Core V1 不是 scheduler，也不是廣泛 autonomous planner。它必須�
 
 - `auth.py`：saved-session status、明確本機 username/password login、bounded ensure-session behavior、credential path safety，以及可供 agent 判斷的 auth/session error mapping
 - `links.py`：Instagram post/Reel/tv URL parsing、canonical identity、whole-post resource normalization，以及 runtime-only signed CDN download URL handling
+- `client.py` 與 `parser.py`：單頁 saved-feed access、opaque cursor，以及 whole-post saved-media normalization
 
 ## CLI Flow
 

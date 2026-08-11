@@ -99,6 +99,7 @@ Agent Core V1 は scheduler でも broad autonomous planner でもありませ�
 
 - `auth.py`: saved-session status、explicit local username/password login、bounded ensure-session behavior、credential path safety、agent-decidable auth/session error mapping
 - `links.py`: Instagram post/Reel/tv URL parsing、canonical identity、whole-post resource normalization、runtime-only signed CDN download URL handling
+- `client.py` と `parser.py`: one-page saved-feed access、opaque cursor、whole-post saved-media normalization
 
 ## CLI Flow
 

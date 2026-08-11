@@ -145,27 +145,59 @@ def definitions() -> list[ToolDefinition]:
 
 
 async def saved_collect(context: ToolContext, input_data: dict[str, Any]) -> ToolResult:
+    try:
+        db_path = _saved_db_path(context, input_data)
+    except PathSafetyError as exc:
+        return ToolResult.failure("unsafe_db_path", str(exc), category=ErrorCategory.FILESYSTEM)
+    if (input_data.get("store_cursor") or input_data.get("stop_on_known")) and db_path is None:
+        return ToolResult.failure(
+            "missing_db_path",
+            "Provide db_path or set MEDIAGENT_DB_PATH when storing cursors or stopping on known items.",
+            category=ErrorCategory.VALIDATION,
+        )
     if context.dry_run:
         validation = _validate_saved_dry_run(context, input_data)
         if validation is not None:
             return validation
-        return ToolResult.success({"dry_run": True, "platform": "instagram", "would_collect": True,
-                                   "request": {key: input_data[key] for key in ("cursor", "limit", "max_pages", "full_sync") if key in input_data}})
-    result = await _collect_saved_pages(context, input_data)
+        return ToolResult.success(
+            {
+                "dry_run": True,
+                "platform": "instagram",
+                "would_collect": True,
+                "request": {
+                    key: input_data[key]
+                    for key in ("cursor", "limit", "max_pages", "full_sync")
+                    if key in input_data
+                },
+            }
+        )
+    result = await _collect_saved_pages(context, input_data, known_db_path=db_path)
     if result.is_success:
         result.data.pop("_runtime_items", None)
-        if input_data.get("store_cursor") and result.data["summary"]["stop_reason"] == "end_of_feed":
-            db_path = _saved_db_path(context, input_data)
+        if input_data.get("store_cursor") and result.data["summary"]["stop_reason"] in {
+            "end_of_feed",
+            "max_pages_reached",
+            "single_page_default",
+        }:
             if db_path:
                 db.initialize_database(db_path)
-                db.set_sync_cursor(db_path, platform="instagram", cursor_name="saved",
-                                   cursor_value=result.data["summary"]["next_cursor"],
-                                   metadata={"items": result.data["summary"]["items"]})
+                db.set_sync_cursor(
+                    db_path,
+                    platform="instagram",
+                    cursor_name="saved",
+                    cursor_value=result.data["summary"]["next_cursor"],
+                    metadata={"items": result.data["summary"]["items"]},
+                )
                 result.data["summary"]["cursor_stored"] = True
     return result
 
 
-async def _collect_saved_pages(context: ToolContext, input_data: dict[str, Any]) -> ToolResult:
+async def _collect_saved_pages(
+    context: ToolContext,
+    input_data: dict[str, Any],
+    *,
+    known_db_path: Path | None,
+) -> ToolResult:
     try:
         session_file = _safe_session_file(context, input_data)
     except PathSafetyError as exc:
@@ -188,14 +220,13 @@ async def _collect_saved_pages(context: ToolContext, input_data: dict[str, Any])
                 break
             raw, next_cursor = instagram_client.get_saved_page(
                 env=context.env, cwd=context.cwd, http_client=context.http_client,
-                session_file=session_file, cursor=cursor, amount=min(50, remaining) if remaining else 50,
+                session_file=session_file, cursor=cursor, amount=50,
                 timeout=_timeout(input_data),
             )
             pages += 1
             raw_posts += len(raw)
             page_items = instagram_parser.parse_saved_posts(raw)
             page_statuses = {}
-            known_db_path = _saved_db_path(context, input_data)
             if input_data.get("stop_on_known") and not input_data.get("full_sync") and known_db_path is not None:
                 page_statuses = db.get_media_statuses(known_db_path, page_items)
             for item in page_items:
@@ -224,16 +255,36 @@ async def _collect_saved_pages(context: ToolContext, input_data: dict[str, Any])
     except instagram_auth.InstagramPlatformError as exc:
         return _instagram_failure(exc.code, str(exc), details=exc.public_details())
     public_items = [link_tools._public_media_item(item) for item in items]
-    return ToolResult.success({"platform": "instagram", "items": public_items, "_runtime_items": items,
-        "summary": {"pages_fetched": pages, "raw_posts": raw_posts, "items": len(items),
-                    "resources": resources, "next_cursor": cursor, "stop_reason": stop_reason,
-                    "known_items_seen": known_items_seen}})
+    output_cursor = None if stop_reason in {"limit_reached", "known_item_seen"} else cursor
+    return ToolResult.success(
+        {
+            "platform": "instagram",
+            "items": public_items,
+            "_runtime_items": items,
+            "summary": {
+                "pages_fetched": pages,
+                "raw_posts": raw_posts,
+                "items": len(items),
+                "resources": resources,
+                "next_cursor": output_cursor,
+                "stop_reason": stop_reason,
+                "known_items_seen": known_items_seen,
+            },
+        }
+    )
 
 
 async def saved_sync(context: ToolContext, input_data: dict[str, Any]) -> ToolResult:
-    db_path = _saved_db_path(context, input_data)
+    try:
+        db_path = _saved_db_path(context, input_data)
+    except PathSafetyError as exc:
+        return ToolResult.failure("unsafe_db_path", str(exc), category=ErrorCategory.FILESYSTEM)
     if db_path is None:
-        return ToolResult.failure("missing_db_path", "Provide db_path or set MEDIAGENT_DB_PATH.", category=ErrorCategory.VALIDATION)
+        return ToolResult.failure(
+            "missing_db_path",
+            "Provide db_path or set MEDIAGENT_DB_PATH.",
+            category=ErrorCategory.VALIDATION,
+        )
     if context.dry_run:
         validation = _validate_saved_dry_run(context, input_data)
         if validation is not None:
@@ -246,10 +297,24 @@ async def saved_sync(context: ToolContext, input_data: dict[str, Any]) -> ToolRe
                 return ToolResult.failure("unsafe_path", str(exc), category=ErrorCategory.FILESYSTEM)
     else:
         db.initialize_database(db_path)
-    collected = await _collect_saved_pages(context, {**input_data, "store_cursor": False}) if not context.dry_run else None
+    collected = (
+        await _collect_saved_pages(
+            context,
+            {**input_data, "store_cursor": False},
+            known_db_path=db_path,
+        )
+        if not context.dry_run
+        else None
+    )
     if context.dry_run:
-        return ToolResult.success({"dry_run": True, "platform": "instagram", "would_sync": True,
-                                   "request": {key: value for key, value in input_data.items() if key != "session_file"}})
+        return ToolResult.success(
+            {
+                "dry_run": True,
+                "platform": "instagram",
+                "would_sync": True,
+                "request": {key: value for key, value in input_data.items() if key != "session_file"},
+            }
+        )
     assert collected is not None
     if not collected.is_success:
         return collected
@@ -262,38 +327,71 @@ async def saved_sync(context: ToolContext, input_data: dict[str, Any]) -> ToolRe
         items, statuses, db_path=db_path, retry_failed=bool(input_data.get("retry_failed")),
         repair_missing_files=bool(input_data.get("repair_missing_files")),
     )
-    summary = {"collected": collected.data["summary"]["items"], "known": known_seen,
-               "queued": len(candidates), "downloaded": 0, "partial": 0, "failed": 0,
-               "repaired": skipped["repair_items"], "skipped": skipped["skipped_items"],
-               "files": 0, "bytes": 0, **collected.data["summary"]}
-    item_results=[]; artifacts=[]; warnings=[]
+    summary = {
+        "collected": collected.data["summary"]["items"],
+        "known": known_seen,
+        "queued": len(candidates),
+        "downloaded": 0,
+        "partial": 0,
+        "failed": 0,
+        "repaired": skipped["repair_items"],
+        "skipped": skipped["skipped_items"],
+        "files": 0,
+        "bytes": 0,
+        **collected.data["summary"],
+    }
+    item_results = []
+    artifacts = []
+    warnings = []
     for item in candidates:
         result = await link_tools._sync_one_link_item(context, db_path, item, input_data)
-        item_results.append(result); summary[result["status"]] += 1
-        summary["files"] += result["files_downloaded"]; summary["bytes"] += result["bytes_written"]
+        item_results.append(result)
+        summary[result["status"]] += 1
+        summary["files"] += result["files_downloaded"]
+        summary["bytes"] += result["bytes_written"]
         artifacts.extend({"type": "file", "path": path} for path in result["artifacts"])
         warnings.extend(result["warnings"])
-    run_status = "success" if not summary["failed"] and not summary["partial"] else ("partial" if summary["downloaded"] else "failed")
-    cursor_safe = (run_status == "success" and not context.dry_run and not known_seen
-                   and collected.data["summary"]["stop_reason"] == "end_of_feed")
+    run_status = (
+        "success"
+        if not summary["failed"] and not summary["partial"]
+        else ("partial" if summary["downloaded"] else "failed")
+    )
+    cursor_safe = (
+        run_status == "success"
+        and not context.dry_run
+        and not known_seen
+        and collected.data["summary"]["stop_reason"] == "end_of_feed"
+    )
     if input_data.get("store_cursor", True) and cursor_safe:
-        db.set_sync_cursor(db_path, platform="instagram", cursor_name="saved", cursor_value=collected.data["summary"]["next_cursor"],
-                           metadata={"items": len(items)})
-        summary["cursor_stored"] = True; summary["cursor_reason"] = "stored"
+        db.set_sync_cursor(
+            db_path,
+            platform="instagram",
+            cursor_name="saved",
+            cursor_value=collected.data["summary"]["next_cursor"],
+            metadata={"items": len(items)},
+        )
+        summary["cursor_stored"] = True
+        summary["cursor_reason"] = "stored"
     else:
         summary["cursor_stored"] = False
         summary["cursor_reason"] = "disabled" if not input_data.get("store_cursor", True) else "incomplete_boundary"
-    data={"platform":"instagram", "summary":summary, "items":item_results}
+    data = {"platform": "instagram", "summary": summary, "items": item_results}
     if run_status == "success":
         return ToolResult.success(data, artifacts=artifacts, warnings=warnings)
-    return ToolResult.failure("instagram_saved_sync_partial" if run_status == "partial" else "instagram_saved_sync_failed",
-                              "Instagram saved sync finished with failed items.", data=data, warnings=warnings,
-                              category=ErrorCategory.NETWORK)
+    return ToolResult.failure(
+        "instagram_saved_sync_partial" if run_status == "partial" else "instagram_saved_sync_failed",
+        "Instagram saved sync finished with failed items.",
+        data=data,
+        warnings=warnings,
+        category=ErrorCategory.NETWORK,
+    )
 
 
 def _saved_db_path(context: ToolContext, input_data: dict[str, Any]) -> Path | None:
     if input_data.get("db_path"):
-        return Path(resolve_placeholders(str(input_data["db_path"]), context.env)).expanduser().resolve()
+        path = Path(resolve_placeholders(str(input_data["db_path"]), context.env)).expanduser().resolve()
+        ensure_inside(path, context.allowed_write_roots())
+        return path
     return context.db_path
 
 

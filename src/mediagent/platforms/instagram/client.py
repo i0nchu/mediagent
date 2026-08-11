@@ -43,7 +43,9 @@ def get_saved_page(
         client.delay_range = [1, 3]
         client.load_settings(path)
         medias, next_cursor = client.collection_medias_v1_chunk("saved", max_id=cursor or "")
-        return list(medias)[:amount], str(next_cursor) if next_cursor else None
+        # Instagram controls the private feed page size. Truncating here while
+        # returning the page cursor would skip the unreturned posts forever.
+        return list(medias), str(next_cursor) if next_cursor else None
     except auth.InstagramPlatformError:
         raise
     except Exception as exc:  # pragma: no cover - exercised through fake clients

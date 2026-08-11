@@ -7,28 +7,30 @@
 - `.agents/TODO.md`
 - `.agents_jp/TODO.md`
 
-## 剩餘焦點：Instagram 收藏媒體 Live Verification
+## 目前焦點：systemd Timer Hardening
 
-離線 foundation 已完成並記錄於 `STATE.md`。剩餘工作僅限下方由 operator 控制的 live-test gate。
+目標：在加入其他長期來源或 scheduler layer 前，先強化現有 Agent-mode timer 部署。
 
-## 本機 Live-Test Gate
+- [ ] 新增 deployment-oriented environment-check profile，檢查已啟用的 Telegram inbox、Pixiv bookmark，以及選用的 Instagram 收藏媒體來源。
+- [ ] 新增 run lock 或 lease guard，讓重疊的 timer runs 在 collection 或 download 開始前乾淨失敗。
+- [ ] 新增適合 systemd journal 的 Agent Core summary-only output；預設省略完整 artifacts 與巢狀 resolution payloads。
+- [ ] 讓 Pixiv `stop_on_known` 具備 source-aware 判斷，避免由其他來源下載的 explicit Pixiv link 過早停止 bookmark sync。
+- [ ] 套用一致的 timer-safe failure policy：
+  - auth/session 與 checkpoint failures 會停止本平台本輪執行
+  - rate limits 會停止執行，不進行密集 retry loop
+  - partial downloads 不會推進 durable source state
+  - 成功的 recurring runs 持續由 DB/file state 去重
+- [ ] 新增或更新 system-level deployment examples，包含每小時 Telegram/Pixiv tasks，以及選用的保守 Instagram 收藏同步 task。
 
-- [ ] 只使用 `/home/ion/projects/mediagent` 的設定、DB、暫存 library 與 Instagram saved session。開發驗證期間絕不存取 `/data/services` 或 `/data/nas`。
-- [ ] 檢查 saved session 一次，只收集一個 bounded page，且不在 log 中輸出私人 URL 或帳號細節。
-- [ ] 將少量有界限的收藏貼文同步到專用本機 live-test library。
-- [ ] 若 bounded sample 包含 carousel 與 Reel／影片，確認 carousel 會下載所有資源且 Reel／影片會產生有效檔案。
-- [ ] 使用相同範圍再執行一次 sync，確認健康檔案會去重且不重複下載。
-- [ ] 對專用 live-test scope 執行 `library.file.verify`。
-- [ ] 記錄去識別化 summary 後，移除本機 live-test media、DB 與暫存輸出。
-- [ ] 只有在自動化驗證與 bounded live test 都通過後，才能將 feature branch 合併到 `main`。
+## 驗收標準
 
-## 本焦點完成後
-
-- 完成 systemd deployment MVP environment-check profile。
-- 新增 run lock 或 lease guard，避免 timer runs 重疊。
-- 新增適合 systemd journal 的 Agent Core summary-only output。
-- 讓 Pixiv `stop_on_known` 具備 source-aware 判斷。
-- 加入文件中定義的 timer-safe auth、rate-limit 與 cursor failure policy。
+- [ ] 乾淨 checkout 可以在不接觸平台的情況下驗證所有已啟用 timer settings。
+- [ ] 同一來源的兩個重疊 runs 不可同時下載。
+- [ ] Journal output 每輪只包含一份精簡且去識別化的 final summary。
+- [ ] 既有 Telegram 與 Pixiv recurring commands 會從預期 source state 繼續，且不重複下載。
+- [ ] Instagram 收藏媒體 recurring sync 使用 `stop_on_known:true` 與 bounded page cap，且不捏造 item limit。
+- [ ] Auth、checkpoint、rate-limit、partial-download 與 lock-contention paths 都有 focused offline tests。
+- [ ] `uv run --locked python -m unittest discover -s tests`、`uv lock --check` 與 `git diff --check` 通過。
 
 ## 延後到 V2 或更後面
 

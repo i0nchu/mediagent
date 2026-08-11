@@ -29,6 +29,7 @@ Built-in SKILLs:
 
 - `explicit_link_download`
 - `instagram_link_download`
+- `instagram_saved_sync`
 - `library_health_check`
 - `pixiv_bookmark_sync`
 - `telegram_inbox_download`
@@ -402,7 +403,7 @@ Known platform page domains with dedicated resolvers are reserved from generic f
 
 ## Instagram Tools
 
-Instagram support is explicit-link first. It uses a saved local session only for resolving user-provided public post/Reel URLs. It does not scan feeds, saved posts, stories, profiles, messages, comments, likes, follows, or account activity.
+Instagram support includes explicit post/Reel links and the configured account's saved-media feed. It does not scan stories, profiles, messages, comments, likes, follows, or broader account activity.
 
 One Instagram post URL represents the whole post. Carousel posts download every media resource by default; `img_index` is retained only as source metadata unless a future explicit option changes that behavior. Signed Instagram CDN URLs are runtime-only download data and must not be persisted to SQLite, sidecar metadata, logs, snapshots, or tool output.
 
@@ -447,6 +448,31 @@ Permissions:
 - `read_env`
 - `read_credentials`
 - `network`
+
+### `instagram.saved.collect`
+
+Reads saved posts sequentially through the configured saved session and returns normalized whole-post items without downloading files. It supports bounded `limit` / `max_pages` collection and explicit full pagination. Opaque page cursors, session errors, checkpoints, and rate limits remain structured; runtime CDN URLs are removed from public output.
+
+Permissions:
+
+- `read_env`
+- `read_credentials`
+- `network`
+- `write_db` when explicit cursor storage is requested
+
+### `instagram.saved.sync`
+
+Composes saved-feed collection with shared SQLite dedupe, scanner-friendly storage, downloads, file/item status, retry, and missing-file repair. Recurring runs should use `stop_on_known:true` with a conservative page cap. Explicit full sync uses `full_sync:true` without an invented item/page limit.
+
+Permissions:
+
+- `read_env`
+- `read_credentials`
+- `network`
+- `read_db`
+- `write_db`
+- `read_files`
+- `write_files`
 
 ## Experimental Link Tools
 
@@ -574,7 +600,7 @@ Permissions:
 - Pixiv credentials may come from `PIXIV_CREDENTIALS_FILE`, `PIXIV_REFRESH_TOKEN`, or `PIXIV_ACCESS_TOKEN`. Prefer `pixiv.auth.login` for first-time local setup.
 - Telegram credentials come from `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`, and `TELEGRAM_SESSION_FILE`; the session file is a credential and should live under `${MEDIAGENT_DATA_DIR}/credentials/`. Prefer `telegram.auth.login` for first-time local setup.
 - Reddit credentials may come from `REDDIT_CREDENTIALS_FILE` or token environment variables. Use `reddit.auth.start` + `reddit.auth.exchange` only when explicitly validating the deferred auth-assisted path, and always use a unique descriptive `REDDIT_USER_AGENT`.
-- Instagram credentials come from `INSTAGRAM_ACCOUNT`, `INSTAGRAM_SECRET`, and `INSTAGRAM_SESSION_FILE`; the session file is a credential and should live under `${MEDIAGENT_DATA_DIR}/credentials/`. Prefer `instagram.auth.ensure_session` before link sync and use `instagram.auth.login` only for explicit local session creation.
+- Instagram credentials come from `INSTAGRAM_ACCOUNT`, `INSTAGRAM_SECRET`, and `INSTAGRAM_SESSION_FILE`; the session file is a credential and should live under `${MEDIAGENT_DATA_DIR}/credentials/`. Prefer `instagram.auth.ensure_session` before link or saved-media sync and use `instagram.auth.login` only for explicit local session creation.
 - `X_CREDENTIALS_FILE`, `PIXIV_CREDENTIALS_FILE`, `TELEGRAM_SESSION_FILE`, `REDDIT_CREDENTIALS_FILE`, and `INSTAGRAM_SESSION_FILE` should point to explicit files controlled by the user.
 - Token exchange and refresh outputs do not include raw tokens.
 - SQLite run records must never store raw access tokens, refresh tokens, cookies, sessions, or bot tokens.

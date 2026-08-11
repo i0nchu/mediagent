@@ -7,28 +7,30 @@ When updating this TODO, update the Traditional Chinese and Japanese copies in t
 - `.agents_zh_tw/TODO.md`
 - `.agents_jp/TODO.md`
 
-## Remaining Focus: Instagram Saved Media Live Verification
+## Current Focus: systemd Timer Hardening
 
-The offline foundation is implemented and recorded in `STATE.md`. Remaining work is limited to the operator-controlled live-test gate below.
+Goal: harden the existing Agent-mode timer deployment before adding another long-running source or scheduler layer.
 
-## Local Live-Test Gate
+- [ ] Add a deployment-oriented environment-check profile for the enabled Telegram inbox, Pixiv bookmark, and optional Instagram saved-media sources.
+- [ ] Add a run lock or lease guard so overlapping timer runs fail cleanly before collection or download work begins.
+- [ ] Add summary-only Agent Core output suitable for the systemd journal; omit full artifact and nested resolution payloads by default.
+- [ ] Make Pixiv `stop_on_known` source-aware so an explicit Pixiv link downloaded through another source cannot stop bookmark sync prematurely.
+- [ ] Apply one consistent timer-safe failure policy:
+  - auth/session and checkpoint failures stop the current platform run
+  - rate limits stop without tight retry loops
+  - partial downloads do not advance durable source state
+  - successful recurring runs remain deduplicated by DB/file state
+- [ ] Add or update system-level deployment examples for hourly Telegram/Pixiv tasks and an optional conservative Instagram saved-media task.
 
-- [ ] Use only `/home/ion/projects/mediagent` configuration, DB, temporary library, and saved Instagram session. Never access `/data/services` or `/data/nas` during development verification.
-- [ ] Check the saved session once and collect only one bounded page without logging private URLs or account details.
-- [ ] Sync a small bounded number of saved posts into a dedicated local live-test library.
-- [ ] Confirm a carousel downloads every resource and a Reel/video produces a valid file when those shapes are present in the bounded sample.
-- [ ] Run the same bounded sync again and confirm healthy files are deduplicated with zero duplicate downloads.
-- [ ] Run `library.file.verify` against the dedicated live-test scope.
-- [ ] Remove local live-test media, DB, and temporary output after recording a redacted summary.
-- [ ] Merge the feature branch into `main` only after automated verification and this bounded live test pass.
+## Acceptance Criteria
 
-## After This Focus
-
-- Finish the systemd deployment MVP environment-check profile.
-- Add a run lock or lease guard for overlapping timer runs.
-- Add summary-only Agent Core output for systemd journal usage.
-- Make Pixiv `stop_on_known` source-aware.
-- Add the documented timer-safe auth, rate-limit, and cursor failure policy.
+- [ ] A clean checkout can validate all enabled timer settings without contacting platforms.
+- [ ] Two overlapping runs for the same source cannot download concurrently.
+- [ ] Journal output contains one concise redacted final summary per run.
+- [ ] Existing Telegram and Pixiv recurring commands continue from their intended source state without duplicate downloads.
+- [ ] Instagram saved-media recurring sync uses `stop_on_known:true` with a bounded page cap and never invents an item limit.
+- [ ] Auth, checkpoint, rate-limit, partial-download, and lock-contention paths have focused offline tests.
+- [ ] `uv run --locked python -m unittest discover -s tests`, `uv lock --check`, and `git diff --check` pass.
 
 ## Deferred To V2 Or Later
 

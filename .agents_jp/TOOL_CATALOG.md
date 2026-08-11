@@ -29,6 +29,7 @@ Built-in SKILLs:
 
 - `explicit_link_download`
 - `instagram_link_download`
+- `instagram_saved_sync`
 - `library_health_check`
 - `pixiv_bookmark_sync`
 - `telegram_inbox_download`
@@ -127,7 +128,7 @@ Dedicated resolver を持つ known platform page domains は platform resolver �
 
 ## Instagram Tools
 
-Instagram support は explicit-link first です。Saved local session は user-provided public post/Reel URLs を resolve するためだけに使います。Feeds、saved posts、stories、profiles、messages、comments、likes、follows、account activity は scan しません。
+Instagram support は explicit post/Reel links と configured account の saved-media feed に対応します。Stories、profiles、messages、comments、likes、follows、broader account activity は scan しません。
 
 1 件の Instagram post URL は post 全体を表します。Carousel posts は default ですべての media resources を download します。`img_index` は future explicit option がない限り source metadata としてのみ保持します。Signed Instagram CDN URLs は runtime-only download data であり、SQLite、sidecar metadata、logs、snapshots、tool output に persist してはいけません。
 
@@ -135,6 +136,8 @@ Instagram support は explicit-link first です。Saved local session は user-
 - `instagram.auth.login`: Explicit local username/password credentials から saved local Instagram session を作成または置換します。Session file は allowed credential/data roots 配下に置き、restrictive permissions で書きます。
 - `instagram.auth.ensure_session`: Saved session を確認し、credentials があり cooldown が許す場合だけ low-frequency relogin を試みます。Checkpoint と 2FA は automation を停止し、rate-limit と temporary-block states は work を defer します。
 - `instagram.link.resolve`: Public Instagram `/p/<shortcode>/`、`/reel/<shortcode>/`、`/tv/<shortcode>/` URL 1 件を normalized media candidates に resolve します。Password login は自分で行いません。Non-Instagram hosts または shortcode missing は `instagram_media_unsupported` を返し、missing/invalid session は agent-decidable auth errors を返します。
+- `instagram.saved.collect`: Configured saved session から saved posts を sequentially 読み、files を download せず normalized whole-post items を返します。Bounded `limit` / `max_pages` と explicit full pagination を support し、opaque cursors、session errors、checkpoints、rate limits は structured のまま、runtime CDN URLs は public output から除外します。
+- `instagram.saved.sync`: Saved-feed collection と共通 SQLite dedupe、scanner-friendly storage、downloads、file/item status、retry、missing-file repair を組み合わせます。Recurring runs は `stop_on_known:true` と conservative page cap、explicit full sync は架空の item/page limit なしで `full_sync:true` を使います。
 
 ## Experimental Link Tools
 
@@ -179,7 +182,7 @@ First-version parser は Reddit-hosted single images、Reddit gallery images、R
 - Pixiv credentials は `PIXIV_CREDENTIALS_FILE`、`PIXIV_REFRESH_TOKEN`、または `PIXIV_ACCESS_TOKEN` から読めます。初回 local setup では `pixiv.auth.login` を優先します。
 - Telegram credentials は `TELEGRAM_API_ID`、`TELEGRAM_API_HASH`、`TELEGRAM_SESSION_FILE` から読めます。Session file は credential であり、`${MEDIAGENT_DATA_DIR}/credentials/` の下に置くべきです。初回 local setup では `telegram.auth.login` を優先します。
 - Reddit credentials は `REDDIT_CREDENTIALS_FILE` または token environment variables から読めます。Deferred auth-assisted path を明示的に検証する場合だけ `reddit.auth.start` + `reddit.auth.exchange` を使い、必ず unique descriptive `REDDIT_USER_AGENT` を使います。
-- Instagram credentials は `INSTAGRAM_ACCOUNT`、`INSTAGRAM_SECRET`、`INSTAGRAM_SESSION_FILE` から読めます。Session file は credential であり、`${MEDIAGENT_DATA_DIR}/credentials/` の下に置くべきです。Link sync の前には `instagram.auth.ensure_session` を優先し、explicit local session creation の場合だけ `instagram.auth.login` を使います。
+- Instagram credentials は `INSTAGRAM_ACCOUNT`、`INSTAGRAM_SECRET`、`INSTAGRAM_SESSION_FILE` から読めます。Session file は credential であり、`${MEDIAGENT_DATA_DIR}/credentials/` の下に置くべきです。Link または saved-media sync の前には `instagram.auth.ensure_session` を優先し、explicit local session creation の場合だけ `instagram.auth.login` を使います。
 - `X_CREDENTIALS_FILE`、`PIXIV_CREDENTIALS_FILE`、`TELEGRAM_SESSION_FILE`、`REDDIT_CREDENTIALS_FILE`、`INSTAGRAM_SESSION_FILE` はユーザーが明示的に管理する file を指すべきです。
 - token exchange と refresh の出力に raw tokens は含めません。
 - SQLite run records に raw access tokens、refresh tokens、cookies、sessions、bot tokens を保存してはいけません。
