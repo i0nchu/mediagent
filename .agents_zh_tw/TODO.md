@@ -7,79 +7,98 @@
 - `.agents/TODO.md`
 - `.agents_jp/TODO.md`
 
-## 最近完成的 Gate：乾淨狀態 Agent Full-Source Verification
+## 目前焦點：Instagram 收藏媒體 Foundation
 
-目標：證明 Agent Core 可以理解 deployment-style 自然語言任務，而不會把「全部」降級成任意限制。
+目標：參考已驗證的 Pixiv bookmark 架構，新增 deterministic Instagram 收藏媒體收集與同步工具，同時遵守 Instagram saved session 與 private API 的限制。
 
-已在回到 timer hardening 前完成：
+正常來源流程為：
 
-- [x] 重建 active SQLite DB 與 `mediagent-data/library`，不用保留舊 live-test 狀態。
-- [x] 用 execute mode 執行 `mediagent agent run "下載所有 telegram inbox 內所有可下載的媒體來源"`。
-- [x] 確認 selected tool 使用 `telegram.inbox.sync_links`，並帶 `full_sync:true`，且沒有捏造 `limit` / `max_messages`。
-- [x] 用 execute mode 執行 `mediagent agent run "下載 pixiv bookmark 所有可下載媒體來源"`。
-- [x] 確認 selected tool 使用 `pixiv.bookmarks.sync`，並帶 `full_sync:true`、`stop_on_known:false`，且沒有捏造 `limit` / `max_pages`。
-- [x] 重跑同兩個任務，確認 tool-layer dedupe 會避免重複下載。
-- [x] 用 `library.file.verify` 驗證下載後的檔案健康狀態。
+`saved feed -> 正規化貼文與資源 -> upsert items -> 去重與狀態過濾 -> 規劃儲存路徑 -> 下載 -> 記錄檔案與 item 狀態`
 
-## 目前焦點：Agent-Mode systemd Timer Deploy MVP
+收藏媒體邏輯應放在 Instagram platform 與 tool layers。它必須重用共用 downloader、storage planner、資料庫狀態、repair 行為與 session boundary，不建立第二套下載管線。
 
-目標：先把 Mediagent 做成會呼叫 Agent Core 的保守 timer-driven 背景服務，再開始建立 long-running daemon。
+### 1. Platform Client 與正規化
 
-正式 timer entry 應呼叫 `mediagent agent run "<task>"`，而不是直接呼叫 deterministic tools。Deterministic tools 仍是 Agent Core、regression tests、debugging 與明確 operator verification 會使用的安全底層。
+- [ ] 新增有界限的 Instagram saved-feed client 操作，每次使用 configured saved session 讀取一頁。
+- [ ] 回傳該頁 items 與 opaque next-page cursor，不暴露 cookies、authorization headers、signed media URLs 或原始 session settings。
+- [ ] 將照片、Reels／影片與 carousel 貼文正規化為現有 media item/file model。
+- [ ] 一個收藏貼文視為一個 media item，並將 carousel 中所有可下載資源納入 file candidates。
+- [ ] 保留穩定 source identity、shortcode/media ID、作者、來源時間、canonical post URL、安全 caption metadata、resource index 與 media type。
+- [ ] Runtime download URLs 與含憑證的 request context 只能存在記憶體中。
+- [ ] 將登入過期、checkpoint/challenge、rate limit、private/unavailable media 與暫時性請求失敗映射到既有 structured Instagram error codes。
 
-第一個 agent-mode 服務化目標是 Telegram inbox sync，因為它代表會反覆更新的內容來源：掃描 configured inbox、解析新連結、下載支援的媒體、保存 DB/file state，並在下一次 run 從 stored cursor 之後繼續。
+### 2. `instagram.saved.collect`
 
-第二個 timer-safe 來源是 Pixiv bookmark sync。Pixiv 不像 Telegram 有簡單的「從 cursor 之後的訊息」模型，因此服務化路徑應從最新 bookmarks 開始掃描，遇到已知 terminal item 就停止，並使用 bounded `max_pages` 作為安全上限。
+- [ ] 新增穩定的 deterministic Instagram 收藏貼文 collector。
+- [ ] 支援有界限的 `limit` 與 `max_pages`，供 operator 測試與受控執行使用。
+- [ ] 明確要求完整收集且未指定任意 item limit 時，支援分頁直到 feed 結束。
+- [ ] 回傳 collection summary，包含 fetched pages、raw posts、normalized items、resource counts、next cursor 與 stop reason。
+- [ ] 不下載檔案，也不修改 media item/file 狀態。
+- [ ] Dry-run 只驗證設定並描述預計請求，不呼叫 Instagram 或寫入狀態。
+- [ ] 使用既有 saved-session boundary，回傳可採取行動的 auth errors，不自動執行無界限 login loop。
 
-## P0 Gate：Telegram Inbox Message-Link Bridge
+### 3. `instagram.saved.sync`
 
-- [x] 將 inbox 中 public `t.me/<channel>/<message_id>` 與 private `t.me/c/<chat>/<message_id>` links 導入 Telegram message sync，外部 URL 則繼續使用 link resolver pipeline。
-- [x] 在 Telegram 原生媒體保留 inbox chat/message/date/run provenance，並對 protected 或 inaccessible linked messages 回傳 structured skips。
-- [x] 為 `telegram.inbox.sync_links` 與 `link.media.sync` 加入 `retry_auth_skipped`，讓 platform session 可用後能重試舊的 `requires_auth` / `login_wall` queue rows。
-- [x] 以 fake-client tests 覆蓋 public、private、inaccessible、protected、external 與 Telegram 混合，以及 auth retry paths。
-- [ ] 執行一次 bounded live inbox check，包含 public link、可存取 private link、inaccessible link 與一個已恢復 session 的 downstream platform；不要手動 reset production DB。
+- [ ] 新增穩定 sync tool，將 collection 與現有 DB、storage、download 及 status helpers 組合起來。
+- [ ] 在合理範圍內使用與 Pixiv 相容的語意，支援 `full_sync`、`stop_on_known`、`limit`、`max_pages`、`store_cursor`、`retry_failed`、`repair_missing_files` 與 `write_sidecar_metadata`。
+- [ ] Recurring sync 從最新收藏開始掃描，遇到已知 terminal item 後停止；不可只依賴舊 pagination cursor 作為唯一依據。
+- [ ] 明確 full sync 應持續到 feed 結束，並由 tool-layer item/file dedupe 跳過健康且已完成的媒體。
+- [ ] 只在成功且未截斷的 boundary 保存 durable cursor/source state；partial 或 failed run 不得推進。
+- [ ] 重用 scanner-friendly storage：`<library_root>/instagram/<media_type>/<yyyy>/<mm>/...`。
+- [ ] 保持完整貼文行為：carousel 的所有資源都下載完成後，才能將 parent item 標記為 downloaded。
+- [ ] 記錄 partial 與 failed file/item 狀態，讓後續 `retry_failed` 與 `repair_missing_files` 可以復原。
+- [ ] 回傳精簡 summary，包含 collected、known、queued、downloaded、partial、failed、repaired、skipped、files 與 bytes。
 
-## 剩餘 Deployment MVP 任務
+### 4. Agent 與 CLI 整合
 
-- [ ] 新增部署導向的 environment check profile，檢查：
-  - `MEDIAGENT_DATA_DIR`
-  - `MEDIAGENT_DB_PATH`
-  - `MEDIAGENT_LIBRARY_DIR`
-  - `TELEGRAM_API_ID`
-  - `TELEGRAM_API_HASH`
-  - `TELEGRAM_SESSION_FILE`
-  - `MEDIAGENT_TELEGRAM_INBOX_KEY`
-  - `MEDIAGENT_TELEGRAM_INBOX_CHAT_ID`、`MEDIAGENT_TELEGRAM_INBOX_CHAT_USERNAME` 或 `MEDIAGENT_TELEGRAM_INBOX_CHAT` 其中之一
-- [ ] 新增 run-lock 或 lease guard，避免 overlapping timer runs 同時處理同一個 inbox。
-- [ ] 為 `systemd` Agent Core runs 新增 summary-only service output。目前完整 JSON output 對 journal 來說太大，因為它包含完整 artifact lists 與巢狀 resolution payloads。
-- [ ] 讓 Pixiv `stop_on_known` 具備 source-aware 判斷，避免其他來源下載的 explicit Pixiv links 在 clean-state rebuild 時過早停止 bookmark sync。
-- [ ] 新增 timer-safe failure policy：
-  - auth/session failures 會停止本輪
-  - rate limits 會停止本輪，不做密集 retry loop
-  - partial downloads 不會推進 Telegram cursor
+- [ ] 將兩個工具註冊到 default tool registry，並公開 machine-readable inspect schemas。
+- [ ] 新增 bounded collect、recurring sync 與 explicit full sync 的穩定 JSON examples。
+- [ ] 新增英文 `instagram_saved_sync` SKILL，讓 Agent Core 能區分收藏同步與 explicit-link download。
+- [ ] 確保「所有 Instagram 收藏媒體」自然語言任務不會被捏造 `limit` 或 `max_pages`。
+- [ ] Explicit post/Reel URL 任務繼續使用既有 Instagram link-download SKILL。
 
-## 驗收標準
+### 5. 安全與 Rate Limits
 
-- [x] 乾淨 checkout 可以依照 `.env.example` 完成設定。
-- [ ] `core.env.check` 或等價 CLI path 可以偵測缺少的 Telegram inbox deployment settings。
-- [ ] Dry-run agent-mode timer command 可以解析 configured inbox，不需要使用者在 tool input 傳入 `chat`。
-- [x] Execute agent-mode timer command 可以下載新的 inbox media，並保存 `links:<inbox_key>` cursor state。
-- [x] 第二次 run 會從 stored cursor 之後開始，不重複下載相同 inbox links。
-- [x] Pixiv bookmark timer runs 會從最新 bookmarks 掃描、遇到 known terminal items 停止，且 `MEDIAGENT_LIBRARY_DIR` 改變時不會重複下載已下載作品。
-- [ ] Overlapping timer runs 會被防止，或在下載前乾淨失敗。
-- [x] Runbook 說明下載後的檔案會放在哪裡。
+- [ ] V1 採保守 sequential page requests，不並行爬取 Instagram feed。
+- [ ] 遇到 rate limit、checkpoint/challenge 或 invalid session 時停止本輪，不做密集重試。
+- [ ] 不持久化帳號密碼、session cookies、signed CDN query parameters 或原始 private-API payloads。
+- [ ] 預設測試完全離線，使用 fake clients 與最小化 fixtures，不包含私人收藏內容或可識別帳號資料。
+
+## 自動化驗證
+
+- [ ] Unit tests 覆蓋空 saved feed、一張照片、一個 Reel／影片、一個多資源 carousel 與分頁。
+- [ ] Collector tests 覆蓋 bounded limits、feed exhaustion、dry-run no-network 與 structured auth/rate-limit failures。
+- [ ] Sync tests 覆蓋首次下載、第二次去重、stop-on-known recurring sync、full sync、carousel partial failure、retry、missing-file repair、安全儲存路徑與失敗／截斷時 cursor 不推進。
+- [ ] Agent tests 覆蓋 bounded requests、recurring update requests 與無界限「所有收藏媒體」任務。
+- [ ] `uv run --locked python -m unittest discover -s tests` 通過。
+- [ ] `uv lock --check` 通過。
+- [ ] `git diff --check` 通過。
+
+## 本機 Live-Test Gate
+
+- [ ] 只使用 `/home/ion/projects/mediagent` 的設定、DB、暫存 library 與 Instagram saved session。開發驗證期間絕不存取 `/data/services` 或 `/data/nas`。
+- [ ] 檢查 saved session 一次，只收集一個 bounded page，且不在 log 中輸出私人 URL 或帳號細節。
+- [ ] 將少量有界限的收藏貼文同步到專用本機 live-test library。
+- [ ] 若 bounded sample 包含 carousel 與 Reel／影片，確認 carousel 會下載所有資源且 Reel／影片會產生有效檔案。
+- [ ] 使用相同範圍再執行一次 sync，確認健康檔案會去重且不重複下載。
+- [ ] 對專用 live-test scope 執行 `library.file.verify`。
+- [ ] 記錄去識別化 summary 後，移除本機 live-test media、DB 與暫存輸出。
+- [ ] 只有在自動化驗證與 bounded live test 都通過後，才能將 feature branch 合併到 `main`。
+
+## 本焦點完成後
+
+- 完成 systemd deployment MVP environment-check profile。
+- 新增 run lock 或 lease guard，避免 timer runs 重疊。
+- 新增適合 systemd journal 的 Agent Core summary-only output。
+- 讓 Pixiv `stop_on_known` 具備 source-aware 判斷。
+- 加入文件中定義的 timer-safe auth、rate-limit 與 cursor failure policy。
 
 ## 延後到 V2 或更後面
 
 - Long-running daemon process。
-- Built-in scheduler。
-- Agentic scheduler。
+- Built-in 或 agentic scheduler。
 - RuleSpec generation。
 - Visual workflow editor。
-- Long-term memory。
-- Multi-turn conversation state。
-- 超出 selected SKILL 的廣泛自主 planning。
-- Workspace-scoped command execution。
-- Library rebuild / management workflows。
-- Long-running progress 或 structured streaming。
-- X explicit post-link support，因為 X API tweet reads 目前需要付費 credits。
+- Long-term memory 與 multi-turn conversation state。
+- Workspace-scoped command execution 與廣泛 library-management workflows。
+- X explicit post-link support；tweet reads 仍需要付費 credits。
