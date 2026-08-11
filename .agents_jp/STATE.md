@@ -353,6 +353,13 @@ Phase 13 Telegram + Pixiv layout live verification は 2026-07-24 UTC に実行�
 
 ## 未実装または未検証
 
+Instagram saved-media foundation は 2026-08-11 UTC に offline 実装を完了しました。
+
+- Opaque pagination を維持し、structured session/checkpoint/rate-limit failures を返す sequential one-page saved-feed client を追加しました。
+- `instagram.saved.collect` と `instagram.saved.sync`、photo/Reel/video/carousel の whole-post normalization、runtime-only signed URLs、共通 scanner-friendly storage/download/status/repair、安全な cursor advancement、sidecar support を追加しました。
+- Tools を登録し、bounded/recurring/full JSON examples と英語 `instagram_saved_sync` Agent SKILL を追加しました。Saved-feed intent は explicit Instagram links と分離し、「all saved media」に架空の制限を加えません。
+- Fake-client tests は pagination、dedupe、carousel resources、dry-run isolation、auth/rate-limit errors、download、second-run dedupe を cover します。この worktree では live network/private saved-media test は実施していません。
+
 - Workflow V1 runner
 - built-in scheduler
 - cron examples
@@ -361,7 +368,7 @@ Phase 13 Telegram + Pixiv layout live verification は 2026-07-24 UTC に実行�
 - Reddit audio muxing、DASH/HLS manifest handling、complex multi-file `v.redd.it` support
 - `reddit.saved.sync`。現在は auth-assisted collection を明示的に再開するまで deferred
 - Pixiv localhost callback server
-- Instagram feed、saved-post、stories、profile scraping、messaging、posting、comments、likes、follows、broad account collection
+- Instagram stories、profile scraping、messaging、posting、comments、likes、follows、および saved-feed boundary 外の broad account collection
 - Instagram session status TTL、および checkpoint/2FA/rate-limit/thumbnail-only Reel cases の追加 edge-case fixtures
 - visual workflow editor
 

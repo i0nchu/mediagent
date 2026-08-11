@@ -174,6 +174,15 @@ class AgentCoreTests(unittest.TestCase):
         self.assertIn("arbitrary Telegram chat scanning outside the configured inbox workflow", skill.unsupported_intents)
         self.assertIn("checking whether a Telegram inbox exists", skill.unsupported_intents)
 
+    def test_instagram_saved_skill_keeps_unbounded_and_explicit_link_intents_separate(self) -> None:
+        skill = default_skill_registry().get("instagram_saved_sync")
+
+        self.assertTrue(skill.supports_unbounded)
+        self.assertIn("instagram.saved.sync", skill.allowed_tools)
+        self.assertIn("download all saved Instagram media", skill.supported_intents)
+        self.assertIn("download an explicit Instagram post or Reel URL", skill.unsupported_intents)
+        self.assertIn("omit `limit` and `max_pages`", skill.body)
+
     def test_skill_summary_includes_intent_boundaries(self) -> None:
         skill = default_skill_registry().get("explicit_link_download")
         summary = skill.summary()

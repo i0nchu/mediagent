@@ -298,6 +298,10 @@ def classify_exception(exc: Exception, *, default_code: str) -> str:
         return "instagram_login_required"
     if name in {"MediaNotFound", "NotFoundError", "InvalidMediaId", "ClientNotFoundError"}:
         return "instagram_media_not_found"
+    if name in {"PrivateAccount", "ClientForbiddenError"} or "private media" in lowered:
+        return "instagram_media_private"
+    if "media unavailable" in lowered or "not available" in lowered:
+        return "instagram_media_unavailable"
     if name in {"MediaUnavailable", "PrivateAccount", "PrivateError", "ClientForbiddenError"}:
         return "instagram_media_private"
     if name in {"AlbumNotDownload", "MediaError", "PhotoNotUpload", "VideoNotDownload"}:
@@ -425,4 +429,3 @@ def _parse_datetime(value: Any) -> datetime | None:
     except ValueError:
         return None
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
-

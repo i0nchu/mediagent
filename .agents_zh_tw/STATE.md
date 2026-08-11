@@ -353,6 +353,13 @@ Phase 13 Telegram + Pixiv layout live verification 已於 2026-07-24 UTC 執行�
 
 ## 尚未實作或尚未驗證
 
+Instagram 收藏媒體 foundation 已於 2026-08-11 UTC 完成離線實作：
+
+- 新增 sequential 單頁 saved-feed client，保留 opaque pagination，並提供 structured session、checkpoint 與 rate-limit failures。
+- 新增 `instagram.saved.collect` 與 `instagram.saved.sync`；支援 photo、Reel/video、carousel 的 whole-post normalization、runtime-only signed URLs、共用 scanner-friendly storage/download/status/repair、safe cursor advancement 與 sidecar。
+- 註冊 tools，新增 bounded/recurring/full JSON examples，以及英文 `instagram_saved_sync` Agent SKILL；saved-feed intent 與 explicit Instagram links 保持分離，且「all saved media」不會被加上虛構限制。
+- Fake-client tests 涵蓋 pagination、dedupe、carousel resources、dry-run isolation、auth/rate-limit errors、download 與 second-run dedupe。本 worktree 未進行 live network 或 private saved-media test。
+
 - Workflow V1 runner
 - 內建 scheduler
 - cron examples
@@ -361,7 +368,7 @@ Phase 13 Telegram + Pixiv layout live verification 已於 2026-07-24 UTC 執行�
 - Reddit audio muxing、DASH/HLS manifest handling 與複雜 multi-file `v.redd.it` support
 - `reddit.saved.sync`，目前 deferred，除非明確恢復 auth-assisted collection
 - Pixiv localhost callback server
-- Instagram feed、saved-post、stories、profile scraping、messaging、posting、comments、likes、follows 與廣泛 account collection
+- Instagram stories、profile scraping、messaging、posting、comments、likes、follows，以及 saved-feed boundary 以外的廣泛 account collection
 - Instagram session status TTL，以及 checkpoint/2FA/rate-limit/thumbnail-only Reel cases 的額外 edge-case fixtures
 - visual workflow editor
 

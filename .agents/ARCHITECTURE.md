@@ -101,6 +101,7 @@ Platform modules should normalize their output into the shared media item shape 
 
 - `auth.py`: saved-session status, explicit local username/password login, bounded ensure-session behavior, credential path safety, and agent-decidable auth/session error mapping
 - `links.py`: Instagram post/Reel/tv URL parsing, canonical identity, whole-post resource normalization, and runtime-only signed CDN download URL handling
+- `client.py` and `parser.py`: one-page saved-feed access and whole-post saved-media normalization with opaque cursors
 
 ## CLI Flow
 

@@ -7,72 +7,9 @@
 - `.agents/TODO.md`
 - `.agents_zh_tw/TODO.md`
 
-## Current Focus: Instagram 保存済みメディア Foundation
+## Remaining Focus: Instagram 保存済みメディア Live Verification
 
-Goal: 実証済みの Pixiv bookmark architecture を参考に、Instagram saved session と private API の制約を守る deterministic な保存済みメディア収集・同期 tools を追加します。
-
-通常の source workflow:
-
-`saved feed -> posts/resources の normalize -> items の upsert -> dedupe/status filter -> storage plan -> download -> file/item state の記録`
-
-保存済みメディアの logic は Instagram platform layer と tool layer に置きます。共通 downloader、storage planner、DB state、repair behavior、session boundary を再利用し、別の download pipeline は作りません。
-
-### 1. Platform Client と Normalization
-
-- [ ] Configured saved session を使い、1 回に 1 page を読む bounded Instagram saved-feed client operation を追加します。
-- [ ] Cookies、authorization headers、signed media URLs、raw session settings を公開せず、page items と opaque next-page cursor を返します。
-- [ ] Photo、Reel/video、carousel posts を既存の media item/file model に normalize します。
-- [ ] 1 saved post を 1 media item とし、carousel の全 downloadable resources を file candidates に含めます。
-- [ ] Stable source identity、shortcode/media ID、author、source timestamp、canonical post URL、安全な caption metadata、resource index、media type を保持します。
-- [ ] Runtime download URLs と credential-bearing request context は memory 内だけに保持します。
-- [ ] Login expiry、checkpoint/challenge、rate limit、private/unavailable media、temporary request failures を既存の structured Instagram error codes に map します。
-
-### 2. `instagram.saved.collect`
-
-- [ ] 保存済み Instagram posts 用の stable deterministic collector を追加します。
-- [ ] Operator tests と controlled runs 向けに bounded `limit` と `max_pages` inputs をサポートします。
-- [ ] Arbitrary item limit なしで explicit full collection が要求された場合、feed exhaustion まで paginate します。
-- [ ] Pages fetched、raw posts、normalized items、resource counts、next cursor、stop reason を含む collection summary を返します。
-- [ ] Files を download せず、media item/file state を変更しません。
-- [ ] Dry-run は Instagram を呼び出したり state を書き込んだりせず、configuration validation と request plan の説明だけを行います。
-- [ ] 既存の saved-session boundary を使い、unbounded login loop を自動実行せず actionable auth errors を返します。
-
-### 3. `instagram.saved.sync`
-
-- [ ] Collection と既存 DB、storage、download、status helpers を組み合わせる stable sync tool を追加します。
-- [ ] 実用的な範囲で Pixiv-compatible semantics を使い、`full_sync`、`stop_on_known`、`limit`、`max_pages`、`store_cursor`、`retry_failed`、`repair_missing_files`、`write_sidecar_metadata` をサポートします。
-- [ ] Recurring sync は newest saved posts から scan し、known terminal item に到達したら停止します。古い pagination cursor だけを source of truth にしません。
-- [ ] Explicit full sync は feed exhaustion まで続け、tool-layer item/file dedupe が healthy completed media を skip します。
-- [ ] Durable cursor/source state は successful、untruncated boundary の後だけ保存し、partial/failed runs では進めません。
-- [ ] Scanner-friendly storage `<library_root>/instagram/<media_type>/<yyyy>/<mm>/...` を再利用します。
-- [ ] Complete-post behavior を維持し、carousel の全 resources が download されるまで parent item を downloaded にしません。
-- [ ] Partial/failed file/item state を記録し、後続の `retry_failed` と `repair_missing_files` で recovery できるようにします。
-- [ ] Collected、known、queued、downloaded、partial、failed、repaired、skipped、files、bytes の concise summary を返します。
-
-### 4. Agent と CLI Integration
-
-- [ ] 両 tools を default tool registry に登録し、machine-readable inspect schemas を公開します。
-- [ ] Bounded collect、recurring sync、explicit full sync 用の stable JSON examples を追加します。
-- [ ] Agent Core が saved-media sync と explicit-link download を区別できるように、英語の `instagram_saved_sync` SKILL を追加します。
-- [ ] 「すべての Instagram 保存済みメディア」という natural-language request に、捏造した `limit` / `max_pages` を付けないことを保証します。
-- [ ] Explicit post/Reel URL request は既存 Instagram link-download SKILL に route します。
-
-### 5. Safety と Rate Limits
-
-- [ ] V1 は conservative sequential page requests を使い、Instagram feed を concurrent crawl しません。
-- [ ] Rate limit、checkpoint/challenge、invalid session では current run を停止し、tight retry は行いません。
-- [ ] Account passwords、session cookies、signed CDN query parameters、raw private-API payloads を永続化しません。
-- [ ] Default tests は完全 offline とし、private saved content や identifiable account data を含まない fake clients と minimized fixtures を使います。
-
-## Automated Verification
-
-- [ ] Unit tests は empty saved feed、1 photo、1 Reel/video、1 multi-resource carousel、pagination をカバーします。
-- [ ] Collector tests は bounded limits、feed exhaustion、dry-run no-network、structured auth/rate-limit failures をカバーします。
-- [ ] Sync tests は first download、second-run dedupe、stop-on-known recurring sync、full sync、partial carousel failure、retry、missing-file repair、安全な storage paths、failure/truncation 時の cursor non-advancement をカバーします。
-- [ ] Agent tests は bounded requests、recurring update requests、unbounded "all saved media" requests をカバーします。
-- [ ] `uv run --locked python -m unittest discover -s tests` が通ります。
-- [ ] `uv lock --check` が通ります。
-- [ ] `git diff --check` が通ります。
+Offline foundation は実装済みで `STATE.md` に記録されています。残作業は以下の operator-controlled live-test gate のみです。
 
 ## Local Live-Test Gate
 

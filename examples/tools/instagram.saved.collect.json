@@ -1,0 +1,5 @@
+{
+  "tool": "instagram.saved.collect",
+  "input": {"limit": 10, "max_pages": 2, "store_cursor": false},
+  "dry_run": true
+}

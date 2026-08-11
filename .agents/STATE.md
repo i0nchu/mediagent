@@ -354,6 +354,13 @@ Phase 13 Telegram + Pixiv layout live verification ran on 2026-07-24 UTC:
 
 ## Not Implemented
 
+Instagram saved-media foundation completed offline on 2026-08-11 UTC:
+
+- Added a sequential one-page saved-feed client with opaque pagination and structured session, checkpoint, and rate-limit failures.
+- Added `instagram.saved.collect` and `instagram.saved.sync`, whole-post normalization for photos, Reels/videos, and carousels, runtime-only signed URLs, shared scanner-friendly storage/download/status/repair behavior, safe cursor advancement, and sidecar support.
+- Registered the tools, added bounded/recurring/full JSON examples, and added an English `instagram_saved_sync` Agent SKILL that keeps saved-feed intent separate from explicit Instagram links and preserves unbounded “all saved media” requests.
+- Fake-client tests cover pagination, dedupe, carousel resources, dry-run isolation, auth/rate-limit errors, downloading, and second-run dedupe. No live network or private saved-media test was performed in this worktree.
+
 - Workflow V1 runner
 - built-in scheduler
 - cron examples
@@ -362,7 +369,7 @@ Phase 13 Telegram + Pixiv layout live verification ran on 2026-07-24 UTC:
 - Reddit audio muxing, DASH/HLS manifest handling, and complex multi-file `v.redd.it` support
 - `reddit.saved.sync`, now deferred unless auth-assisted collection is explicitly resumed
 - Pixiv localhost callback server
-- Instagram feed, saved-post, stories, profile scraping, messaging, posting, comments, likes, follows, and broad account collection
+- Instagram stories, profile scraping, messaging, posting, comments, likes, follows, and broad account collection outside the saved-feed boundary
 - Instagram session status TTL and extra edge-case fixtures for checkpoint/2FA/rate-limit/thumbnail-only Reel cases
 - visual workflow editor
 
