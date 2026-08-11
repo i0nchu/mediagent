@@ -1005,6 +1005,81 @@ class LinkQueueAndSyncTests(unittest.TestCase):
         self.assertEqual(rows[0]["normalized_url"], new_url)
         self.assertEqual(cursor["cursor_value"], "35")
 
+    def test_telegram_inbox_collect_links_full_sync_ignores_existing_cursor(self) -> None:
+        registry = create_default_registry()
+        old_url = f"https://{PUBLIC_TEST_IP}/old.jpg"
+        fake = FakeTelegramClient(
+            messages={
+                "curated": [
+                    {
+                        "id": 10,
+                        "date": "2026-08-04T01:00:00+00:00",
+                        "chat": {"id": "curated", "title": "Inbox", "type": "channel"},
+                        "text": old_url,
+                        "media": [],
+                    }
+                ]
+            }
+        )
+        with TemporaryDirectory() as temp_dir:
+            context, _data_dir, db_path = _telegram_context(temp_dir, fake)
+            db.initialize_database(db_path)
+            db.set_sync_cursor(
+                db_path,
+                platform="telegram",
+                cursor_name="links:curated",
+                cursor_value="10",
+            )
+
+            result = asyncio.run(
+                registry.run(
+                    "telegram.inbox.collect_links",
+                    {
+                        "db_path": str(db_path),
+                        "chat": "curated",
+                        "full_sync": True,
+                        "store_cursor": False,
+                    },
+                    context,
+                    allow_experimental=True,
+                )
+            )
+
+        self.assertTrue(result.is_success)
+        self.assertEqual(fake.calls[0][1]["after_by_source"], {"curated": None})
+        self.assertEqual(result.data["summary"]["links_found"], 1)
+        self.assertEqual(result.data["links"][0]["normalized_url"], old_url)
+
+    def test_telegram_inbox_collect_links_explicit_after_message_id_wins_over_full_sync(self) -> None:
+        registry = create_default_registry()
+        fake = FakeTelegramClient(messages={"curated": []})
+        with TemporaryDirectory() as temp_dir:
+            context, _data_dir, db_path = _telegram_context(temp_dir, fake)
+            db.initialize_database(db_path)
+            db.set_sync_cursor(
+                db_path,
+                platform="telegram",
+                cursor_name="links:curated",
+                cursor_value="99",
+            )
+
+            result = asyncio.run(
+                registry.run(
+                    "telegram.inbox.collect_links",
+                    {
+                        "db_path": str(db_path),
+                        "chat": "curated",
+                        "after_message_id": 7,
+                        "full_sync": True,
+                    },
+                    context,
+                    allow_experimental=True,
+                )
+            )
+
+        self.assertTrue(result.is_success)
+        self.assertEqual(fake.calls[0][1]["after_by_source"], {"curated": 7})
+
     def test_telegram_inbox_collect_links_requires_chat_or_env_default(self) -> None:
         registry = create_default_registry()
         fake = FakeTelegramClient(messages={})

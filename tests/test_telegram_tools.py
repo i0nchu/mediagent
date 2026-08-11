@@ -420,11 +420,18 @@ class TelegramToolTests(unittest.TestCase):
         self.assertEqual(result.data["summary"]["links_found"], 2)
         self.assertEqual(fake.calls[-1][1]["limit"], None)
 
-    def test_messages_collect_ignores_full_sync_outside_inbox_tools(self) -> None:
+    def test_messages_collect_full_sync_ignores_cursor_and_default_limit(self) -> None:
         registry = create_default_registry()
         fake = FakeTelegramClient(messages={"saved_messages": _telegram_messages_fixture()})
         with TemporaryDirectory() as temp_dir:
             context, _data_dir, db_path = _telegram_context(temp_dir, fake)
+            db.initialize_database(db_path)
+            db.set_sync_cursor(
+                db_path,
+                platform="telegram",
+                cursor_name="messages:saved_messages",
+                cursor_value="14",
+            )
 
             result = asyncio.run(
                 registry.run(
@@ -439,7 +446,40 @@ class TelegramToolTests(unittest.TestCase):
             )
 
         self.assertTrue(result.is_success)
-        self.assertEqual(fake.calls[-1][1]["limit"], 100)
+        self.assertEqual(fake.calls[-1][1]["after_by_source"], {"saved_messages": None})
+        self.assertEqual(result.data["summary"]["messages_scanned"], 5)
+        self.assertEqual(fake.calls[-1][1]["limit"], None)
+
+    def test_messages_sync_full_sync_ignores_existing_cursor(self) -> None:
+        registry = create_default_registry()
+        fake = FakeTelegramClient(messages={"saved_messages": _telegram_messages_fixture()})
+        with TemporaryDirectory() as temp_dir:
+            context, _data_dir, db_path = _telegram_context(temp_dir, fake, dry_run=True)
+            db.initialize_database(db_path)
+            db.set_sync_cursor(
+                db_path,
+                platform="telegram",
+                cursor_name="messages:saved_messages:photo",
+                cursor_value="14",
+            )
+
+            result = asyncio.run(
+                registry.run(
+                    "telegram.messages.sync",
+                    {
+                        "db_path": str(db_path),
+                        "chat": "saved_messages",
+                        "media_types": ["photo"],
+                        "full_sync": True,
+                        "store_cursor": False,
+                    },
+                    context,
+                )
+            )
+
+        self.assertTrue(result.is_success)
+        self.assertEqual(fake.calls[-1][1]["after_by_source"], {"saved_messages": None})
+        self.assertEqual(fake.calls[-1][1]["limit"], None)
 
     def test_messages_collect_can_extract_media_from_curated_link_channel(self) -> None:
         registry = create_default_registry()

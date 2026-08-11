@@ -179,6 +179,7 @@ def definitions() -> list[ToolDefinition]:
                         "message_links": {"type": "array", "items": {"type": "string"}},
                         "after_message_id": {"type": "integer"},
                         "max_messages": {"type": "integer"},
+                        "full_sync": {"type": "boolean"},
                         "media_types": {"type": "array", "items": {"type": "string", "enum": MEDIA_TYPES}},
                         "include_protected": {"type": "boolean"},
                         "extract_message_links": {"type": "boolean"},
@@ -234,6 +235,7 @@ def definitions() -> list[ToolDefinition]:
                         "message_links": {"type": "array", "items": {"type": "string"}},
                         "after_message_id": {"type": "integer"},
                         "max_messages": {"type": "integer"},
+                        "full_sync": {"type": "boolean"},
                         "limit": {"type": "integer"},
                         "media_types": {"type": "array", "items": {"type": "string", "enum": MEDIA_TYPES}},
                         "include_protected": {"type": "boolean"},
@@ -1131,7 +1133,7 @@ async def _messages_collect(
             "telegram_collect_messages",
             chats=chats,
             after_by_source=after_by_source,
-            limit=_message_scan_limit(input_data, allow_full_sync=False),
+            limit=_message_scan_limit(input_data, allow_full_sync=True),
             message_ids_by_source=message_ids_by_source,
             message_links=input_data.get("message_links") or [],
             include_protected=input_data.get("include_protected", False),
@@ -1159,7 +1161,7 @@ async def _messages_collect(
                     "telegram_collect_messages",
                     chats=[],
                     after_by_source={},
-                    limit=_message_scan_limit(input_data, allow_full_sync=False),
+                    limit=_message_scan_limit(input_data, allow_full_sync=True),
                     message_ids_by_source={},
                     message_links=extracted_message_links,
                     include_protected=input_data.get("include_protected", False),
@@ -1762,6 +1764,9 @@ def _after_by_source(db_path: Path, chats: list[Any], input_data: dict[str, Any]
         if explicit is not None:
             after[source_key] = int(explicit)
             continue
+        if input_data.get("full_sync"):
+            after[source_key] = None
+            continue
         cursor = db.get_sync_cursor(
             db_path,
             platform="telegram",
@@ -1778,6 +1783,9 @@ def _link_after_by_source(db_path: Path, chats: list[Any], input_data: dict[str,
         source_key = telegram_client.source_key_for_chat(chat)
         if explicit is not None:
             after[source_key] = int(explicit)
+            continue
+        if input_data.get("full_sync"):
+            after[source_key] = None
             continue
         cursor = db.get_sync_cursor(
             db_path,
