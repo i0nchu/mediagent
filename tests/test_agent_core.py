@@ -168,6 +168,10 @@ class AgentCoreTests(unittest.TestCase):
         self.assertIn("Use this skill", skill.body)
         self.assertNotIn("下載", skill.body)
         self.assertTrue(skill.supports_unbounded)
+        self.assertTrue(
+            any("full scan the configured Telegram inbox workflow" in intent for intent in skill.supported_intents)
+        )
+        self.assertIn("arbitrary Telegram chat scanning outside the configured inbox workflow", skill.unsupported_intents)
         self.assertIn("checking whether a Telegram inbox exists", skill.unsupported_intents)
 
     def test_skill_summary_includes_intent_boundaries(self) -> None:

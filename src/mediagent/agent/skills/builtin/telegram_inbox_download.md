@@ -1,6 +1,6 @@
 ---
 name: telegram_inbox_download
-description: Download new media links from the configured Telegram inbox.
+description: Download, sync, preview, or full-scan media links from the configured Telegram inbox workflow.
 allowed_tools:
   - telegram.auth.status
   - telegram.inbox.collect_links
@@ -12,16 +12,20 @@ supports_unbounded: true
 supported_intents:
   - sync new media links from the selected Telegram inbox workflow
   - download all downloadable media links from the selected Telegram inbox workflow
+  - full scan the configured Telegram inbox workflow, including t.me and telegram.me message links
+  - preview what the configured Telegram inbox workflow would download
   - inspect Telegram inbox link batches when explicitly requested
 unsupported_intents:
-  - arbitrary Telegram chat scanning
+  - arbitrary Telegram chat scanning outside the configured inbox workflow
   - checking whether a Telegram inbox exists
   - sending or forwarding messages
 ---
 
 ## When To Use
 
-Use this skill when the user asks to download, sync, fetch, preview, or process new media links from the selected Telegram inbox workflow.
+Use this skill when the user asks to download, sync, fetch, preview, inspect, process, or full-scan media links from the selected Telegram inbox workflow.
+
+The configured inbox workflow is the safe Telegram boundary. A request to fully scan, completely scan, or scan all content in "telegram inbox" means the configured inbox workflow, not arbitrary Telegram crawling.
 
 Do not use this skill for arbitrary Telegram chat scanning, sending messages, forwarding messages, editing messages, or Telegram media that is not from the selected inbox workflow.
 
