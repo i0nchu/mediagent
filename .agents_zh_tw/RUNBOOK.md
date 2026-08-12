@@ -320,7 +320,9 @@ uv run --locked mediagent tools run pixiv.comics.package \
   --input examples/tools/pixiv.comics.package.json --dry-run --json
 ```
 
-移除 `--dry-run` 才會建立 CBZ。工具只讀取完整且健康的原始頁面，透過 `.partial` 與 atomic replacement 寫入 archive、記錄 SQLite，並保留原始頁面。未來 bookmark sync 可設定 `package_comics:true`，自動封裝新下載的漫畫。
+移除 `--dry-run` 才會建立 CBZ。Committed example 設定了 `migrate_legacy:true`：工具只讀取完整且健康的原始頁面，透過 `.partial` 與 atomic replacement 寫入 Kavita V2 archive、記錄 SQLite，並保留原始頁面。V2 成功後，舊 V1 date-layout CBZ 會移到 `library/.trash/mediagent-comic-v1`，stale DB row 才會刪除。未來 bookmark sync 可設定 `package_comics:true`，自動封裝新下載的漫畫。
+
+Kavita V2 每個系列使用一個資料夾。Pixiv 單篇會取得自己的唯一 series identity；有真正 Pixiv series metadata 的作品會共用同一資料夾，並從 normalized comic contract 使用 `Series`、`Number`、optional `Volume` 與 optional `Count`。
 
 Pixiv 圖片範例：
 
@@ -328,7 +330,7 @@ Pixiv 圖片範例：
 $MEDIAGENT_DATA_DIR/pixiv/photo/2026/07/20260722__pixiv__143734851__p0.jpg
 $MEDIAGENT_DATA_DIR/pixiv/photo/2026/07/20260722__pixiv__143734851__p1.jpg
 $MEDIAGENT_DATA_DIR/pixiv/comic-pages/2026/07/20260722__pixiv__139193091__p0.jpg
-$MEDIAGENT_DATA_DIR/pixiv/comic/2026/07/20260722__pixiv__139193091.cbz
+$MEDIAGENT_DATA_DIR/pixiv/comic/作品標題 [pixiv-139193091]/作品標題 [pixiv-139193091].cbz
 ```
 
 若沒有設定 `MEDIAGENT_PIXIV_LIBRARY_DIR`，shared-root 範例是：
@@ -337,7 +339,7 @@ $MEDIAGENT_DATA_DIR/pixiv/comic/2026/07/20260722__pixiv__139193091.cbz
 $MEDIAGENT_DATA_DIR/library/pixiv/photo/2026/07/20260722__pixiv__143734851__p0.jpg
 $MEDIAGENT_DATA_DIR/library/pixiv/photo/2026/07/20260722__pixiv__143734851__p1.jpg
 $MEDIAGENT_DATA_DIR/library/pixiv/comic-pages/2026/07/20260722__pixiv__139193091__p0.jpg
-$MEDIAGENT_DATA_DIR/library/pixiv/comic/2026/07/20260722__pixiv__139193091.cbz
+$MEDIAGENT_DATA_DIR/library/pixiv/comic/作品標題 [pixiv-139193091]/作品標題 [pixiv-139193091].cbz
 ```
 
 若 Immich 會掃描 Pixiv external library，但漫畫要交給其他閱讀器，請在該 external library 的 Scan Settings 加入以下兩個 exclusion patterns，然後重新掃描：
@@ -347,7 +349,7 @@ $MEDIAGENT_DATA_DIR/library/pixiv/comic/2026/07/20260722__pixiv__139193091.cbz
 **/comic-pages/**
 ```
 
-漫畫閱讀器只需指向 `pixiv/comic`；`comic-pages` 保留作為 Mediagent 修復或重建 CBZ 的無損來源。
+Kavita 只需指向 `pixiv/comic`，不要指向 `pixiv` 或 `comic-pages`。`comic` 的每個 immediate child 都是一個 series directory，comic root 不會直接放 archive。`comic-pages` 保留作為 Mediagent 修復或重建 CBZ 的無損來源。
 
 SQLite database 由 `MEDIAGENT_DB_PATH` 決定；每個完成檔案會記錄在 `media_files`，包含 library-relative path、storage layout version、checksum、size、MIME type 與 file health。Parent item 會在 `media_items` 標記為 `downloaded`、`partial` 或 `failed`。
 

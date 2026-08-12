@@ -17,7 +17,7 @@ from mediagent.core.comics import (
     comic_archive_relative_path,
 )
 from mediagent.core.filesystem import PathSafetyError, ensure_inside, normalize_path, resolve_placeholders
-from mediagent.core.storage import default_library_root, platform_library_env_name, source_datetime
+from mediagent.core.storage import default_library_root, platform_library_env_name, safe_storage_segment, source_datetime
 from mediagent.core.tooling import (
     ErrorCategory,
     Permission,
@@ -65,7 +65,7 @@ def definitions() -> list[ToolDefinition]:
         ToolDefinition(
             spec=ToolSpec(
                 name="pixiv.comics.package",
-                description="Package downloaded Pixiv manga pages into deterministic CBZ files with ComicInfo.xml.",
+                description="Package downloaded Pixiv manga pages into Kavita-oriented series CBZ files with ComicInfo.xml.",
                 input_schema={
                     "type": "object",
                     "properties": {
@@ -76,6 +76,7 @@ def definitions() -> list[ToolDefinition]:
                         "remote_ids": {"type": "array", "items": {"type": "string"}},
                         "limit": {"type": "integer"},
                         "overwrite": {"type": "boolean"},
+                        "migrate_legacy": {"type": "boolean"},
                     },
                 },
                 output_schema={"type": "object"},
@@ -121,6 +122,7 @@ async def package_pixiv_comics(context: ToolContext, input_data: dict[str, Any])
             library_root=library_root,
             include_platform_layer=include_platform_layer,
             overwrite=bool(input_data.get("overwrite")),
+            migrate_legacy=bool(input_data.get("migrate_legacy")),
         )
         for item in items
     ]
@@ -138,12 +140,18 @@ async def package_pixiv_comics(context: ToolContext, input_data: dict[str, Any])
 
     results: list[dict[str, Any]] = []
     artifacts: list[dict[str, str]] = []
-    applied_summary = {**summary, "packaged": 0, "failed": 0}
+    applied_summary = {
+        **summary,
+        "packaged": 0,
+        "legacy_cbz_retired": 0,
+        "legacy_cbz_quarantined": 0,
+        "failed": 0,
+    }
     for plan in plans:
         if plan["status"] == "existing":
             results.append(_public_package_plan(plan))
             continue
-        if plan["status"] != "ready":
+        if plan["status"] not in {"ready", "cleanup"}:
             applied_summary["failed"] += 1
             results.append(_public_package_plan(plan))
             continue
@@ -164,8 +172,12 @@ async def package_pixiv_comics(context: ToolContext, input_data: dict[str, Any])
                 }
             )
             continue
-        applied_summary["packaged"] += 1
-        results.append({**_public_package_plan(plan), "status": "packaged", **package})
+        if plan["status"] == "ready":
+            applied_summary["packaged"] += 1
+        applied_summary["legacy_cbz_retired"] += int(package.get("legacy_cbz_retired", 0))
+        applied_summary["legacy_cbz_quarantined"] += int(package.get("legacy_cbz_quarantined", 0))
+        result_status = "packaged" if plan["status"] == "ready" else "legacy_migrated"
+        results.append({**_public_package_plan(plan), "status": result_status, **package})
         artifacts.append({"type": "file", "path": package["target_path"]})
 
     run_status = "success" if not applied_summary["failed"] else "partial"
@@ -381,9 +393,16 @@ def _build_manifest(
         updated_metadata["pixiv_type"] = pixiv_type
         updated_metadata["work_type"] = work_type
         updated_metadata["storage_category"] = storage_category
+        if work_type == "comic":
+            updated_metadata["comic"] = pixiv_parser.pixiv_comic_metadata(
+                remote_id=item["remote_id"],
+                metadata=pixiv_metadata,
+            )
         if isinstance(updated_metadata.get("pixiv"), dict):
             updated_metadata["pixiv"]["work_type"] = work_type
             updated_metadata["pixiv"]["storage_category"] = storage_category
+            if work_type == "comic":
+                updated_metadata["pixiv"]["comic"] = updated_metadata["comic"]
         if unavailable_reason:
             updated_metadata["availability_reason"] = unavailable_reason
             if isinstance(updated_metadata.get("pixiv"), dict):
@@ -519,6 +538,7 @@ def _comic_package_plan(
     library_root: Path,
     include_platform_layer: bool,
     overwrite: bool,
+    migrate_legacy: bool,
 ) -> dict[str, Any]:
     relative_path = comic_archive_relative_path(item=item, include_platform_layer=include_platform_layer)
     target_path = (library_root / relative_path).resolve()
@@ -531,6 +551,7 @@ def _comic_package_plan(
         "page_count": 0,
         "target_path": str(target_path),
         "relative_path": relative_path.as_posix(),
+        "legacy_cbz": [],
     }
     try:
         ensure_inside(target_path, [library_root])
@@ -543,17 +564,57 @@ def _comic_package_plan(
         plan["reason"] = f"item_status:{item.get('status')}"
         return plan
 
+    cbz_records = [record for record in item["files"] if _is_cbz_file(record)]
     existing_cbz = next(
         (
             record
-            for record in item["files"]
-            if _is_cbz_file(record) and Path(str(record.get("local_path") or "")).expanduser().resolve() == target_path
+            for record in cbz_records
+            if Path(str(record.get("local_path") or "")).expanduser().resolve() == target_path
         ),
         None,
     )
+    legacy_cbz: list[dict[str, Any]] = []
+    for record in cbz_records:
+        try:
+            legacy_path = _source_path(record, library_root)
+            ensure_inside(legacy_path, [library_root])
+        except PathSafetyError as exc:
+            plan["status"] = "blocked"
+            plan["reason"] = str(exc)
+            return plan
+        if legacy_path == target_path:
+            continue
+        if _path_is_in_trash(legacy_path, library_root) or not legacy_path.exists():
+            legacy_cbz.append(
+                {
+                    "record": record,
+                    "source": None,
+                    "quarantine": legacy_path if legacy_path.exists() else None,
+                }
+            )
+            continue
+        quarantine = (
+            library_root
+            / ".trash"
+            / "mediagent-comic-v1"
+            / safe_storage_segment(item.get("platform") or "pixiv")
+            / safe_storage_segment(item["remote_id"], max_length=64)
+            / f"{record['id']}__{legacy_path.name}"
+        ).resolve()
+        ensure_inside(quarantine, [library_root])
+        if quarantine.exists():
+            plan["status"] = "blocked"
+            plan["reason"] = "legacy CBZ quarantine target already exists"
+            return plan
+        legacy_cbz.append({"record": record, "source": legacy_path, "quarantine": quarantine})
+    plan["legacy_cbz"] = legacy_cbz
+    if legacy_cbz and not migrate_legacy:
+        plan["status"] = "blocked"
+        plan["reason"] = "legacy CBZ exists; rerun with migrate_legacy:true after reviewing the plan"
+        return plan
     if target_path.exists() and not overwrite:
         if existing_cbz and existing_cbz.get("status") == "downloaded" and existing_cbz.get("file_health") in {"valid", "unknown"}:
-            plan["status"] = "existing"
+            plan["status"] = "cleanup" if legacy_cbz else "existing"
             plan["page_count"] = _metadata_page_count(item)
             return plan
         plan["status"] = "blocked"
@@ -631,7 +692,7 @@ def _metadata_page_count(item: dict[str, Any]) -> int:
 
 
 def _comic_plan_summary(plans: list[dict[str, Any]]) -> dict[str, int]:
-    summary = {"selected": len(plans), "ready": 0, "existing": 0, "incomplete": 0, "blocked": 0}
+    summary = {"selected": len(plans), "ready": 0, "cleanup": 0, "existing": 0, "incomplete": 0, "blocked": 0}
     for plan in plans:
         summary[plan["status"]] += 1
     return summary
@@ -645,6 +706,7 @@ def _public_package_plan(plan: dict[str, Any]) -> dict[str, Any]:
         "page_count": plan["page_count"],
         "relative_path": plan["relative_path"],
         "target_path": plan["target_path"],
+        "legacy_cbz_count": len(plan.get("legacy_cbz", [])),
     }
 
 
@@ -655,30 +717,71 @@ def _apply_comic_package(
     plan: dict[str, Any],
     library_root: Path,
 ) -> dict[str, Any]:
-    package = build_cbz_atomic(
-        target_path=Path(plan["target_path"]),
-        pages=plan["pages"],
-        item=item,
-        allowed_root=library_root,
-    )
-    source_dt, _ = source_datetime(item, {})
-    db.upsert_media_file(
-        db_path,
-        platform="pixiv",
-        remote_id=item["remote_id"],
-        remote_url=None,
-        local_path=package["target_path"],
-        mime_type=CBZ_MIME_TYPE,
-        size_bytes=package["size_bytes"],
-        checksum=package["checksum"],
-        status="downloaded",
-        library_relative_path=plan["relative_path"],
-        storage_layout=CBZ_STORAGE_LAYOUT,
-        file_health="valid",
-        source_timestamp=source_dt.isoformat(),
-        verified_at=datetime.now(UTC).isoformat(),
-    )
+    if plan["status"] == "cleanup":
+        package = {
+            "target_path": plan["target_path"],
+            "pages": plan["page_count"],
+        }
+    else:
+        package = build_cbz_atomic(
+            target_path=Path(plan["target_path"]),
+            pages=plan["pages"],
+            item=item,
+            allowed_root=library_root,
+        )
+        source_dt, _ = source_datetime(item, {})
+        db.upsert_media_file(
+            db_path,
+            platform="pixiv",
+            remote_id=item["remote_id"],
+            remote_url=None,
+            local_path=package["target_path"],
+            mime_type=CBZ_MIME_TYPE,
+            size_bytes=package["size_bytes"],
+            checksum=package["checksum"],
+            status="downloaded",
+            library_relative_path=plan["relative_path"],
+            storage_layout=CBZ_STORAGE_LAYOUT,
+            file_health="valid",
+            source_timestamp=source_dt.isoformat(),
+            verified_at=datetime.now(UTC).isoformat(),
+        )
+    quarantined = _quarantine_legacy_cbz(db_path=db_path, entries=plan.get("legacy_cbz", []))
+    package["legacy_cbz_retired"] = len(plan.get("legacy_cbz", []))
+    package["legacy_cbz_quarantined"] = len(quarantined)
+    package["legacy_quarantine_paths"] = quarantined
     return package
+
+
+def _quarantine_legacy_cbz(*, db_path: Path, entries: list[dict[str, Any]]) -> list[str]:
+    moved: list[tuple[Path, Path]] = []
+    try:
+        for entry in entries:
+            if entry["source"] is None:
+                continue
+            source = Path(entry["source"])
+            target = Path(entry["quarantine"])
+            target.parent.mkdir(parents=True, exist_ok=True)
+            os.replace(source, target)
+            moved.append((target, source))
+        if entries:
+            with db.connect(db_path) as connection:
+                connection.executemany(
+                    "DELETE FROM media_files WHERE id = ?",
+                    [(int(entry["record"]["id"]),) for entry in entries],
+                )
+    except Exception:
+        for current, original in reversed(moved):
+            if current.exists():
+                original.parent.mkdir(parents=True, exist_ok=True)
+                os.replace(current, original)
+        raise
+    retained_paths = [
+        str(entry["quarantine"])
+        for entry in entries
+        if entry["source"] is None and entry.get("quarantine") is not None
+    ]
+    return [str(current) for current, _ in moved] + retained_paths
 
 
 def _placeholder_action(
@@ -811,6 +914,7 @@ def package_one_comic(
     remote_id: str,
     include_platform_layer: bool,
     overwrite: bool = False,
+    migrate_legacy: bool = True,
 ) -> dict[str, Any]:
     """Package one downloaded comic and return its public result."""
     item = next((candidate for candidate in _select_pixiv_items(db_path) if candidate["remote_id"] == remote_id), None)
@@ -826,9 +930,10 @@ def package_one_comic(
         library_root=library_root,
         include_platform_layer=include_platform_layer,
         overwrite=overwrite,
+        migrate_legacy=migrate_legacy,
     )
     public = _public_package_plan(plan)
-    if plan["status"] != "ready":
+    if plan["status"] not in {"ready", "cleanup"}:
         return public
     try:
         package = _apply_comic_package(
@@ -844,7 +949,8 @@ def package_one_comic(
             "reason": "CBZ packaging failed",
             "error": {"code": "comic_package_failed", "exception_type": type(exc).__name__},
         }
-    return {**public, "status": "packaged", **package}
+    status = "packaged" if plan["status"] == "ready" else "legacy_migrated"
+    return {**public, "status": status, **package}
 
 
 def _apply_manifest(*, db_path: Path, manifest: dict[str, Any]) -> dict[str, Any]:

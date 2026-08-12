@@ -8,7 +8,7 @@ This file tracks known caveats that matter for the next handoff. Resolved histor
 
 - **Status:** Open external verification.
 - **Observed in:** `src/mediagent/core/comics.py`, `src/mediagent/tools/pixiv_library_tools.py`
-- **Current behavior:** Unit tests cover `comic-pages` classification, deterministic atomic CBZ creation, `ComicInfo.xml`, DB recording, rerun reuse, and `package_comics:true` sync integration. No production library or database has been migrated by this implementation task.
+- **Current behavior:** Unit tests cover `comic-pages` classification, Kavita one-shot/series directories, normalized `ComicInfo.xml`, deterministic atomic CBZ creation, V1 quarantine migration, DB recording, rerun reuse, and `package_comics:true` sync integration. No production library or database has been migrated by this implementation task.
 - **Expected next step:** Stop overlapping Pixiv jobs, run reconciliation and package dry-runs against the intended deployment inputs, then apply explicitly and configure Immich exclusions for both `comic` and `comic-pages`.
 
 ### 1. X OAuth is implemented but not live-verified
@@ -125,4 +125,4 @@ This file tracks known caveats that matter for the next handoff. Resolved histor
 - Localized issue handoffs have been synced with the current English issue state.
 - Localized TODO handoffs now include the Pixiv `pixiv.auth.login` / OAuth PKCE planning update, including authorization-code exchange, credential-file writing, redaction tests, and skipped-by-default live browser tests.
 - English, Traditional Chinese, and Japanese handoff docs have been synced to the Pixiv first-slice status.
-- The default test suite is green: `uv run --locked python -m unittest discover -s tests` runs 268 tests successfully.
+- The default test suite is green: `uv run --locked python -m unittest discover -s tests` runs 271 tests successfully.

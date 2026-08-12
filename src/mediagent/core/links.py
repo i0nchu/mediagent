@@ -1743,7 +1743,7 @@ def resolution_to_media_item(
         "ingested_from": ingest_provenance or {},
         "files": files,
     }
-    for key in ("pixiv_type", "work_type", "storage_category", "availability_reason"):
+    for key in ("pixiv_type", "work_type", "storage_category", "availability_reason", "comic", "series"):
         if platform_details.get(key) is not None:
             metadata[key] = platform_details[key]
     if files:
@@ -1978,6 +1978,8 @@ def _pixiv_public_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
         "is_muted",
         "tools",
         "tags",
+        "series",
+        "comic",
         "ugoira_metadata",
     }
     return {key: value for key, value in metadata.items() if key in allowed_keys}

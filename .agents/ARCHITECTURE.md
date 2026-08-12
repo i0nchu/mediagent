@@ -187,9 +187,9 @@ platform collector output
 
 `pixiv.bookmarks.collect`, `pixiv.bookmarks.sync`, `telegram.messages.collect`, and `telegram.messages.sync` remain useful implemented flows. X bookmark collection and Reddit saved collection exist with fixture/fake-client coverage, but they are not the current expansion path unless the user explicitly resumes auth-assisted account collection.
 
-Pixiv keeps physical media type separate from work type. Manga source pages remain `media_type: photo`, while `metadata.work_type: comic` selects `comic-pages`; the CBZ packaging layer writes one deterministic archive per work under `comic`. Normal illustrations use `illustration` / `photo`, and ugoira uses `animation` / `video`. This preserves shared download semantics while separating raw pages, comic-reader artifacts, and normal photos.
+Pixiv keeps physical media type separate from work type. Manga source pages remain `media_type: photo`, while `metadata.work_type: comic` selects `comic-pages`; the Kavita-oriented CBZ packaging layer writes archives under `comic/<series-directory>/`. One-shots receive a unique series identity plus `Number=1`, `Count=1`, and `Format=One-Shot`; real series share one directory and use normalized `Series`, `Number`, optional `Volume`, and optional `Count`. Normal illustrations use `illustration` / `photo`, and ugoira uses `animation` / `video`.
 
-The CBZ writer in `core/comics.py` is platform-neutral, but automatic comic classification and packaging are currently wired only to Pixiv. Future resolvers may share the same `comic-pages` -> `comic` contract when they can provide reliable `work_type:comic`, ordered pages, and work metadata; multi-image count alone must not imply a comic.
+The descriptor and CBZ writer in `core/comics.py` are platform-neutral, but automatic comic classification and packaging are currently wired only to Pixiv. Future authorized-source adapters may share the same normalized `metadata.comic` and `comic-pages` -> `comic` contract when they can provide reliable `work_type:comic`, ordered pages, series/chapter/volume identity, and work metadata; multi-image count alone must not imply a comic.
 
 ## Future Policy Layer
 

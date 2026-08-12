@@ -42,6 +42,7 @@ def parse_illust(
     pixiv_type = illust.get("type")
     work_type = pixiv_work_type(pixiv_type)
     storage_category = PIXIV_STORAGE_CATEGORIES[work_type]
+    series = illust.get("series") if isinstance(illust.get("series"), dict) else None
     unavailable_reason = pixiv_unavailable_reason(illust)
     files = [] if unavailable_reason else _files_for_illust(illust, ugoira_metadata=ugoira_metadata)
     for file_info in files:
@@ -65,9 +66,11 @@ def parse_illust(
         "is_muted": illust.get("is_muted"),
         "tools": illust.get("tools", []),
         "tags": _tags(illust.get("tags", [])),
-        "series": illust.get("series") if isinstance(illust.get("series"), dict) else None,
+        "series": series,
         "files": files,
     }
+    if work_type == "comic":
+        metadata["comic"] = pixiv_comic_metadata(remote_id=remote_id, metadata=illust)
     if unavailable_reason:
         metadata["availability_reason"] = unavailable_reason
     if ugoira_metadata:
@@ -87,6 +90,22 @@ def parse_illust(
 
 def pixiv_work_type(pixiv_type: Any) -> str:
     return PIXIV_WORK_TYPES.get(str(pixiv_type or "").strip().lower(), "illustration")
+
+
+def pixiv_comic_metadata(*, remote_id: str, metadata: dict[str, Any]) -> dict[str, Any]:
+    series = metadata.get("series") if isinstance(metadata.get("series"), dict) else None
+    return {
+        "provider": "pixiv",
+        "provider_work_id": str(remote_id),
+        "title": metadata.get("title"),
+        "series_id": series.get("id") if series else None,
+        "series_title": series.get("title") if series else None,
+        "chapter_number": series.get("order") if series else None,
+        "volume_number": series.get("volume") if series else None,
+        "total_count": series.get("count") if series else None,
+        "is_one_shot": not bool(series and series.get("title")),
+        "summary": metadata.get("caption"),
+    }
 
 
 def pixiv_unavailable_reason(illust: dict[str, Any]) -> str | None:

@@ -8,7 +8,7 @@
 
 - **Status:** External verification 待ち。
 - **Observed in:** `src/mediagent/core/comics.py`、`src/mediagent/tools/pixiv_library_tools.py`
-- **Current behavior:** Unit tests は `comic-pages` classification、deterministic atomic CBZ、`ComicInfo.xml`、DB recording、rerun reuse、`package_comics:true` sync integration を覆います。この implementation task では production library/database を migrate していません。
+- **Current behavior:** Unit tests は `comic-pages` classification、Kavita one-shot/series directories、normalized `ComicInfo.xml`、deterministic atomic CBZ、V1 quarantine migration、DB recording、rerun reuse、`package_comics:true` sync integration を覆います。この implementation task では production library/database を migrate していません。
 - **Expected next step:** Overlapping Pixiv jobs を停止し、intended deployment inputs で reconciliation/package dry-run を実行してから明示的に apply し、Immich で `comic` と `comic-pages` の両方を exclude します。
 
 ### 1. X OAuth は実装済みだが live-verified ではない
@@ -125,4 +125,4 @@
 - Localized issue handoffs は現在の英語版 issue state に同期済みです。
 - Localized TODO handoffs は Pixiv `pixiv.auth.login` / OAuth PKCE planning update に対応済みで、authorization-code exchange、credential-file writing、redaction tests、skipped-by-default live browser tests を含みます。
 - 英語、繁体字中国語、日本語の handoff docs は Pixiv first-slice status に同期済みです。
-- default test suite は green です: `uv run --locked python -m unittest discover -s tests` が 268 tests passing です。
+- default test suite は green です: `uv run --locked python -m unittest discover -s tests` が 271 tests passing です。

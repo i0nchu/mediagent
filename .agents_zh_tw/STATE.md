@@ -35,7 +35,7 @@
 - 平台專屬 root 會被視為已經屬於該平台，因此預設會省略額外 platform directory。
 - Pixiv bookmark sync 已支援 collect -> upsert -> status filter -> storage path plan -> partial download finalization -> file record -> item status update。
 - Pixiv artwork normalization 會保存 `work_type: illustration|comic|animation`；官方 `type:manga` 原始頁面存入 `pixiv/comic-pages/...`、deterministic CBZ 存入 `pixiv/comic/...`，`illust` 即使多頁仍存入 `pixiv/photo/...`。
-- `pixiv.comics.package` 會把完整下載的漫畫頁面原子封裝為含 `ComicInfo.xml` 的 deterministic CBZ；`pixiv.bookmarks.sync` 可用 `package_comics:true` opt in。
+- `pixiv.comics.package` 會把完整下載的漫畫頁面原子封裝為含 `ComicInfo.xml` 的 deterministic Kavita-oriented CBZ；單篇有唯一 series identity，真正系列共用資料夾，而 `migrate_legacy:true` 會重建 V1 archives，再把舊副本移到 `.trash/mediagent-comic-v1`。`pixiv.bookmarks.sync` 可用 `package_comics:true` opt in。
 - Pixiv invisible stubs 與只包含 `s.pximg.net/.../limit_*.png` 的 placeholder response 會標記為 unavailable，不會下載。
 - `pixiv.bookmarks.sync` 支援明確的 `repair_missing_files:true`；預設重跑仍會跳過 DB 中的 downloaded items，即使外部清理已把檔案移到 `.trash`。
 - Pixiv bookmark sync 使用 `media_types` filtering 時會存入 scoped cursor，例如 `bookmarks:public:photo`。
@@ -164,7 +164,7 @@
 - Pixiv 現在有離線 `pixiv.library.reconcile` plan/apply 流程，可更新舊 work-type metadata、以原子搬移將既有漫畫原始頁面從 `photo` 或舊 `comic` 移到 `comic-pages`、同步搬移 sidecars、quarantine 已知 placeholder downloads、更新 DB paths；apply 必須傳入 `confirm:true`。
 - 本機 development DB 的 plan 驗證找到 309 個 Pixiv items：26 comic、280 illustration、3 animation、17 unavailable placeholder records，blocked actions 為 0。本機 library 中有 245 個 legacy comic source files 已不在 DB 記錄路徑，因此這些應使用 opt-in repair，而不是原地搬移。
 - `.trash` 內的檔案會視為 library 缺檔，永遠不自動搬回；`repair_missing_files:true` 會下載新副本到規劃路徑，並保留 `.trash` 原狀。
-- Locked offline suite 通過 268 tests，包含 Pixiv work classification、unavailable placeholder rejection、reconciliation plan/apply/confirmation、comic-page/sidecar 原子搬移、placeholder quarantine、missing-file repair、deterministic CBZ、missing-source refusal、DB 記錄、重跑重用與 bookmark-sync packaging integration。
+- Locked offline suite 通過 271 tests，包含 Pixiv work classification、unavailable placeholder rejection、reconciliation plan/apply/confirmation、comic-page/sidecar 原子搬移、placeholder quarantine、missing-file repair、Kavita one-shot/series CBZ metadata/layout、V1 quarantine migration、long-Unicode path safety、missing-source refusal、DB 記錄、重跑重用與 bookmark-sync packaging integration。
 
 - `link.media.sync` 支援明確的 file-health-aware repair：`repair_missing_files: true`。
 - `telegram.inbox.sync_links` 與 `telegram.messages.sync` 也暴露相同選項，作為既有 sync logic 上的 compatibility paths。

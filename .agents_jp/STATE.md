@@ -35,7 +35,7 @@
 - Platform-specific roots はすでにその platform に scoped されているものとして扱うため、default では追加の platform directory を省略します。
 - Pixiv bookmark sync は collect -> upsert -> status filter -> storage path plan -> partial download finalization -> file record -> item status update に対応しています。
 - Pixiv artwork normalization は `work_type: illustration|comic|animation` を保持します。Official `type:manga` source pages は `pixiv/comic-pages/...`、deterministic CBZ は `pixiv/comic/...`、`illust` は multi-page でも `pixiv/photo/...` に保存します。
-- `pixiv.comics.package` は complete downloaded manga pages を `ComicInfo.xml` 付きの atomic deterministic CBZ に package します。`pixiv.bookmarks.sync` は `package_comics:true` で opt in できます。
+- `pixiv.comics.package` は complete downloaded manga pages を `ComicInfo.xml` 付きの atomic deterministic Kavita-oriented CBZ に package します。One-shot は unique series identity、real series は shared directory を使い、`migrate_legacy:true` は V1 archive を rebuild して old copy を `.trash/mediagent-comic-v1` に移します。`pixiv.bookmarks.sync` は `package_comics:true` で opt in できます。
 - Pixiv invisible stubs と `s.pximg.net/.../limit_*.png` だけを返す placeholder responses は unavailable として扱い、download しません。
 - `pixiv.bookmarks.sync` は明示的な `repair_missing_files:true` に対応します。Default reruns は external cleanup が files を `.trash` に移しても、DB の downloaded items を引き続き skip します。
 - Pixiv bookmark sync は `media_types` filtering 使用時に、`bookmarks:public:photo` のような scoped cursor を保存します。
@@ -164,7 +164,7 @@
 - Pixiv には offline `pixiv.library.reconcile` plan/apply flow があります。Legacy work-type metadata を更新し、existing manga source pages を `photo` または legacy `comic` から `comic-pages` へ atomic move し、sidecars も同時に移動し、known placeholder downloads を quarantine し、DB paths を更新します。Apply には `confirm:true` が必要です。
 - Local development DB の plan verification では Pixiv items 309 件: comic 26、illustration 280、animation 3、unavailable placeholder records 17、blocked actions 0 でした。Local library では legacy comic source files 245 件が記録 path に存在しないため、in-place move ではなく opt-in repair が必要です。
 - `.trash` 内の files は missing library files として扱い、自動では戻しません。`repair_missing_files:true` は planned library path に新しい copy を download し、`.trash` は変更しません。
-- Locked offline suite は 268 tests に成功しています。Pixiv work classification、unavailable placeholder rejection、reconciliation plan/apply/confirmation、comic-page/sidecar atomic moves、placeholder quarantine、missing-file repair、deterministic CBZ creation、missing-source refusal、DB recording、rerun reuse、bookmark-sync packaging integration を含みます。
+- Locked offline suite は 271 tests に成功しています。Pixiv work classification、unavailable placeholder rejection、reconciliation plan/apply/confirmation、comic-page/sidecar atomic moves、placeholder quarantine、missing-file repair、Kavita one-shot/series CBZ metadata/layout、V1 quarantine migration、long-Unicode path safety、missing-source refusal、DB recording、rerun reuse、bookmark-sync packaging integration を含みます。
 
 - `link.media.sync` は `repair_missing_files: true` による明示的 file-health-aware repair をサポートします。
 - `telegram.inbox.sync_links` と `telegram.messages.sync` も、既存 sync logic 上の compatibility paths として同じ option を公開します。

@@ -326,7 +326,9 @@ uv run --locked mediagent tools run pixiv.comics.package \
   --input examples/tools/pixiv.comics.package.json --dry-run --json
 ```
 
-Remove `--dry-run` to create CBZ files. The tool reads only complete, healthy source pages, writes each archive through a `.partial` file plus atomic replacement, records it in SQLite, and keeps source pages. Future bookmark syncs can set `package_comics:true` to package newly downloaded manga automatically.
+Remove `--dry-run` to create CBZ files. The committed example sets `migrate_legacy:true`: the tool reads only complete, healthy source pages, writes each Kavita V2 archive through a `.partial` file plus atomic replacement, records it in SQLite, and keeps source pages. After a V2 archive succeeds, an older V1 date-layout CBZ is moved to `library/.trash/mediagent-comic-v1` and its stale DB row is removed. Future bookmark syncs can set `package_comics:true` to package newly downloaded manga automatically.
+
+Kavita V2 uses one directory per series. A Pixiv one-shot receives its own unique series identity; works with real Pixiv series metadata share one directory and use `Series`, `Number`, optional `Volume`, and optional `Count` from the normalized comic contract.
 
 Pixiv image examples:
 
@@ -334,7 +336,7 @@ Pixiv image examples:
 $MEDIAGENT_DATA_DIR/pixiv/photo/2026/07/20260722__pixiv__143734851__p0.jpg
 $MEDIAGENT_DATA_DIR/pixiv/photo/2026/07/20260722__pixiv__143734851__p1.jpg
 $MEDIAGENT_DATA_DIR/pixiv/comic-pages/2026/07/20260722__pixiv__139193091__p0.jpg
-$MEDIAGENT_DATA_DIR/pixiv/comic/2026/07/20260722__pixiv__139193091.cbz
+$MEDIAGENT_DATA_DIR/pixiv/comic/Work Title [pixiv-139193091]/Work Title [pixiv-139193091].cbz
 ```
 
 Without `MEDIAGENT_PIXIV_LIBRARY_DIR`, the shared-root examples are:
@@ -343,7 +345,7 @@ Without `MEDIAGENT_PIXIV_LIBRARY_DIR`, the shared-root examples are:
 $MEDIAGENT_DATA_DIR/library/pixiv/photo/2026/07/20260722__pixiv__143734851__p0.jpg
 $MEDIAGENT_DATA_DIR/library/pixiv/photo/2026/07/20260722__pixiv__143734851__p1.jpg
 $MEDIAGENT_DATA_DIR/library/pixiv/comic-pages/2026/07/20260722__pixiv__139193091__p0.jpg
-$MEDIAGENT_DATA_DIR/library/pixiv/comic/2026/07/20260722__pixiv__139193091.cbz
+$MEDIAGENT_DATA_DIR/library/pixiv/comic/Work Title [pixiv-139193091]/Work Title [pixiv-139193091].cbz
 ```
 
 If Immich scans the Pixiv external library but comics should be handled by another reader, add both exclusion patterns in that external library's Scan Settings and rescan:
@@ -353,7 +355,7 @@ If Immich scans the Pixiv external library but comics should be handled by anoth
 **/comic-pages/**
 ```
 
-Point the comic reader only at `pixiv/comic`. The `comic-pages` directory remains Mediagent's lossless source for repair or rebuilding CBZ files.
+Point Kavita at `pixiv/comic`; do not point it at `pixiv` or `comic-pages`. Each immediate child of `comic` is one series directory and there are no archive files at the comic root. The `comic-pages` directory remains Mediagent's lossless source for repair or rebuilding CBZ files.
 
 The SQLite database is read from `MEDIAGENT_DB_PATH`; each completed file is recorded in `media_files` with a library-relative path, storage layout version, checksum, size, MIME type, and file health. The parent item is marked `downloaded`, `partial`, or `failed` in `media_items`.
 

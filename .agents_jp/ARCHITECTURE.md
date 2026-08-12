@@ -185,9 +185,9 @@ platform collector output
 
 `pixiv.bookmarks.collect`、`pixiv.bookmarks.sync`、`telegram.messages.collect`、`telegram.messages.sync` は有用な実装済み flows として維持します。X bookmark collection と Reddit saved collection は fixture/fake-client coverage を持ちますが、user が明示的に auth-assisted account collection を再開しない限り、現在の expansion path ではありません。
 
-Pixiv では physical media type と work type を分離します。Manga source pages は `media_type: photo` のままですが、`metadata.work_type: comic` が `comic-pages` を選択し、CBZ packaging layer は work ごとに一つの deterministic archive を `comic` に書きます。Normal illustrations は `illustration` / `photo`、ugoira は `animation` / `video` を使い、raw pages、comic-reader artifacts、normal photos を分離します。
+Pixiv では physical media type と work type を分離します。Manga source pages は `media_type: photo` のままですが、`metadata.work_type: comic` が `comic-pages` を選択し、Kavita-oriented CBZ layer は `comic/<series-directory>/` に archive を書きます。One-shot は unique series identity と `Number=1`、`Count=1`、`Format=One-Shot` を使い、real series は同じ directory を共有して normalized `Series`、`Number`、optional `Volume`、optional `Count` を使います。Normal illustrations は `illustration` / `photo`、ugoira は `animation` / `video` のままです。
 
-`core/comics.py` の CBZ writer 自体は platform-neutral ですが、automatic comic classification/package wiring は現在 Pixiv のみです。Future resolvers が reliable な `work_type:comic`、ordered pages、work metadata を提供できれば、同じ `comic-pages` -> `comic` contract を共有できます。Multi-image count だけで comic と推定してはいけません。
+`core/comics.py` の descriptor/CBZ writer 自体は platform-neutral ですが、automatic comic classification/package wiring は現在 Pixiv のみです。Future authorized-source adapters が reliable な `work_type:comic`、ordered pages、series/chapter/volume identity、work metadata を提供できれば、normalized `metadata.comic` と同じ `comic-pages` -> `comic` contract を共有できます。Multi-image count だけで comic と推定してはいけません。
 
 ## Future Policy Layer
 

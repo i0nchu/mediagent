@@ -8,7 +8,7 @@
 
 - **狀態：** 等待外部驗證。
 - **位置：** `src/mediagent/core/comics.py`、`src/mediagent/tools/pixiv_library_tools.py`
-- **目前行為：** Unit tests 已覆蓋 `comic-pages` 分類、deterministic atomic CBZ、`ComicInfo.xml`、DB 記錄、重跑重用，以及 `package_comics:true` sync integration；本次開發沒有遷移正式 library 或 database。
+- **目前行為：** Unit tests 已覆蓋 `comic-pages` 分類、Kavita one-shot/series directories、normalized `ComicInfo.xml`、deterministic atomic CBZ、V1 quarantine migration、DB 記錄、重跑重用，以及 `package_comics:true` sync integration；本次開發沒有遷移正式 library 或 database。
 - **建議下一步：** 停止重疊 Pixiv jobs，對預定 deployment inputs 執行 reconciliation 與 package dry-run，確認後明確 apply，並在 Immich 同時排除 `comic` 與 `comic-pages`。
 
 ### 1. X OAuth 已實作，但尚未 live-verified
@@ -125,4 +125,4 @@
 - Localized issue handoffs 已同步到目前英文 issue 狀態。
 - Localized TODO handoffs 已包含 Pixiv `pixiv.auth.login` / OAuth PKCE planning update，包括 authorization-code exchange、credential-file writing、redaction tests，以及 skipped-by-default live browser tests。
 - 英文、繁中、日文 handoff docs 已同步到 Pixiv first-slice status。
-- 預設測試是綠燈：`uv run --locked python -m unittest discover -s tests` 通過 268 個測試。
+- 預設測試是綠燈：`uv run --locked python -m unittest discover -s tests` 通過 271 個測試。

@@ -320,7 +320,9 @@ uv run --locked mediagent tools run pixiv.comics.package \
   --input examples/tools/pixiv.comics.package.json --dry-run --json
 ```
 
-`--dry-run` を外すと CBZ を作成します。Tool は complete/healthy source pages だけを読み、`.partial` と atomic replacement で archive を書き、SQLite に記録し、source pages は保持します。Future bookmark sync は `package_comics:true` で newly downloaded manga を自動 package できます。
+`--dry-run` を外すと CBZ を作成します。Committed example は `migrate_legacy:true` を設定します。Tool は complete/healthy source pages だけを読み、`.partial` と atomic replacement で Kavita V2 archive を書き、SQLite に記録し、source pages は保持します。V2 成功後、old V1 date-layout CBZ は `library/.trash/mediagent-comic-v1` に移され、その後 stale DB row が削除されます。Future bookmark sync は `package_comics:true` で newly downloaded manga を自動 package できます。
+
+Kavita V2 は series ごとに一つの directory を使います。Pixiv one-shot は unique series identity を持ち、real Pixiv series metadata のある works は同じ directory を共有し、normalized comic contract の `Series`、`Number`、optional `Volume`、optional `Count` を使います。
 
 Pixiv image examples:
 
@@ -328,7 +330,7 @@ Pixiv image examples:
 $MEDIAGENT_DATA_DIR/pixiv/photo/2026/07/20260722__pixiv__143734851__p0.jpg
 $MEDIAGENT_DATA_DIR/pixiv/photo/2026/07/20260722__pixiv__143734851__p1.jpg
 $MEDIAGENT_DATA_DIR/pixiv/comic-pages/2026/07/20260722__pixiv__139193091__p0.jpg
-$MEDIAGENT_DATA_DIR/pixiv/comic/2026/07/20260722__pixiv__139193091.cbz
+$MEDIAGENT_DATA_DIR/pixiv/comic/作品タイトル [pixiv-139193091]/作品タイトル [pixiv-139193091].cbz
 ```
 
 `MEDIAGENT_PIXIV_LIBRARY_DIR` が未設定の場合、shared-root examples は次の通りです。
@@ -337,7 +339,7 @@ $MEDIAGENT_DATA_DIR/pixiv/comic/2026/07/20260722__pixiv__139193091.cbz
 $MEDIAGENT_DATA_DIR/library/pixiv/photo/2026/07/20260722__pixiv__143734851__p0.jpg
 $MEDIAGENT_DATA_DIR/library/pixiv/photo/2026/07/20260722__pixiv__143734851__p1.jpg
 $MEDIAGENT_DATA_DIR/library/pixiv/comic-pages/2026/07/20260722__pixiv__139193091__p0.jpg
-$MEDIAGENT_DATA_DIR/library/pixiv/comic/2026/07/20260722__pixiv__139193091.cbz
+$MEDIAGENT_DATA_DIR/library/pixiv/comic/作品タイトル [pixiv-139193091]/作品タイトル [pixiv-139193091].cbz
 ```
 
 Immich が Pixiv external library を scan し、comics を別 reader に任せる場合、その external library の Scan Settings に次の二つの exclusion patterns を追加して rescan します。
@@ -347,7 +349,7 @@ Immich が Pixiv external library を scan し、comics を別 reader に任せ�
 **/comic-pages/**
 ```
 
-Comic reader は `pixiv/comic` だけを対象にします。`comic-pages` は Mediagent が repair または CBZ rebuild に使う lossless source として保持します。
+Kavita は `pixiv/comic` だけを対象にし、`pixiv` や `comic-pages` を対象にしません。`comic` の immediate child はそれぞれ一つの series directory で、comic root に archive は直接置きません。`comic-pages` は Mediagent が repair または CBZ rebuild に使う lossless source として保持します。
 
 SQLite database は `MEDIAGENT_DB_PATH` で決まります。完了した file は `media_files` に記録され、library-relative path、storage layout version、checksum、size、MIME type、file health を保持します。Parent item は `media_items` で `downloaded`、`partial`、`failed` のいずれかに更新されます。
 

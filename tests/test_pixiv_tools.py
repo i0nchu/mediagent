@@ -811,6 +811,10 @@ class PixivToolTests(unittest.TestCase):
         self.assertEqual(len(written_metadata), 0)
         self.assertEqual(len(written_comics), 1)
         self.assertEqual(
+            written_comics[0].relative_to(target_dir).as_posix(),
+            "pixiv/comic/Multi page [pixiv-1002]/Multi page [pixiv-1002].cbz",
+        )
+        self.assertEqual(
             sorted(path.relative_to(target_dir).as_posix() for path in written_media),
             [
                 "pixiv/comic-pages/2026/01/20260102__pixiv__1002__p0.png",
@@ -820,7 +824,7 @@ class PixivToolTests(unittest.TestCase):
         )
         self.assertEqual(
             sorted(file["storage_layout"] for file in media_files),
-            ["comic-cbz-v1", "scanner-friendly-v2", "scanner-friendly-v2", "scanner-friendly-v2"],
+            ["comic-kavita-v2", "scanner-friendly-v2", "scanner-friendly-v2", "scanner-friendly-v2"],
         )
         self.assertTrue(all(file["file_health"] == "valid" for file in media_files))
         self.assertEqual(
@@ -829,6 +833,8 @@ class PixivToolTests(unittest.TestCase):
         )
         self.assertEqual(comic_entries, ["001.png", "002.png", "ComicInfo.xml"])
         self.assertIn("<Title>Multi page</Title>", comic_info)
+        self.assertIn("<Series>Multi page [Pixiv 1002]</Series>", comic_info)
+        self.assertIn("<Format>One-Shot</Format>", comic_info)
         self.assertIn("<PageCount>2</PageCount>", comic_info)
         self.assertTrue(
             all(
@@ -1468,6 +1474,7 @@ class PixivToolTests(unittest.TestCase):
         self.assertEqual(items[0]["metadata"]["storage_category"], "photo")
         self.assertEqual(items[1]["metadata"]["work_type"], "comic")
         self.assertEqual(items[1]["metadata"]["storage_category"], "comic-pages")
+        self.assertTrue(items[1]["metadata"]["comic"]["is_one_shot"])
         self.assertEqual(items[1]["metadata"]["files"][0]["url"].rsplit("/", 1)[-1], "1002_p0.png")
         self.assertEqual(items[2]["metadata"]["ugoira_metadata"]["ugoira_metadata"]["frames"][0]["delay"], 80)
 

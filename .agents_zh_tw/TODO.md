@@ -41,3 +41,4 @@
 - Long-term memory 與 multi-turn conversation state。
 - Workspace-scoped command execution 與廣泛 library-management workflows。
 - X explicit post-link support；tweet reads 仍需要付費 credits。
+- 使用 normalized `metadata.comic` contract 的其他 authorized comic-source adapters；provider access、頁序、series identity 與 policy boundaries 維持 adapter-specific。

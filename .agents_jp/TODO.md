@@ -41,3 +41,4 @@ Goal: 別の long-running source または scheduler layer を追加する前に
 - Long-term memory と multi-turn conversation state。
 - Workspace-scoped command execution と broad library-management workflows。
 - X explicit post-link support。Tweet reads には現在 paid credits が必要です。
+- Normalized `metadata.comic` contract を使う additional authorized comic-source adapters。Provider access、page ordering、series identity、policy boundaries は adapter-specific のままにします。

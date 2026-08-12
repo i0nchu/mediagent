@@ -323,7 +323,7 @@ Permissions:
 
 ### `pixiv.comics.package`
 
-Plans or creates one deterministic CBZ per complete downloaded Pixiv manga. Page order follows Pixiv metadata, archives contain zero-padded page names plus `ComicInfo.xml`, writes use a `.partial` file and atomic replacement, and the resulting CBZ is recorded as a `media_files` row with `comic-cbz-v1`. Existing healthy tracked CBZ files are reused. It does not contact Pixiv or delete source pages.
+Plans or creates one deterministic Kavita-oriented CBZ per complete downloaded Pixiv manga. Archives live under `comic/<series-directory>/`, contain zero-padded page names plus root-level `ComicInfo.xml`, and are recorded as `comic-kavita-v2`. One-shots use a unique series identity with `Number=1`, `Count=1`, and `Format=One-Shot`; real Pixiv series share a directory and preserve series/chapter metadata when supplied. Writes use `.partial` plus atomic replacement. `migrate_legacy:true` rebuilds V1 date-layout archives, moves old CBZ files to `.trash/mediagent-comic-v1`, and removes their stale DB rows only after the V2 archive succeeds. It does not contact Pixiv or delete source pages.
 
 Permissions:
 

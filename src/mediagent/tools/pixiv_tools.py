@@ -11,7 +11,7 @@ from typing import Any
 
 from mediagent.core import db
 from mediagent.core.auth import CredentialRef, resolve_credential, resolve_credential_path
-from mediagent.core.comics import comic_archive_relative_path
+from mediagent.core.comics import CBZ_STORAGE_LAYOUT, comic_archive_relative_path
 from mediagent.core.filesystem import PathSafetyError, ensure_inside, normalize_path, resolve_placeholders
 from mediagent.core.links import LinkSafetyPolicy, ResolveRequest, default_link_resolver_registry, sanitize_link_resolution_for_output
 from mediagent.core.storage import default_library_root, plan_storage_path, platform_library_env_name
@@ -649,6 +649,7 @@ async def bookmarks_sync(context: ToolContext, input_data: dict[str, Any]) -> To
         "bytes_written": 0,
         "comic_packages": 0,
         "comic_packages_existing": 0,
+        "comic_packages_migrated": 0,
         "comic_packages_failed": 0,
         "target_dir": str(target_dir),
     }
@@ -696,6 +697,8 @@ async def bookmarks_sync(context: ToolContext, input_data: dict[str, Any]) -> To
                 artifacts.append({"type": "file", "path": package["target_path"]})
             elif package["status"] == "existing":
                 summary["comic_packages_existing"] += 1
+            elif package["status"] == "legacy_migrated":
+                summary["comic_packages_migrated"] += 1
             else:
                 summary["comic_packages_failed"] += 1
                 warnings.append(
@@ -1168,7 +1171,7 @@ def _planned_comic_packages(
                 "page_count": len(_item_files(item)),
                 "relative_path": relative_path.as_posix(),
                 "target_path": str((target_dir / relative_path).resolve()),
-                "layout": "comic-cbz-v1",
+                "layout": CBZ_STORAGE_LAYOUT,
             }
         )
     return packages

@@ -41,3 +41,4 @@ Goal: harden the existing Agent-mode timer deployment before adding another long
 - Long-term memory and multi-turn conversation state.
 - Workspace-scoped command execution and broad library-management workflows.
 - X explicit post-link support while tweet reads require paid credits.
+- Additional authorized comic-source adapters using the normalized `metadata.comic` contract; keep provider access, page ordering, series identity, and policy boundaries adapter-specific.
