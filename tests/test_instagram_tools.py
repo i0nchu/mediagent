@@ -17,6 +17,7 @@ from mediagent.tools.defaults import create_default_registry
 
 
 PUBLIC_TEST_IP = "1.1.1.1"
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 class FakeInstagramClient:
@@ -81,6 +82,29 @@ class FakeInstagramClient:
 
 
 class InstagramToolTests(unittest.TestCase):
+    def test_saved_tool_examples_are_direct_cli_inputs(self) -> None:
+        registry = create_default_registry()
+        examples = {
+            "instagram.saved.collect": "instagram.saved.collect.json",
+            "instagram.saved.sync": "instagram.saved.sync.json",
+            "instagram.saved.sync.full": "instagram.saved.sync.full.json",
+        }
+        with TemporaryDirectory() as temp_dir:
+            regular = _ready_saved_context(temp_dir, FakeInstagramClient())
+            context = ToolContext.from_env(
+                env=regular.env,
+                cwd=Path(temp_dir),
+                dry_run=True,
+                http_client=regular.http_client,
+            )
+            for label, filename in examples.items():
+                payload = json.loads((PROJECT_ROOT / "examples" / "tools" / filename).read_text(encoding="utf-8"))
+                self.assertNotIn("tool", payload, label)
+                self.assertNotIn("input", payload, label)
+                tool_name = "instagram.saved.collect" if label == "instagram.saved.collect" else "instagram.saved.sync"
+                result = asyncio.run(registry.run(tool_name, payload, context))
+                self.assertTrue(result.is_success, label)
+
     def test_real_saved_page_adapter_does_not_truncate_before_opaque_cursor(self) -> None:
         class StubClient:
             def load_settings(self, path: Path) -> None:

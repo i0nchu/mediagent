@@ -202,7 +202,7 @@ uv run --locked mediagent tools run reddit.saved.collect --input examples/tools/
 uv run --locked mediagent tools run x.auth.start --input examples/tools/x.auth.start.json --json
 ```
 
-最新の local full suite は 259 tests passing です。
+最新の local full suite は 260 tests passing です。
 
 Phase 16 Telegram inbox link resolver verification:
 
@@ -361,7 +361,7 @@ Instagram saved-media foundation と bounded local live verification は 2026-08
 - `instagram.saved.collect` と `instagram.saved.sync`、photo/Reel/video/carousel の whole-post normalization、runtime-only signed URLs、共通 scanner-friendly storage/download/status/repair、安全な cursor advancement、sidecar support を追加しました。
 - Tools を登録し、bounded/recurring/full JSON examples と英語 `instagram_saved_sync` Agent SKILL を追加しました。Saved-feed intent は explicit Instagram links と分離し、「all saved media」に架空の制限を加えません。
 - Review hardening により configured write roots 外の explicit DB paths を拒否し、page limit truncation が opaque cursor の後ろにある未返却 posts を skip しないようにしました。
-- Locked offline suite は 259 tests が pass し、pagination、dedupe、carousel resources、partial failure、cursor safety、dry-run isolation、auth/rate-limit errors、download、retry、repair、Agent intent boundaries を cover します。
+- Locked offline suite は 260 tests が pass し、pagination、dedupe、carousel resources、CLI example inputs、partial failure、cursor safety、dry-run isolation、auth/rate-limit errors、download、retry、repair、Agent intent boundaries を cover します。
 - Local-only bounded live run は saved-feed 1 page を読み、先頭 2 posts を sync しました。両方とも Reels/videos で、2 files、合計 16,746,907 bytes を正常に download しました。
 - 同じ run の 2 回目は queued/downloaded が 0、healthy items 2 件を skip し、`library.file.verify` は valid 2、missing 0、corrupt 0 を報告しました。
 - SQLite inspection では persisted runtime CDN/session/auth markers は 0 件でした。Dedicated local live-test DB、library、temporary output は後で削除しました。Bounded sample に carousel は含まれなかったため、real carousel download はこの live run ではなく offline tests で cover します。

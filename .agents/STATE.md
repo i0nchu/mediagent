@@ -203,7 +203,7 @@ uv run --locked mediagent tools run reddit.saved.collect --input examples/tools/
 uv run --locked mediagent tools run x.auth.start --input examples/tools/x.auth.start.json --json
 ```
 
-The latest local full suite has 259 passing tests.
+The latest local full suite has 260 passing tests.
 
 Phase 16 Telegram inbox link resolver verification:
 
@@ -362,7 +362,7 @@ Instagram saved-media foundation and bounded local live verification completed o
 - Added `instagram.saved.collect` and `instagram.saved.sync`, whole-post normalization for photos, Reels/videos, and carousels, runtime-only signed URLs, shared scanner-friendly storage/download/status/repair behavior, safe cursor advancement, and sidecar support.
 - Registered the tools, added bounded/recurring/full JSON examples, and added an English `instagram_saved_sync` Agent SKILL that keeps saved-feed intent separate from explicit Instagram links and preserves unbounded “all saved media” requests.
 - Review hardening prevents explicit DB paths outside configured write roots and prevents page-limit truncation from skipping unreturned posts behind an opaque cursor.
-- The locked offline suite passes 259 tests, including pagination, dedupe, carousel resources, partial failure, cursor safety, dry-run isolation, auth/rate-limit errors, downloading, retry, repair, and Agent intent boundaries.
+- The locked offline suite passes 260 tests, including pagination, dedupe, carousel resources, CLI example inputs, partial failure, cursor safety, dry-run isolation, auth/rate-limit errors, downloading, retry, repair, and Agent intent boundaries.
 - A local-only bounded live run used one saved-feed page and synchronized the first 2 posts. Both were Reels/videos; 2 files totaling 16,746,907 bytes downloaded successfully.
 - The second identical run queued and downloaded 0 files, skipped both healthy items, and `library.file.verify` reported 2 valid, 0 missing, and 0 corrupt files.
 - SQLite inspection found 0 persisted runtime CDN/session/auth markers. The dedicated local live-test DB, library, and temporary output were removed afterward. The bounded sample did not contain a carousel, so real carousel downloading remains covered offline rather than by this live run.

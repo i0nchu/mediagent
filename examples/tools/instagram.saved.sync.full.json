@@ -1,5 +1,5 @@
 {
-  "tool": "instagram.saved.sync",
-  "input": {"full_sync": true, "stop_on_known": false, "store_cursor": false},
-  "dry_run": false
+  "full_sync": true,
+  "stop_on_known": false,
+  "store_cursor": false
 }

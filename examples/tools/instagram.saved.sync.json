@@ -1,5 +1,6 @@
 {
-  "tool": "instagram.saved.sync",
-  "input": {"stop_on_known": true, "max_pages": 5, "retry_failed": true, "repair_missing_files": true},
-  "dry_run": false
+  "stop_on_known": true,
+  "max_pages": 5,
+  "retry_failed": true,
+  "repair_missing_files": true
 }

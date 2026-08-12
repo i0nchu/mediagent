@@ -202,7 +202,7 @@ uv run --locked mediagent tools run reddit.saved.collect --input examples/tools/
 uv run --locked mediagent tools run x.auth.start --input examples/tools/x.auth.start.json --json
 ```
 
-最新本機完整測試狀態是 259 個測試通過。
+最新本機完整測試狀態是 260 個測試通過。
 
 Phase 16 Telegram inbox link resolver verification：
 
@@ -361,7 +361,7 @@ Instagram 收藏媒體 foundation 與 bounded 本機 live verification 已於 20
 - 新增 `instagram.saved.collect` 與 `instagram.saved.sync`；支援 photo、Reel/video、carousel 的 whole-post normalization、runtime-only signed URLs、共用 scanner-friendly storage/download/status/repair、safe cursor advancement 與 sidecar。
 - 註冊 tools，新增 bounded/recurring/full JSON examples，以及英文 `instagram_saved_sync` Agent SKILL；saved-feed intent 與 explicit Instagram links 保持分離，且「all saved media」不會被加上虛構限制。
 - Review hardening 會拒絕 configured write roots 之外的 explicit DB paths，也會避免 page limit 截斷後透過 opaque cursor 跳過未回傳貼文。
-- Locked offline suite 通過 259 tests，涵蓋 pagination、dedupe、carousel resources、partial failure、cursor safety、dry-run isolation、auth/rate-limit errors、download、retry、repair 與 Agent intent boundaries。
+- Locked offline suite 通過 260 tests，涵蓋 pagination、dedupe、carousel resources、CLI example inputs、partial failure、cursor safety、dry-run isolation、auth/rate-limit errors、download、retry、repair 與 Agent intent boundaries。
 - Local-only bounded live run 讀取一個 saved-feed page，並同步前 2 個貼文；兩者都是 Reels/videos，共成功下載 2 個檔案、16,746,907 bytes。
 - 第二次相同執行 queued/downloaded 都是 0，跳過 2 個健康 items；`library.file.verify` 回報 2 valid、0 missing、0 corrupt。
 - SQLite 檢查發現 0 個持久化 runtime CDN/session/auth markers。專用本機 live-test DB、library 與暫存輸出已於測試後移除。Bounded sample 未包含 carousel，因此真實 carousel 下載仍由離線測試覆蓋。
