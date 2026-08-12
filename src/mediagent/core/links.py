@@ -1718,6 +1718,8 @@ def resolution_to_media_item(
             "group_id": candidate_group_id,
             "required": required,
         }
+        if candidate.get("storage_category"):
+            file_record["storage_category"] = candidate["storage_category"]
         files.append(file_record)
         runtime_file = dict(file_record)
         if isinstance(candidate.get("download_context"), dict):
@@ -1741,6 +1743,9 @@ def resolution_to_media_item(
         "ingested_from": ingest_provenance or {},
         "files": files,
     }
+    for key in ("pixiv_type", "work_type", "storage_category", "availability_reason"):
+        if platform_details.get(key) is not None:
+            metadata[key] = platform_details[key]
     if files:
         metadata["candidate_group"] = {
             "id": group_id,
@@ -1941,6 +1946,7 @@ def _pixiv_candidates(item: dict[str, Any]) -> list[dict[str, Any]]:
                 "download_context_ref": None,
                 "runtime_headers": {"Referer": "https://www.pixiv.net/"},
                 "source_timestamp": metadata.get("create_date"),
+                "storage_category": metadata.get("storage_category"),
                 "details": {
                     "resolver": "pixiv_artwork_link",
                     "source_url": item.get("source_url"),
@@ -1957,6 +1963,9 @@ def _pixiv_public_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
         "title",
         "caption",
         "pixiv_type",
+        "work_type",
+        "storage_category",
+        "availability_reason",
         "create_date",
         "page_count",
         "width",

@@ -14,6 +14,7 @@ from mediagent.tools import (
     media_tools,
     metadata_tools,
     pixiv_tools,
+    pixiv_library_tools,
     reddit_tools,
     storage_tools,
     telegram_tools,
@@ -36,6 +37,7 @@ def create_default_registry() -> ToolRegistry:
         instagram_tools,
         x_tools,
         pixiv_tools,
+        pixiv_library_tools,
         reddit_tools,
         telegram_tools,
     ):

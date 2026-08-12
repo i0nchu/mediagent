@@ -11,6 +11,7 @@ from typing import Any
 
 from mediagent.core import db
 from mediagent.core.auth import CredentialRef, resolve_credential, resolve_credential_path
+from mediagent.core.comics import comic_archive_relative_path
 from mediagent.core.filesystem import PathSafetyError, ensure_inside, normalize_path, resolve_placeholders
 from mediagent.core.links import LinkSafetyPolicy, ResolveRequest, default_link_resolver_registry, sanitize_link_resolution_for_output
 from mediagent.core.storage import default_library_root, plan_storage_path, platform_library_env_name
@@ -32,6 +33,7 @@ from mediagent.platforms.pixiv import auth as pixiv_auth
 from mediagent.platforms.pixiv import client as pixiv_client
 from mediagent.platforms.pixiv import links as pixiv_links
 from mediagent.platforms.pixiv import parser as pixiv_parser
+from mediagent.tools import pixiv_library_tools
 
 
 def definitions() -> list[ToolDefinition]:
@@ -160,6 +162,8 @@ def definitions() -> list[ToolDefinition]:
                         "media_types": {"type": "array", "items": {"type": "string", "enum": ["photo", "video", "audio"]}},
                         "overwrite": {"type": "boolean"},
                         "retry_failed": {"type": "boolean"},
+                        "repair_missing_files": {"type": "boolean"},
+                        "package_comics": {"type": "boolean"},
                         "attempts": {"type": "integer"},
                         "timeout_seconds": {"type": "number"},
                         "include_ugoira_metadata": {"type": "boolean"},
@@ -551,12 +555,23 @@ async def bookmarks_sync(context: ToolContext, input_data: dict[str, Any]) -> To
     items = _limited_items(filtered_items, input_data.get("limit"))
     if context.dry_run:
         statuses = db.get_media_statuses(db_path, items)
-        items_to_sync, skipped = _sync_candidates(items, statuses, retry_failed=input_data.get("retry_failed", False))
+        items_to_sync, skipped, unavailable, repair_summary = _sync_candidates(
+            items,
+            statuses,
+            db_path=db_path,
+            retry_failed=input_data.get("retry_failed", False),
+            repair_missing_files=input_data.get("repair_missing_files", False),
+        )
         planned_downloads = _planned_downloads(
             target_dir,
             items_to_sync,
             include_platform_layer=include_platform_layer,
         )
+        planned_packages = _planned_comic_packages(
+            target_dir,
+            [item for item in items if item.get("source_availability") != "unavailable"],
+            include_platform_layer=include_platform_layer,
+        ) if input_data.get("package_comics") else []
         cursor_decision = _pixiv_sync_cursor_decision(
             input_data,
             available_items=filtered_items,
@@ -582,7 +597,10 @@ async def bookmarks_sync(context: ToolContext, input_data: dict[str, Any]) -> To
                     "discovered": len(items),
                     "queued": len(items_to_sync),
                     "skipped": skipped,
+                    "unavailable": unavailable,
+                    **repair_summary,
                     "planned_files": len(planned_downloads),
+                    "planned_comic_packages": len(planned_packages),
                     "downloaded": 0,
                     "partial": 0,
                     "failed": 0,
@@ -591,6 +609,7 @@ async def bookmarks_sync(context: ToolContext, input_data: dict[str, Any]) -> To
                     "cursor_reason": cursor_decision["reason"],
                 },
                 "planned_downloads": planned_downloads,
+                "planned_packages": planned_packages,
             }
         )
 
@@ -598,7 +617,13 @@ async def bookmarks_sync(context: ToolContext, input_data: dict[str, Any]) -> To
     for item in items:
         db.upsert_media_item(db_path, item)
     statuses = db.get_media_statuses(db_path, items)
-    items_to_sync, skipped = _sync_candidates(items, statuses, retry_failed=input_data.get("retry_failed", False))
+    items_to_sync, skipped, unavailable, repair_summary = _sync_candidates(
+        items,
+        statuses,
+        db_path=db_path,
+        retry_failed=input_data.get("retry_failed", False),
+        repair_missing_files=input_data.get("repair_missing_files", False),
+    )
     target_dir.mkdir(parents=True, exist_ok=True)
 
     summary = {
@@ -613,17 +638,24 @@ async def bookmarks_sync(context: ToolContext, input_data: dict[str, Any]) -> To
         "discovered": len(items),
         "queued": len(items_to_sync),
         "skipped": skipped,
+        "unavailable": unavailable,
+        **repair_summary,
+        "repaired": 0,
         "downloaded": 0,
         "partial": 0,
         "failed": 0,
         "files_downloaded": 0,
         "files_failed": 0,
         "bytes_written": 0,
+        "comic_packages": 0,
+        "comic_packages_existing": 0,
+        "comic_packages_failed": 0,
         "target_dir": str(target_dir),
     }
     item_results = []
     artifacts = []
     warnings = []
+    comic_package_results = []
 
     for item in items_to_sync:
         result = await _sync_one_pixiv_item(
@@ -639,11 +671,40 @@ async def bookmarks_sync(context: ToolContext, input_data: dict[str, Any]) -> To
         summary["files_downloaded"] += result["files_downloaded"]
         summary["files_failed"] += result["files_failed"]
         summary["bytes_written"] += result["bytes_written"]
+        if item.get("_repair") and result["status"] == "downloaded":
+            summary["repaired"] += 1
         artifacts.extend({"type": "file", "path": path} for path in result["artifacts"])
         warnings.extend(result["warnings"])
 
+    if input_data.get("package_comics"):
+        current_statuses = db.get_media_statuses(db_path, items)
+        for item in items:
+            if not _is_comic_item(item) or item.get("source_availability") == "unavailable":
+                continue
+            if current_statuses.get((item["platform"], item["remote_id"])) != "downloaded":
+                continue
+            package = pixiv_library_tools.package_one_comic(
+                db_path=db_path,
+                library_root=target_dir,
+                remote_id=str(item["remote_id"]),
+                include_platform_layer=include_platform_layer,
+                overwrite=bool(input_data.get("overwrite")),
+            )
+            comic_package_results.append(package)
+            if package["status"] == "packaged":
+                summary["comic_packages"] += 1
+                artifacts.append({"type": "file", "path": package["target_path"]})
+            elif package["status"] == "existing":
+                summary["comic_packages_existing"] += 1
+            else:
+                summary["comic_packages_failed"] += 1
+                warnings.append(
+                    f"Pixiv comic {item['remote_id']} downloaded, but CBZ packaging did not complete: "
+                    f"{package.get('reason') or package['status']}"
+                )
+
     run_status = "success"
-    if summary["failed"] or summary["partial"]:
+    if summary["failed"] or summary["partial"] or summary["comic_packages_failed"]:
         run_status = "partial" if summary["downloaded"] else "failed"
     cursor_decision = _pixiv_sync_cursor_decision(
         input_data,
@@ -676,6 +737,7 @@ async def bookmarks_sync(context: ToolContext, input_data: dict[str, Any]) -> To
         "target_dir": str(target_dir),
         "summary": summary,
         "items": item_results,
+        "comic_packages": comic_package_results,
     }
     if run_status == "success":
         return ToolResult.success(data, artifacts=artifacts, warnings=warnings, rate_limit=collect_result.rate_limit)
@@ -872,20 +934,117 @@ def _sync_candidates(
     items: list[dict[str, Any]],
     statuses: dict[tuple[str, str], str],
     *,
+    db_path: Path,
     retry_failed: bool,
-) -> tuple[list[dict[str, Any]], int]:
+    repair_missing_files: bool,
+) -> tuple[list[dict[str, Any]], int, int, dict[str, int]]:
     candidates = []
     skipped = 0
+    unavailable = 0
+    repair_summary = {
+        "repair_items": 0,
+        "repair_files_missing": 0,
+        "repair_files_corrupt": 0,
+        "repair_files_unhealthy": 0,
+    }
     for item in items:
+        if item.get("source_availability") == "unavailable":
+            skipped += 1
+            unavailable += 1
+            continue
         status = statuses.get((item["platform"], item["remote_id"]))
         if status == "failed" and retry_failed:
             candidates.append(item)
             continue
         if status in TERMINAL_ITEM_STATUSES:
+            if status == "downloaded" and repair_missing_files:
+                repair = _repair_assessment(db_path, item)
+                if repair["repairable"]:
+                    repair_item = dict(item)
+                    repair_item["_repair"] = repair
+                    candidates.append(repair_item)
+                    repair_summary["repair_items"] += 1
+                    repair_summary["repair_files_missing"] += int(repair["missing"])
+                    repair_summary["repair_files_corrupt"] += int(repair["corrupt"])
+                    repair_summary["repair_files_unhealthy"] += int(repair["unhealthy"])
+                    continue
             skipped += 1
             continue
         candidates.append(item)
-    return candidates, skipped
+    return candidates, skipped, unavailable, repair_summary
+
+
+def _repair_assessment(db_path: Path, item: dict[str, Any]) -> dict[str, Any]:
+    records = db.list_media_files(db_path, platform=item["platform"], remote_id=item["remote_id"])
+    records_by_remote = {str(record.get("remote_url") or ""): record for record in records if record.get("remote_url")}
+    missing = 0
+    corrupt = 0
+    unhealthy = 0
+    files: list[dict[str, Any]] = []
+    for file_info in _item_files(item):
+        remote_url = str(file_info.get("url") or "")
+        record = records_by_remote.get(remote_url)
+        reason = None
+        health = None
+        status = None
+        local_path = None
+        if record is None:
+            reason = "missing_record"
+            missing += 1
+        else:
+            health = str(record.get("file_health") or "unknown")
+            status = str(record.get("status") or "")
+            local_path = record.get("local_path")
+            if health == "corrupt":
+                reason = "corrupt_file"
+                corrupt += 1
+            elif health == "missing":
+                reason = "missing_file"
+                missing += 1
+            elif status and status != "downloaded":
+                reason = "unhealthy_status"
+                unhealthy += 1
+            elif status == "downloaded" and local_path and (
+                _path_is_in_trash(Path(str(local_path))) or not Path(str(local_path)).exists()
+            ):
+                reason = "downloaded_file_missing_on_disk"
+                missing += 1
+            elif health not in {"valid", "unknown"}:
+                reason = "unhealthy_file"
+                unhealthy += 1
+        if reason:
+            files.append(
+                {
+                    "remote_url": remote_url,
+                    "page": file_info.get("page"),
+                    "reason": reason,
+                    "status": status,
+                    "file_health": health,
+                    "local_path": local_path,
+                }
+            )
+    return {
+        "repairable": bool(files),
+        "missing": missing,
+        "corrupt": corrupt,
+        "unhealthy": unhealthy,
+        "files": files,
+    }
+
+
+def _repair_file_requires_overwrite(item: dict[str, Any], file_info: dict[str, Any]) -> bool:
+    repair = item.get("_repair") if isinstance(item.get("_repair"), dict) else {}
+    remote_url = str(file_info.get("url") or "")
+    return any(
+        entry.get("remote_url") == remote_url
+        and entry.get("reason") in {"corrupt_file", "unhealthy_status", "unhealthy_file"}
+        for entry in repair.get("files", [])
+        if isinstance(entry, dict)
+    )
+
+
+def _path_is_in_trash(path: Path) -> bool:
+    return any(part.lower() == ".trash" for part in path.parts)
 
 
 def _pixiv_sync_cursor_decision(
@@ -988,6 +1147,44 @@ def _planned_downloads(
     return planned
 
 
+def _planned_comic_packages(
+    target_dir: Path,
+    items: list[dict[str, Any]],
+    *,
+    include_platform_layer: bool,
+) -> list[dict[str, Any]]:
+    packages = []
+    for item in items:
+        if not _is_comic_item(item):
+            continue
+        relative_path = comic_archive_relative_path(
+            item=item,
+            include_platform_layer=include_platform_layer,
+        )
+        packages.append(
+            {
+                "platform": item["platform"],
+                "remote_id": item["remote_id"],
+                "page_count": len(_item_files(item)),
+                "relative_path": relative_path.as_posix(),
+                "target_path": str((target_dir / relative_path).resolve()),
+                "layout": "comic-cbz-v1",
+            }
+        )
+    return packages
+
+
+def _is_comic_item(item: dict[str, Any]) -> bool:
+    metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+    pixiv_metadata = metadata.get("pixiv") if isinstance(metadata.get("pixiv"), dict) else metadata
+    work_type = metadata.get("work_type") or pixiv_metadata.get("work_type")
+    if work_type:
+        return str(work_type) == "comic"
+    return pixiv_parser.pixiv_work_type(
+        metadata.get("pixiv_type") or pixiv_metadata.get("pixiv_type")
+    ) == "comic"
+
+
 async def _sync_one_pixiv_item(
     context: ToolContext,
     db_path: Path,
@@ -1025,6 +1222,7 @@ async def _sync_one_pixiv_item(
     write_sidecar_metadata = input_data.get("write_sidecar_metadata", False)
 
     for file_info in files:
+        overwrite_file = overwrite or _repair_file_requires_overwrite(item, file_info)
         try:
             plan = plan_storage_path(
                 library_root=target_dir,
@@ -1047,7 +1245,7 @@ async def _sync_one_pixiv_item(
             result["errors"].append(_file_error(file_info, "unsafe_path", str(exc)))
             continue
 
-        if target_path.exists() and not overwrite:
+        if target_path.exists() and not overwrite_file:
             if not _path_known_to_item(db_path, item, file_info, target_path):
                 _record_failed_file(db_path, item, file_info, target_path, "target_conflict", "Target file already exists but is not known to Mediagent.")
                 result["files_failed"] += 1
@@ -1081,7 +1279,7 @@ async def _sync_one_pixiv_item(
             {
                 "url": file_info["url"],
                 "target_path": str(target_path),
-                "overwrite": overwrite,
+                "overwrite": overwrite_file,
                 "attempts": attempts,
                 "timeout_seconds": timeout_seconds,
                 "expected_mime_prefix": _expected_mime_prefix(file_info),
@@ -1115,7 +1313,7 @@ async def _sync_one_pixiv_item(
                     item=item,
                     file_info=file_info,
                     target_path=target_path,
-                    overwrite=overwrite,
+                    overwrite=overwrite_file,
                 )
                 result["warnings"].extend(metadata_result["warnings"])
                 result["errors"].extend(metadata_result["errors"])

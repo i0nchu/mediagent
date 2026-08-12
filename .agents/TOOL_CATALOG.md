@@ -186,7 +186,7 @@ Plans a deterministic scanner-friendly library path for one normalized media fil
 Default layout:
 
 ```text
-<platform>/<media_type>/<yyyy>/<mm>/<yyyymmdd>__<platform>__<remote_id>__<part>.<ext>
+<platform>/<storage_category>/<yyyy>/<mm>/<yyyymmdd>__<platform>__<remote_id>__<part>.<ext>
 ```
 
 Library root resolution uses explicit `library_root`, then `MEDIAGENT_<PLATFORM>_LIBRARY_DIR`, then `MEDIAGENT_LIBRARY_DIR`, then `${MEDIAGENT_DATA_DIR}/library`. A platform-specific root is already scoped to one platform, so it does not add a duplicate platform directory by default.
@@ -289,6 +289,8 @@ Pixiv collection does not download files by itself. For a full deterministic boo
 
 Collects Pixiv bookmarks, upserts and filters media items, plans scanner-friendly storage paths, downloads each selected `metadata.files[]` entry with `.partial` finalization, records local media files, and updates parent item status to `downloaded`, `partial`, or `failed`. JSON sidecar metadata is opt-in through `write_sidecar_metadata`.
 
+Pixiv work type is separate from physical media type: official manga source pages remain photo files but use `work_type:comic` and the `comic-pages` storage category; multi-page `illust` works remain under `photo`. `package_comics:true` packages each newly downloaded complete manga as one CBZ under `comic`. Invisible/placeholder-only works are unavailable and are not downloaded. `repair_missing_files:true` explicitly repairs downloaded DB items whose required file records are missing, corrupt, unhealthy, or absent at `local_path`; default reruns remain conservative.
+
 When `media_types` filtering is used, sync cursors are scoped by filter, such as `bookmarks:public:photo`, so filtered syncs do not mutate the unscoped bookmark cursor.
 
 For timer-style recurring sync, use `stop_on_known:true` with a bounded `max_pages`. This scans from the newest bookmarks and stops after a page containing an already known terminal item, avoiding repeated full bookmark scans while still relying on SQLite media item state for dedupe.
@@ -306,6 +308,30 @@ Permissions:
 - `write_files`
 
 Pixiv explicit artwork URLs can also be downloaded directly through `link.media.sync`. This path treats one artwork URL as one media item, resolves all pages by default, dedupes against `pixiv.bookmarks.sync`, applies the required Pixiv `Referer` at download time, and keeps runtime headers out of persisted metadata.
+
+### `pixiv.library.reconcile`
+
+Plans or applies an offline legacy Pixiv library migration. It updates `work_type` / storage metadata, atomically moves existing manga source files and sidecars from `photo` or legacy `comic` into `comic-pages`, updates SQLite file paths, and quarantines known `s.pximg.net/.../limit_*.png` placeholder downloads before removing their file rows. Apply requires `confirm:true`; `.trash` content is never restored automatically.
+
+Permissions:
+
+- `read_env`
+- `read_db`
+- `write_db`
+- `read_files`
+- `write_files`
+
+### `pixiv.comics.package`
+
+Plans or creates one deterministic CBZ per complete downloaded Pixiv manga. Page order follows Pixiv metadata, archives contain zero-padded page names plus `ComicInfo.xml`, writes use a `.partial` file and atomic replacement, and the resulting CBZ is recorded as a `media_files` row with `comic-cbz-v1`. Existing healthy tracked CBZ files are reused. It does not contact Pixiv or delete source pages.
+
+Permissions:
+
+- `read_env`
+- `read_db`
+- `write_db`
+- `read_files`
+- `write_files`
 
 ## Telegram Tools
 

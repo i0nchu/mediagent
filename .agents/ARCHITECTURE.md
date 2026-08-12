@@ -83,7 +83,7 @@ Platform modules should normalize their output into the shared media item shape 
 - `auth.py`: local OAuth/PKCE setup helpers, explicit refresh-token auth, token refresh, credential file support, and auth session modeling
 - `client.py`: Pixiv App API calls for user detail, bookmarked illustrations, artwork detail, and ugoira metadata
 - `links.py`: explicit artwork URL/id normalization and Pixiv artwork-detail resolution for the shared link-first resolver pipeline
-- `parser.py`: conversion from Pixiv works into normalized media items, including multi-page works and ugoira metadata
+- `parser.py`: conversion from Pixiv works into normalized media items, including `illustration` / `comic` / `animation` work types, multi-page works, unavailable-placeholder rejection, and ugoira metadata
 
 `platforms/telegram/` currently contains:
 
@@ -186,6 +186,10 @@ platform collector output
 ```
 
 `pixiv.bookmarks.collect`, `pixiv.bookmarks.sync`, `telegram.messages.collect`, and `telegram.messages.sync` remain useful implemented flows. X bookmark collection and Reddit saved collection exist with fixture/fake-client coverage, but they are not the current expansion path unless the user explicitly resumes auth-assisted account collection.
+
+Pixiv keeps physical media type separate from work type. Manga source pages remain `media_type: photo`, while `metadata.work_type: comic` selects `comic-pages`; the CBZ packaging layer writes one deterministic archive per work under `comic`. Normal illustrations use `illustration` / `photo`, and ugoira uses `animation` / `video`. This preserves shared download semantics while separating raw pages, comic-reader artifacts, and normal photos.
+
+The CBZ writer in `core/comics.py` is platform-neutral, but automatic comic classification and packaging are currently wired only to Pixiv. Future resolvers may share the same `comic-pages` -> `comic` contract when they can provide reliable `work_type:comic`, ordered pages, and work metadata; multi-image count alone must not imply a comic.
 
 ## Future Policy Layer
 

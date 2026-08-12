@@ -4,5 +4,6 @@
   "stop_on_known": true,
   "include_ugoira_metadata": true,
   "write_sidecar_metadata": false,
+  "package_comics": true,
   "retry_failed": false
 }

@@ -81,7 +81,7 @@ Agent Core V1 は scheduler でも broad autonomous planner でもありませ�
 - `auth.py`: local OAuth/PKCE setup、explicit refresh-token auth、token refresh、credential file support、auth session model
 - `client.py`: Pixiv App API user detail、bookmarked illustrations、artwork detail、ugoira metadata calls
 - `links.py`: shared link-first resolver pipeline 用の explicit artwork URL/id normalization と Pixiv artwork-detail resolution
-- `parser.py`: Pixiv works を normalized media items に変換し、multi-page works と ugoira metadata を扱う
+- `parser.py`: Pixiv works を normalized media items に変換し、`illustration` / `comic` / `animation` work types、multi-page works、unavailable placeholder rejection、ugoira metadata を扱う
 
 `platforms/telegram/` には次があります。
 
@@ -184,6 +184,10 @@ platform collector output
 ```
 
 `pixiv.bookmarks.collect`、`pixiv.bookmarks.sync`、`telegram.messages.collect`、`telegram.messages.sync` は有用な実装済み flows として維持します。X bookmark collection と Reddit saved collection は fixture/fake-client coverage を持ちますが、user が明示的に auth-assisted account collection を再開しない限り、現在の expansion path ではありません。
+
+Pixiv では physical media type と work type を分離します。Manga source pages は `media_type: photo` のままですが、`metadata.work_type: comic` が `comic-pages` を選択し、CBZ packaging layer は work ごとに一つの deterministic archive を `comic` に書きます。Normal illustrations は `illustration` / `photo`、ugoira は `animation` / `video` を使い、raw pages、comic-reader artifacts、normal photos を分離します。
+
+`core/comics.py` の CBZ writer 自体は platform-neutral ですが、automatic comic classification/package wiring は現在 Pixiv のみです。Future resolvers が reliable な `work_type:comic`、ordered pages、work metadata を提供できれば、同じ `comic-pages` -> `comic` contract を共有できます。Multi-image count だけで comic と推定してはいけません。
 
 ## Future Policy Layer
 

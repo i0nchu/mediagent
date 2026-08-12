@@ -5,6 +5,7 @@
   "stop_on_known": true,
   "overwrite": false,
   "retry_failed": false,
+  "package_comics": true,
   "attempts": 3,
   "timeout_seconds": 30,
   "include_ugoira_metadata": true,

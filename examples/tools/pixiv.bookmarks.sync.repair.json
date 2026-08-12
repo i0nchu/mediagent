@@ -1,0 +1,8 @@
+{
+  "full_sync": true,
+  "stop_on_known": false,
+  "repair_missing_files": true,
+  "retry_failed": true,
+  "store_cursor": false,
+  "write_sidecar_metadata": false
+}

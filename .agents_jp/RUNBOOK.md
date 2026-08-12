@@ -266,7 +266,7 @@ uv run --locked mediagent tools run pixiv.bookmarks.sync --input examples/tools/
 Default example は downloaded files を scanner-friendly library root に置きます。
 
 ```text
-$MEDIAGENT_LIBRARY_DIR/<platform>/<media_type>/<yyyy>/<mm>/<yyyymmdd>__<platform>__<remote_id>__<part>.<ext>
+$MEDIAGENT_LIBRARY_DIR/<platform>/<storage_category>/<yyyy>/<mm>/<yyyymmdd>__<platform>__<remote_id>__<part>.<ext>
 ```
 
 Library root の解決順:
@@ -284,13 +284,51 @@ MEDIAGENT_PIXIV_LIBRARY_DIR=${MEDIAGENT_DATA_DIR}/pixiv
 
 この root はすでに Pixiv-specific なので、その下では media/date layout を使い、`pixiv/pixiv` は追加しません。
 
-Operator note: `MEDIAGENT_LIBRARY_DIR` の変更は future target planning にだけ影響します。同じ SQLite DB を使う場合、すでに terminal state の Pixiv items は dedupe され、新しい root には自動で再配置されません。Deployment を移動する時は、DB と library files を 1 つの state bundle として扱ってください。新しい root を rebuild したい場合は、fresh DB/state reset、または将来の明示的 rebuild/repair flow を使います。
+Operator note: `MEDIAGENT_LIBRARY_DIR` の変更は future target planning にだけ影響します。同じ SQLite DB を使う場合、すでに terminal state の Pixiv items は dedupe され、新しい root には自動で再配置されません。Deployment を移動する時は、DB と library files を 1 つの state bundle として扱ってください。
+
+Pixiv は file media type と work type を分離します。Manga source pages は photo files のままですが、official Pixiv `type:manga` は `work_type:comic` と `comic-pages` storage category を使います。Multi-page `type:illust` は illustration のままで `photo` に保存します。Packaged CBZ は `comic` を使います。
+
+Legacy DB/library update は apply 前に plan します。
+
+```bash
+uv run --locked mediagent tools run pixiv.library.reconcile \
+  --input examples/tools/pixiv.library.reconcile.plan.json --json
+```
+
+Summary を review し、overlapping Pixiv sync jobs を停止してから apply します。
+
+```bash
+uv run --locked mediagent tools run pixiv.library.reconcile \
+  --input examples/tools/pixiv.library.reconcile.apply.json --json
+```
+
+Apply mode は existing manga source files と adjacent JSON sidecars を `comic-pages` に atomic move し、SQLite paths/metadata を更新し、known Pixiv placeholder downloads を quarantine します。Pixiv には接続しません。すでに `.trash` に移動された files は missing として扱い、trash から自動復元しません。
+
+Reconciliation 後、DB では completed だが library path に存在しない files の source-backed repair を preview します。
+
+```bash
+uv run --locked mediagent tools run pixiv.bookmarks.sync \
+  --input examples/tools/pixiv.bookmarks.sync.repair.json --dry-run --json
+```
+
+Missing library files を再 download する意図がある場合だけ、`--dry-run` を外して同じ command を実行します。`repair_missing_files` は opt-in です。Normal timer runs は DB `downloaded` state を尊重し、repair は planned path に新しい copy を download して `.trash` を変更しません。
+
+Reconciliation と必要な repair の後、legacy manga packaging を preview します。
+
+```bash
+uv run --locked mediagent tools run pixiv.comics.package \
+  --input examples/tools/pixiv.comics.package.json --dry-run --json
+```
+
+`--dry-run` を外すと CBZ を作成します。Tool は complete/healthy source pages だけを読み、`.partial` と atomic replacement で archive を書き、SQLite に記録し、source pages は保持します。Future bookmark sync は `package_comics:true` で newly downloaded manga を自動 package できます。
 
 Pixiv image examples:
 
 ```text
 $MEDIAGENT_DATA_DIR/pixiv/photo/2026/07/20260722__pixiv__143734851__p0.jpg
 $MEDIAGENT_DATA_DIR/pixiv/photo/2026/07/20260722__pixiv__143734851__p1.jpg
+$MEDIAGENT_DATA_DIR/pixiv/comic-pages/2026/07/20260722__pixiv__139193091__p0.jpg
+$MEDIAGENT_DATA_DIR/pixiv/comic/2026/07/20260722__pixiv__139193091.cbz
 ```
 
 `MEDIAGENT_PIXIV_LIBRARY_DIR` が未設定の場合、shared-root examples は次の通りです。
@@ -298,7 +336,18 @@ $MEDIAGENT_DATA_DIR/pixiv/photo/2026/07/20260722__pixiv__143734851__p1.jpg
 ```text
 $MEDIAGENT_DATA_DIR/library/pixiv/photo/2026/07/20260722__pixiv__143734851__p0.jpg
 $MEDIAGENT_DATA_DIR/library/pixiv/photo/2026/07/20260722__pixiv__143734851__p1.jpg
+$MEDIAGENT_DATA_DIR/library/pixiv/comic-pages/2026/07/20260722__pixiv__139193091__p0.jpg
+$MEDIAGENT_DATA_DIR/library/pixiv/comic/2026/07/20260722__pixiv__139193091.cbz
 ```
+
+Immich が Pixiv external library を scan し、comics を別 reader に任せる場合、その external library の Scan Settings に次の二つの exclusion patterns を追加して rescan します。
+
+```text
+**/comic/**
+**/comic-pages/**
+```
+
+Comic reader は `pixiv/comic` だけを対象にします。`comic-pages` は Mediagent が repair または CBZ rebuild に使う lossless source として保持します。
 
 SQLite database は `MEDIAGENT_DB_PATH` で決まります。完了した file は `media_files` に記録され、library-relative path、storage layout version、checksum、size、MIME type、file health を保持します。Parent item は `media_items` で `downloaded`、`partial`、`failed` のいずれかに更新されます。
 

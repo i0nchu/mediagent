@@ -272,7 +272,7 @@ uv run --locked mediagent tools run pixiv.bookmarks.sync --input examples/tools/
 By default, the example writes downloaded files under the scanner-friendly library root:
 
 ```text
-$MEDIAGENT_LIBRARY_DIR/<platform>/<media_type>/<yyyy>/<mm>/<yyyymmdd>__<platform>__<remote_id>__<part>.<ext>
+$MEDIAGENT_LIBRARY_DIR/<platform>/<storage_category>/<yyyy>/<mm>/<yyyymmdd>__<platform>__<remote_id>__<part>.<ext>
 ```
 
 Library root resolution order:
@@ -290,13 +290,51 @@ MEDIAGENT_PIXIV_LIBRARY_DIR=${MEDIAGENT_DATA_DIR}/pixiv
 
 Because this root is already Pixiv-specific, it uses the media/date layout below that root instead of adding `pixiv/pixiv`.
 
-Operator note: `MEDIAGENT_LIBRARY_DIR` changes only affect future target planning. With the same SQLite DB, already terminal Pixiv items remain deduped and will not be repopulated into the new root. Treat the DB and library files as one state bundle when moving deployments. To rebuild a new root, use a fresh DB/state reset or a future explicit rebuild/repair flow.
+Operator note: `MEDIAGENT_LIBRARY_DIR` changes only affect future target planning. With the same SQLite DB, already terminal Pixiv items remain deduped and will not be repopulated into the new root. Treat the DB and library files as one state bundle when moving deployments.
+
+Pixiv keeps file media type and work type separate. Manga source pages are still photo files, but official Pixiv `type:manga` works use `work_type:comic` and the `comic-pages` storage category. Multi-page `type:illust` works remain illustrations under `photo`. Packaged CBZ files use `comic`.
+
+Plan the legacy DB/library update before applying it:
+
+```bash
+uv run --locked mediagent tools run pixiv.library.reconcile \
+  --input examples/tools/pixiv.library.reconcile.plan.json --json
+```
+
+Apply only after reviewing the summary and stopping overlapping Pixiv sync jobs:
+
+```bash
+uv run --locked mediagent tools run pixiv.library.reconcile \
+  --input examples/tools/pixiv.library.reconcile.apply.json --json
+```
+
+Apply mode atomically moves existing manga source files and adjacent JSON sidecars into `comic-pages`, updates SQLite paths/metadata, and quarantines known Pixiv placeholder downloads. It does not contact Pixiv. Files already moved into `.trash` are treated as missing and are never restored from trash.
+
+After reconciliation, preview source-backed repair for recorded files that are missing from their library paths:
+
+```bash
+uv run --locked mediagent tools run pixiv.bookmarks.sync \
+  --input examples/tools/pixiv.bookmarks.sync.repair.json --dry-run --json
+```
+
+Run the same command without `--dry-run` only when missing library files should be downloaded again. `repair_missing_files` is opt-in: normal timer runs continue to respect DB `downloaded` state, while repair downloads a new copy to the planned path and leaves `.trash` untouched.
+
+After reconciliation and any required repair, preview legacy manga packaging:
+
+```bash
+uv run --locked mediagent tools run pixiv.comics.package \
+  --input examples/tools/pixiv.comics.package.json --dry-run --json
+```
+
+Remove `--dry-run` to create CBZ files. The tool reads only complete, healthy source pages, writes each archive through a `.partial` file plus atomic replacement, records it in SQLite, and keeps source pages. Future bookmark syncs can set `package_comics:true` to package newly downloaded manga automatically.
 
 Pixiv image examples:
 
 ```text
 $MEDIAGENT_DATA_DIR/pixiv/photo/2026/07/20260722__pixiv__143734851__p0.jpg
 $MEDIAGENT_DATA_DIR/pixiv/photo/2026/07/20260722__pixiv__143734851__p1.jpg
+$MEDIAGENT_DATA_DIR/pixiv/comic-pages/2026/07/20260722__pixiv__139193091__p0.jpg
+$MEDIAGENT_DATA_DIR/pixiv/comic/2026/07/20260722__pixiv__139193091.cbz
 ```
 
 Without `MEDIAGENT_PIXIV_LIBRARY_DIR`, the shared-root examples are:
@@ -304,7 +342,18 @@ Without `MEDIAGENT_PIXIV_LIBRARY_DIR`, the shared-root examples are:
 ```text
 $MEDIAGENT_DATA_DIR/library/pixiv/photo/2026/07/20260722__pixiv__143734851__p0.jpg
 $MEDIAGENT_DATA_DIR/library/pixiv/photo/2026/07/20260722__pixiv__143734851__p1.jpg
+$MEDIAGENT_DATA_DIR/library/pixiv/comic-pages/2026/07/20260722__pixiv__139193091__p0.jpg
+$MEDIAGENT_DATA_DIR/library/pixiv/comic/2026/07/20260722__pixiv__139193091.cbz
 ```
+
+If Immich scans the Pixiv external library but comics should be handled by another reader, add both exclusion patterns in that external library's Scan Settings and rescan:
+
+```text
+**/comic/**
+**/comic-pages/**
+```
+
+Point the comic reader only at `pixiv/comic`. The `comic-pages` directory remains Mediagent's lossless source for repair or rebuilding CBZ files.
 
 The SQLite database is read from `MEDIAGENT_DB_PATH`; each completed file is recorded in `media_files` with a library-relative path, storage layout version, checksum, size, MIME type, and file health. The parent item is marked `downloaded`, `partial`, or `failed` in `media_items`.
 

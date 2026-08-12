@@ -30,10 +30,14 @@
 - 已有 dedicated resolver 的已知平台頁面網域會被 `reserved_platform_page` guard 接住，因此 unsupported Instagram pages、Pixiv 非 artwork pages，以及 Imgur gallery/album 類 pages 會回傳 structured skips，而不是 fallback 到 generic HTML/media resolution。既有 live DB/library 中的 `instagram_com` rows 是加入此 guard 前的歷史殘留。
 - Deterministic sync helpers 位於 `src/mediagent/core/sync.py`。
 - Universal storage planning 位於 `src/mediagent/core/storage.py`。
-- 預設 shared-root storage layout 是 `scanner-friendly-v2`：`<platform>/<media_type>/<yyyy>/<mm>/<filename>`。
+- 預設 shared-root storage layout 是 `scanner-friendly-v2`：`<platform>/<storage_category>/<yyyy>/<mm>/<filename>`。Storage category 通常等於 media type；Pixiv 漫畫原始頁面仍是 photo files，但使用 `comic-pages`，封裝後的 CBZ 使用 `comic`。
 - 已透過 `MEDIAGENT_<PLATFORM>_LIBRARY_DIR` 支援平台專屬 library root，例如 `MEDIAGENT_PIXIV_LIBRARY_DIR`。
 - 平台專屬 root 會被視為已經屬於該平台，因此預設會省略額外 platform directory。
 - Pixiv bookmark sync 已支援 collect -> upsert -> status filter -> storage path plan -> partial download finalization -> file record -> item status update。
+- Pixiv artwork normalization 會保存 `work_type: illustration|comic|animation`；官方 `type:manga` 原始頁面存入 `pixiv/comic-pages/...`、deterministic CBZ 存入 `pixiv/comic/...`，`illust` 即使多頁仍存入 `pixiv/photo/...`。
+- `pixiv.comics.package` 會把完整下載的漫畫頁面原子封裝為含 `ComicInfo.xml` 的 deterministic CBZ；`pixiv.bookmarks.sync` 可用 `package_comics:true` opt in。
+- Pixiv invisible stubs 與只包含 `s.pximg.net/.../limit_*.png` 的 placeholder response 會標記為 unavailable，不會下載。
+- `pixiv.bookmarks.sync` 支援明確的 `repair_missing_files:true`；預設重跑仍會跳過 DB 中的 downloaded items，即使外部清理已把檔案移到 `.trash`。
 - Pixiv bookmark sync 使用 `media_types` filtering 時會存入 scoped cursor，例如 `bookmarks:public:photo`。
 - Telegram message sync 會在 durable processing 成功後儲存 per-source scoped cursors，例如 `messages:saved_messages:photo-video`。
 - 低調的 Telegram inbox link resolver support 已作為 hidden stable tools 提供給 Agent SKILL 使用。它把 Telegram 視為 ingest provenance，並使用解析後的 `origin_source` 作為 media item 與 storage layout 的平台。
@@ -74,6 +78,8 @@
 - `pixiv.link.resolve`
 - `pixiv.bookmarks.collect`
 - `pixiv.bookmarks.sync`
+- `pixiv.library.reconcile`
+- `pixiv.comics.package`
 - `instagram.auth.login`
 - `instagram.auth.status`
 - `instagram.auth.ensure_session`
@@ -154,6 +160,11 @@
 - 驗證後 library 狀態：372 筆 downloaded file records、372 valid files、0 missing、0 corrupt、0 unknown。重建後 library 約 880M。
 
 ## 最新 Repair Mode 狀態
+
+- Pixiv 現在有離線 `pixiv.library.reconcile` plan/apply 流程，可更新舊 work-type metadata、以原子搬移將既有漫畫原始頁面從 `photo` 或舊 `comic` 移到 `comic-pages`、同步搬移 sidecars、quarantine 已知 placeholder downloads、更新 DB paths；apply 必須傳入 `confirm:true`。
+- 本機 development DB 的 plan 驗證找到 309 個 Pixiv items：26 comic、280 illustration、3 animation、17 unavailable placeholder records，blocked actions 為 0。本機 library 中有 245 個 legacy comic source files 已不在 DB 記錄路徑，因此這些應使用 opt-in repair，而不是原地搬移。
+- `.trash` 內的檔案會視為 library 缺檔，永遠不自動搬回；`repair_missing_files:true` 會下載新副本到規劃路徑，並保留 `.trash` 原狀。
+- Locked offline suite 通過 268 tests，包含 Pixiv work classification、unavailable placeholder rejection、reconciliation plan/apply/confirmation、comic-page/sidecar 原子搬移、placeholder quarantine、missing-file repair、deterministic CBZ、missing-source refusal、DB 記錄、重跑重用與 bookmark-sync packaging integration。
 
 - `link.media.sync` 支援明確的 file-health-aware repair：`repair_missing_files: true`。
 - `telegram.inbox.sync_links` 與 `telegram.messages.sync` 也暴露相同選項，作為既有 sync logic 上的 compatibility paths。

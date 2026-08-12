@@ -266,7 +266,7 @@ uv run --locked mediagent tools run pixiv.bookmarks.sync --input examples/tools/
 預設範例會把下載檔放在 scanner-friendly library root：
 
 ```text
-$MEDIAGENT_LIBRARY_DIR/<platform>/<media_type>/<yyyy>/<mm>/<yyyymmdd>__<platform>__<remote_id>__<part>.<ext>
+$MEDIAGENT_LIBRARY_DIR/<platform>/<storage_category>/<yyyy>/<mm>/<yyyymmdd>__<platform>__<remote_id>__<part>.<ext>
 ```
 
 Library root 解析順序：
@@ -284,13 +284,51 @@ MEDIAGENT_PIXIV_LIBRARY_DIR=${MEDIAGENT_DATA_DIR}/pixiv
 
 因為這個 root 已經是 Pixiv 專屬，root 底下會使用 media/date layout，不會再多一層 `pixiv/pixiv`。
 
-Operator note：`MEDIAGENT_LIBRARY_DIR` 的變更只會影響未來的 target planning。使用同一份 SQLite DB 時，已經是 terminal 狀態的 Pixiv items 仍會被 dedupe，不會自動重新填入新的 root。搬移部署時，請把 DB 與 library files 視為同一組狀態一起處理。若要重建新的 root，請使用新的 DB/state reset，或等待未來明確的 rebuild/repair flow。
+Operator note：`MEDIAGENT_LIBRARY_DIR` 的變更只會影響未來的 target planning。使用同一份 SQLite DB 時，已經是 terminal 狀態的 Pixiv items 仍會被 dedupe，不會自動重新填入新的 root。搬移部署時，請把 DB 與 library files 視為同一組狀態一起處理。
+
+Pixiv 會分開保存 file media type 與 work type。漫畫原始頁面仍是 photo files，但官方 Pixiv `type:manga` 會使用 `work_type:comic` 與 `comic-pages` storage category；多頁 `type:illust` 仍是 illustration 並放在 `photo`。封裝後的 CBZ 使用 `comic`。
+
+先規劃舊 DB/library 更新，不做任何寫入：
+
+```bash
+uv run --locked mediagent tools run pixiv.library.reconcile \
+  --input examples/tools/pixiv.library.reconcile.plan.json --json
+```
+
+檢查 summary 並停止重疊的 Pixiv sync jobs 後，再明確套用：
+
+```bash
+uv run --locked mediagent tools run pixiv.library.reconcile \
+  --input examples/tools/pixiv.library.reconcile.apply.json --json
+```
+
+Apply 會原子搬移既有 manga source files 與相鄰 JSON sidecars 到 `comic-pages`、更新 SQLite paths/metadata，並 quarantine 已知 Pixiv placeholder downloads；此步驟不連線 Pixiv。已經移到 `.trash` 的檔案會視為缺失，永遠不會從 trash 自動還原。
+
+Reconciliation 後，預覽 DB 已完成但 library path 缺檔的 source-backed repair：
+
+```bash
+uv run --locked mediagent tools run pixiv.bookmarks.sync \
+  --input examples/tools/pixiv.bookmarks.sync.repair.json --dry-run --json
+```
+
+只有確定要重新下載 missing library files 時，才移除 `--dry-run` 執行相同命令。`repair_missing_files` 是 opt-in；一般 timer run 仍尊重 DB `downloaded` 狀態，repair 會在規劃路徑下載新副本，並保留 `.trash` 原狀。
+
+完成 reconciliation 與必要 repair 後，先預覽舊漫畫封裝：
+
+```bash
+uv run --locked mediagent tools run pixiv.comics.package \
+  --input examples/tools/pixiv.comics.package.json --dry-run --json
+```
+
+移除 `--dry-run` 才會建立 CBZ。工具只讀取完整且健康的原始頁面，透過 `.partial` 與 atomic replacement 寫入 archive、記錄 SQLite，並保留原始頁面。未來 bookmark sync 可設定 `package_comics:true`，自動封裝新下載的漫畫。
 
 Pixiv 圖片範例：
 
 ```text
 $MEDIAGENT_DATA_DIR/pixiv/photo/2026/07/20260722__pixiv__143734851__p0.jpg
 $MEDIAGENT_DATA_DIR/pixiv/photo/2026/07/20260722__pixiv__143734851__p1.jpg
+$MEDIAGENT_DATA_DIR/pixiv/comic-pages/2026/07/20260722__pixiv__139193091__p0.jpg
+$MEDIAGENT_DATA_DIR/pixiv/comic/2026/07/20260722__pixiv__139193091.cbz
 ```
 
 若沒有設定 `MEDIAGENT_PIXIV_LIBRARY_DIR`，shared-root 範例是：
@@ -298,7 +336,18 @@ $MEDIAGENT_DATA_DIR/pixiv/photo/2026/07/20260722__pixiv__143734851__p1.jpg
 ```text
 $MEDIAGENT_DATA_DIR/library/pixiv/photo/2026/07/20260722__pixiv__143734851__p0.jpg
 $MEDIAGENT_DATA_DIR/library/pixiv/photo/2026/07/20260722__pixiv__143734851__p1.jpg
+$MEDIAGENT_DATA_DIR/library/pixiv/comic-pages/2026/07/20260722__pixiv__139193091__p0.jpg
+$MEDIAGENT_DATA_DIR/library/pixiv/comic/2026/07/20260722__pixiv__139193091.cbz
 ```
+
+若 Immich 會掃描 Pixiv external library，但漫畫要交給其他閱讀器，請在該 external library 的 Scan Settings 加入以下兩個 exclusion patterns，然後重新掃描：
+
+```text
+**/comic/**
+**/comic-pages/**
+```
+
+漫畫閱讀器只需指向 `pixiv/comic`；`comic-pages` 保留作為 Mediagent 修復或重建 CBZ 的無損來源。
 
 SQLite database 由 `MEDIAGENT_DB_PATH` 決定；每個完成檔案會記錄在 `media_files`，包含 library-relative path、storage layout version、checksum、size、MIME type 與 file health。Parent item 會在 `media_items` 標記為 `downloaded`、`partial` 或 `failed`。
 

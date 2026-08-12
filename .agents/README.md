@@ -30,6 +30,7 @@ The implemented slice supports:
 - credential/auth primitives with redacted session status
 - X OAuth PKCE, token exchange/refresh/status, and bookmark collection tools
 - Pixiv local OAuth/PKCE setup, explicit refresh-token auth, token refresh/status, and bookmark collection tools
+- Pixiv work-type classification, legacy-library reconciliation, and deterministic CBZ packaging for official manga
 - Telegram user-session media source tools for explicit local login, auth status, dialog listing, message/link-inbox collection, Telegram-specific media download, and deterministic message sync
 - Reddit OAuth config/auth tools and saved-media collection tools, retained as deferred legacy/advanced capability
 - first-class link-first tools through `link.queue.upsert` and `link.media.sync`, plus resolver foundations for direct media, bounded single-media HTML, Imgur, Pixiv artwork links, anonymous Reddit explicit links/static galleries, and Redgifs direct/watch links
@@ -48,6 +49,8 @@ uv run --locked mediagent tools list --json
 uv run --locked mediagent tools inspect pixiv.auth.login --json
 uv run --locked mediagent tools inspect pixiv.bookmarks.collect --json
 uv run --locked mediagent tools inspect pixiv.bookmarks.sync --json
+uv run --locked mediagent tools inspect pixiv.library.reconcile --json
+uv run --locked mediagent tools inspect pixiv.comics.package --json
 uv run --locked mediagent tools inspect core.cleanup.media_state --json
 uv run --locked mediagent tools inspect telegram.auth.login --json
 uv run --locked mediagent tools inspect telegram.messages.sync --json

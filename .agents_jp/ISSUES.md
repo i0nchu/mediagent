@@ -4,6 +4,13 @@
 
 ## Open
 
+### 0. Pixiv CBZ packaging は実装済みだが live migration 未実施
+
+- **Status:** External verification 待ち。
+- **Observed in:** `src/mediagent/core/comics.py`、`src/mediagent/tools/pixiv_library_tools.py`
+- **Current behavior:** Unit tests は `comic-pages` classification、deterministic atomic CBZ、`ComicInfo.xml`、DB recording、rerun reuse、`package_comics:true` sync integration を覆います。この implementation task では production library/database を migrate していません。
+- **Expected next step:** Overlapping Pixiv jobs を停止し、intended deployment inputs で reconciliation/package dry-run を実行してから明示的に apply し、Immich で `comic` と `comic-pages` の両方を exclude します。
+
 ### 1. X OAuth は実装済みだが live-verified ではない
 
 - **Status:** 外部検証が必要。
@@ -51,7 +58,7 @@
 - Telegram inbox link tools は experimental ではなくなりました。現在は hidden stable tools です。Default の `mediagent tools list` には表示されませんが、名前を知っていれば呼び出せます。また `telegram_inbox_download` SKILL は `--allow-experimental` なしで利用できます。これは、この feature が stable/safe だが Agent SKILL usage 以外では low-profile に保つという product decision を反映しています。
 - Agent Core は、selected SKILL が inspect できない tool を reference しても Python traceback で crash しなくなりました。`AgentRunner` は allowed tool specs の構築中に `ToolRegistryError` を捕捉し、structured agent failure を返します。
 - Agent execute mode は、model が real runs を silent に dry-run previews へ downgrade することを許さなくなりました。`mediagent agent run "<task>"` は default で execute mode、`--dry-run` は explicit preview/development path です。`AgentRunner` は tool actions を global runtime mode に normalize します。Model が execute mode で `dry_run:true` を emit しても、recorded/executed tool action は `dry_run:false` を使います。Dry-run mode は引き続き model の execute attempt を拒否します。Regression coverage は execute mode が model dry-run actions を override することを確認しています。
-- Downloaded DB state は、明示的 repair mode では missing local files を隠さなくなりました。`link.media.sync`、`telegram.inbox.sync_links`、`telegram.messages.sync` は `repair_missing_files` を受け付けます。Default rerun は引き続き conservative に downloaded items を skip し、repair mode は existing file records の missing/corrupt/unhealthy state、または DB 上は `downloaded` だが `local_path` の実体 file が存在しない状態を検査します。Dry-run repair は file を書かず planned downloads を返し、focused regression tests は missing、healthy、default、dry-run behavior を覆っています。Bounded live repair は resolve 可能だった 8 missing files を復元しました。Remaining 6 historical Reddit rows は source URLs が `requires_auth:login_required` として resolve されるため missing のままです。`retry_auth_skipped:true` により、relevant platform session が usable になった後で DB edit なしに明示的に retry できます。Live verification は未実施です。
+- Downloaded DB state は、明示的 repair mode では missing local files を隠さなくなりました。`link.media.sync`、`telegram.inbox.sync_links`、`telegram.messages.sync`、`pixiv.bookmarks.sync` は `repair_missing_files` を受け付けます。Default rerun は引き続き conservative に downloaded items を skip し、repair mode は existing file records の missing/corrupt/unhealthy state、または DB 上は `downloaded` だが `local_path` の実体 file が存在しない状態を検査します。Pixiv の `.trash` files は missing として扱いますが、trash から自動復元しません。Dry-run repair は file を書かず planned downloads を返し、focused regression tests は missing、healthy、default、dry-run behavior を覆っています。Bounded live repair は resolve 可能だった non-Pixiv missing files 8 件を復元しました。Remaining 6 historical Reddit rows は source URLs が `requires_auth:login_required` として resolve されるため missing のままです。`retry_auth_skipped:true` により、relevant platform session が usable になった後で DB edit なしに明示的に retry できます。Live verification は未実施です。
 - Pixiv runtime download headers は link resolution storage に永続化されなくなりました。Storage sanitizer は runtime-only `runtime_headers` と runtime `download_context` keys を `null` として保存せず省略します。Existing Pixiv live link rows は cleaned 済みで、focused tests は sanitizer behavior を覆っています。
 - Generic link sync は Instagram session-file boundary を enforce するようになりました。`ResolveRequest` は allowed write roots を保持し、`InstagramMediaLinkResolver` はそれを Instagram adapter に渡します。Adapter は fake-client callbacks、real-client loads、network work の前に out-of-root `INSTAGRAM_SESSION_FILE` を reject します。Regression coverage は `link.media.sync` が structured `unsafe_credential_path` skipped resolution を返し、Instagram fake client を呼ばないことを確認します。
 - Instagram session-file read boundary は修正済みです。`instagram.auth.status` と `instagram.link.resolve` は、fake-client callbacks、real-client loads、network work の前に resolved saved-session path を `context.allowed_write_roots()` で検証し、out-of-root path には `unsafe_credential_path` を返します。両 tool に regression tests があります。
@@ -118,4 +125,4 @@
 - Localized issue handoffs は現在の英語版 issue state に同期済みです。
 - Localized TODO handoffs は Pixiv `pixiv.auth.login` / OAuth PKCE planning update に対応済みで、authorization-code exchange、credential-file writing、redaction tests、skipped-by-default live browser tests を含みます。
 - 英語、繁体字中国語、日本語の handoff docs は Pixiv first-slice status に同期済みです。
-- default test suite は green です: `uv run --locked python -m unittest discover -s tests` が 200 tests passing です。
+- default test suite は green です: `uv run --locked python -m unittest discover -s tests` が 268 tests passing です。

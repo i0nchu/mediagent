@@ -31,10 +31,14 @@
 - Known platform page domains with dedicated resolvers are guarded by `reserved_platform_page`, so unsupported Instagram pages, Pixiv non-artwork pages, and Imgur gallery/album-style pages return structured skips instead of falling through to generic HTML/media resolution. Existing live DB/library rows with `instagram_com` are historical residue from before this guard.
 - Deterministic sync helpers exist in `src/mediagent/core/sync.py`.
 - Universal storage planning exists in `src/mediagent/core/storage.py`.
-- The default shared-root storage layout is `scanner-friendly-v2`: `<platform>/<media_type>/<yyyy>/<mm>/<filename>`.
+- The default shared-root storage layout is `scanner-friendly-v2`: `<platform>/<storage_category>/<yyyy>/<mm>/<filename>`. Storage category normally equals media type; Pixiv manga source pages remain photo files but use `comic-pages`, while packaged CBZ files use `comic`.
 - Platform-specific library roots are supported through `MEDIAGENT_<PLATFORM>_LIBRARY_DIR`, for example `MEDIAGENT_PIXIV_LIBRARY_DIR`.
 - Platform-specific roots are treated as already scoped to that platform, so they omit the extra platform directory by default.
 - Pixiv bookmark sync now performs collect -> upsert -> status filter -> storage path plan -> partial download finalization -> file record -> item status update.
+- Pixiv artwork normalization preserves `work_type: illustration|comic|animation`; official `type:manga` source pages store under `pixiv/comic-pages/...`, deterministic CBZ packages under `pixiv/comic/...`, and `illust` remains under `pixiv/photo/...` even when multi-page.
+- `pixiv.comics.package` packages complete downloaded manga pages into atomic, deterministic CBZ archives with `ComicInfo.xml`; `pixiv.bookmarks.sync` can opt in through `package_comics:true`.
+- Pixiv invisible stubs and `s.pximg.net/.../limit_*.png` placeholder-only responses are marked unavailable and are not downloaded.
+- `pixiv.bookmarks.sync` supports explicit `repair_missing_files:true`; default reruns still skip downloaded DB items even if external cleanup moved their files to `.trash`.
 - Pixiv bookmark sync stores scoped cursors when `media_types` filtering is used, such as `bookmarks:public:photo`.
 - Telegram message sync stores per-source scoped cursors when durable processing succeeds, such as `messages:saved_messages:photo-video`.
 - Low-profile Telegram inbox link resolver support exists as hidden stable tools for Agent SKILL usage. It treats Telegram as ingest provenance and uses the resolved `origin_source` for media items and storage layout.
@@ -75,6 +79,8 @@
 - `pixiv.link.resolve`
 - `pixiv.bookmarks.collect`
 - `pixiv.bookmarks.sync`
+- `pixiv.library.reconcile`
+- `pixiv.comics.package`
 - `instagram.auth.login`
 - `instagram.auth.status`
 - `instagram.auth.ensure_session`
@@ -155,6 +161,11 @@
 - Post-verification library state: 372 downloaded file records, 372 valid files, 0 missing, 0 corrupt, and 0 unknown. The rebuilt library is about 880M.
 
 ## Latest Repair-Mode State
+
+- Pixiv now has an offline `pixiv.library.reconcile` plan/apply flow. It updates legacy work-type metadata, atomically moves existing manga source pages from `photo` or legacy `comic` to `comic-pages`, moves sidecars with their media, quarantines known placeholder downloads, updates DB paths, and requires `confirm:true` for apply.
+- Local development DB plan verification found 309 Pixiv items: 26 comic, 280 illustration, 3 animation, and 17 unavailable placeholder records, with 0 blocked actions. The local library no longer contained 245 legacy comic source files at their recorded paths, so those require opt-in repair rather than an in-place move.
+- Files under `.trash` are treated as missing library files and are never moved back automatically. `repair_missing_files:true` downloads a new copy to the planned library path while leaving `.trash` untouched.
+- The locked offline suite passes 268 tests, including Pixiv work classification, unavailable placeholder rejection, reconciliation plan/apply/confirmation, atomic comic-page/sidecar moves, placeholder quarantine, missing-file repair, deterministic CBZ creation, missing-source refusal, DB recording, rerun reuse, and bookmark-sync packaging integration.
 
 - `link.media.sync` supports explicit file-health-aware repair with `repair_missing_files: true`.
 - `telegram.inbox.sync_links` and `telegram.messages.sync` expose the same option as compatibility paths over their existing sync logic.

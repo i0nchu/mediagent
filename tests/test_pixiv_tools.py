@@ -1,6 +1,7 @@
 import asyncio
 import json
 import unittest
+from zipfile import ZipFile
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -527,6 +528,34 @@ class PixivToolTests(unittest.TestCase):
         self.assertEqual(result.error.code, "pixiv_auth_missing_credentials")
         self.assertEqual(result.error.details["recommended_tool"], "pixiv.auth.login")
 
+    def test_pixiv_link_resolve_rejects_placeholder_artwork_as_unavailable(self) -> None:
+        fake = FakePixivHttpClient()
+        unavailable = {
+            "id": "1004",
+            "type": "illust",
+            "page_count": 1,
+            "image_urls": {"large": "https://s.pximg.net/common/images/limit_unknown_360.png"},
+            "meta_single_page": {},
+            "meta_pages": [],
+            "user": {},
+        }
+        fake.queue(HttpResponse(200, {}, json.dumps({"illust": unavailable}).encode("utf-8")))
+        with TemporaryDirectory() as temp_dir:
+            context = _pixiv_access_context(temp_dir, fake)
+
+            result = asyncio.run(
+                create_default_registry().run(
+                    "pixiv.link.resolve",
+                    {"illust_id": "1004"},
+                    context,
+                )
+            )
+
+        self.assertFalse(result.is_success)
+        self.assertEqual(result.error.code, "pixiv_artwork_unavailable")
+        self.assertEqual(result.data["resolution"]["skip_reason"], "deleted_or_removed")
+        self.assertEqual(result.data["resolution"]["details"]["reason"], "placeholder_asset")
+
     def test_pixiv_link_resolve_rejects_outside_credential_file_before_read(self) -> None:
         fake = FakePixivHttpClient()
         with TemporaryDirectory() as temp_dir:
@@ -594,7 +623,7 @@ class PixivToolTests(unittest.TestCase):
         self.assertTrue(second_result.is_success)
         self.assertEqual(second_result.data["summary"]["files_downloaded"], 0)
         self.assertEqual(len(files), 2)
-        self.assertTrue(all(file["library_relative_path"].startswith("pixiv/photo/2026/01/") for file in files))
+        self.assertTrue(all(file["library_relative_path"].startswith("pixiv/comic-pages/2026/01/") for file in files))
         download_requests = [request for request in fake.requests if request[1].startswith(f"https://{PUBLIC_TEST_IP}/")]
         self.assertEqual(len(download_requests), 2)
         self.assertTrue(all(request[2].get("Referer") == "https://www.pixiv.net/" for request in download_requests))
@@ -729,6 +758,7 @@ class PixivToolTests(unittest.TestCase):
         fake.queue(HttpResponse(200, {"content-type": "image/png", "content-length": "4"}, b"one1"))
         fake.queue(HttpResponse(200, {"content-type": "image/png", "content-length": "4"}, b"two1"))
         fake.queue(HttpResponse(200, {"content-type": "image/png", "content-length": "4"}, b"two2"))
+        fake.queue(HttpResponse(200, {}, (FIXTURES / "pixiv" / "bookmarks_response.json").read_bytes()))
         with TemporaryDirectory() as temp_dir:
             data_dir = Path(temp_dir) / "data"
             db_path = data_dir / "mediagent.sqlite3"
@@ -745,44 +775,61 @@ class PixivToolTests(unittest.TestCase):
                 http_client=fake,
             )
 
-            result = asyncio.run(
-                registry.run(
-                    "pixiv.bookmarks.sync",
-                    {
-                        "target_dir": str(target_dir),
-                        "limit": 2,
-                        "include_ugoira_metadata": False,
-                    },
-                    context,
-                )
-            )
+            sync_input = {
+                "target_dir": str(target_dir),
+                "limit": 2,
+                "include_ugoira_metadata": False,
+                "package_comics": True,
+            }
+            result = asyncio.run(registry.run("pixiv.bookmarks.sync", sync_input, context))
+            first_cbz = next(target_dir.rglob("*.cbz"))
+            first_cbz.unlink()
+            second_result = asyncio.run(registry.run("pixiv.bookmarks.sync", sync_input, context))
             media_files = _media_files(db_path)
             statuses = _media_item_statuses(db_path)
             written_media = sorted(path for path in target_dir.rglob("*") if path.suffix == ".png")
             written_metadata = sorted(path for path in target_dir.rglob("*.json"))
+            written_comics = sorted(path for path in target_dir.rglob("*.cbz"))
+            with ZipFile(written_comics[0]) as archive:
+                comic_entries = archive.namelist()
+                comic_info = archive.read("ComicInfo.xml").decode("utf-8")
 
         self.assertTrue(result.is_success)
         self.assertEqual(result.data["summary"]["collected"], 3)
         self.assertEqual(result.data["summary"]["discovered"], 2)
         self.assertEqual(result.data["summary"]["downloaded"], 2)
         self.assertEqual(result.data["summary"]["files_downloaded"], 3)
+        self.assertEqual(result.data["summary"]["comic_packages"], 1)
+        self.assertTrue(second_result.is_success)
+        self.assertEqual(second_result.data["summary"]["queued"], 0)
+        self.assertEqual(second_result.data["summary"]["comic_packages"], 1)
         self.assertEqual(result.data["summary"]["bytes_written"], 12)
         self.assertEqual(statuses[("pixiv", "1001")], "downloaded")
         self.assertEqual(statuses[("pixiv", "1002")], "downloaded")
-        self.assertEqual(len(media_files), 3)
+        self.assertEqual(len(media_files), 4)
         self.assertEqual(len(written_media), 3)
         self.assertEqual(len(written_metadata), 0)
+        self.assertEqual(len(written_comics), 1)
         self.assertEqual(
             sorted(path.relative_to(target_dir).as_posix() for path in written_media),
             [
+                "pixiv/comic-pages/2026/01/20260102__pixiv__1002__p0.png",
+                "pixiv/comic-pages/2026/01/20260102__pixiv__1002__p1.png",
                 "pixiv/photo/2026/01/20260101__pixiv__1001__p0.png",
-                "pixiv/photo/2026/01/20260102__pixiv__1002__p0.png",
-                "pixiv/photo/2026/01/20260102__pixiv__1002__p1.png",
             ],
         )
-        self.assertTrue(all(file["storage_layout"] == "scanner-friendly-v2" for file in media_files))
+        self.assertEqual(
+            sorted(file["storage_layout"] for file in media_files),
+            ["comic-cbz-v1", "scanner-friendly-v2", "scanner-friendly-v2", "scanner-friendly-v2"],
+        )
         self.assertTrue(all(file["file_health"] == "valid" for file in media_files))
-        self.assertTrue(all(file["library_relative_path"].startswith("pixiv/photo/2026/01/") for file in media_files))
+        self.assertEqual(
+            sorted(file["library_relative_path"].split("/")[1] for file in media_files),
+            ["comic", "comic-pages", "comic-pages", "photo"],
+        )
+        self.assertEqual(comic_entries, ["001.png", "002.png", "ComicInfo.xml"])
+        self.assertIn("<Title>Multi page</Title>", comic_info)
+        self.assertIn("<PageCount>2</PageCount>", comic_info)
         self.assertTrue(
             all(
                 request[2].get("Referer") == "https://www.pixiv.net/"
@@ -843,6 +890,51 @@ class PixivToolTests(unittest.TestCase):
         self.assertEqual(second.data["summary"]["skipped"], 1)
         self.assertEqual(second.data["summary"]["files_downloaded"], 0)
         self.assertTrue(all("i.pximg.net" not in request[1] for request in second_fake.requests))
+
+    def test_pixiv_bookmarks_sync_repairs_downloaded_file_moved_to_trash(self) -> None:
+        registry = create_default_registry()
+        first_fake = FakePixivHttpClient()
+        first_fake.queue(HttpResponse(200, {}, (FIXTURES / "pixiv" / "bookmarks_response.json").read_bytes()))
+        first_fake.queue(HttpResponse(200, {"content-type": "image/png", "content-length": "4"}, b"one1"))
+        with TemporaryDirectory() as temp_dir:
+            data_dir = Path(temp_dir) / "data"
+            db_path = data_dir / "mediagent.sqlite3"
+            first_context = _pixiv_access_context(temp_dir, first_fake, extra={"MEDIAGENT_DB_PATH": str(db_path)})
+            first_result = asyncio.run(
+                registry.run(
+                    "pixiv.bookmarks.sync",
+                    {"limit": 1, "include_ugoira_metadata": False},
+                    first_context,
+                )
+            )
+            media_path = Path(db.list_media_files(db_path, platform="pixiv", remote_id="1001")[0]["local_path"])
+            trash_path = data_dir / "library" / ".trash" / media_path.name
+            trash_path.parent.mkdir(parents=True, exist_ok=True)
+            media_path.replace(trash_path)
+
+            second_fake = FakePixivHttpClient()
+            second_fake.queue(HttpResponse(200, {}, (FIXTURES / "pixiv" / "bookmarks_response.json").read_bytes()))
+            second_fake.queue(HttpResponse(200, {"content-type": "image/png", "content-length": "4"}, b"one1"))
+            second_context = _pixiv_access_context(temp_dir, second_fake, extra={"MEDIAGENT_DB_PATH": str(db_path)})
+            second_result = asyncio.run(
+                registry.run(
+                    "pixiv.bookmarks.sync",
+                    {
+                        "limit": 1,
+                        "include_ugoira_metadata": False,
+                        "repair_missing_files": True,
+                    },
+                    second_context,
+                )
+            )
+
+            self.assertTrue(first_result.is_success)
+            self.assertTrue(second_result.is_success)
+            self.assertEqual(second_result.data["summary"]["repair_items"], 1)
+            self.assertEqual(second_result.data["summary"]["repair_files_missing"], 1)
+            self.assertEqual(second_result.data["summary"]["repaired"], 1)
+            self.assertTrue(media_path.exists())
+            self.assertTrue(trash_path.exists())
 
     def test_pixiv_bookmarks_sync_does_not_advance_cursor_when_limit_truncates_page(self) -> None:
         registry = create_default_registry()
@@ -1372,6 +1464,10 @@ class PixivToolTests(unittest.TestCase):
         self.assertEqual(items[0]["platform"], "pixiv")
         self.assertEqual(items[0]["remote_id"], "1001")
         self.assertEqual(items[0]["source_url"], "https://www.pixiv.net/artworks/1001")
+        self.assertEqual(items[0]["metadata"]["work_type"], "illustration")
+        self.assertEqual(items[0]["metadata"]["storage_category"], "photo")
+        self.assertEqual(items[1]["metadata"]["work_type"], "comic")
+        self.assertEqual(items[1]["metadata"]["storage_category"], "comic-pages")
         self.assertEqual(items[1]["metadata"]["files"][0]["url"].rsplit("/", 1)[-1], "1002_p0.png")
         self.assertEqual(items[2]["metadata"]["ugoira_metadata"]["ugoira_metadata"]["frames"][0]["delay"], 80)
 

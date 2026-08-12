@@ -126,6 +126,13 @@ def resolve_artwork_from_url(
             "Pixiv artwork detail response did not include an illust object.",
             details={"status_code": status_code, "reason": "missing_illust"},
         )
+    unavailable_reason = pixiv_parser.pixiv_unavailable_reason(illust)
+    if unavailable_reason:
+        raise PixivLinkError(
+            "pixiv_artwork_unavailable",
+            "Pixiv artwork is unavailable and only exposes a placeholder asset.",
+            details={"status_code": status_code, "reason": unavailable_reason},
+        )
     ugoira_metadata = None
     if include_ugoira_metadata and illust.get("type") == "ugoira":
         metadata_payload, _, metadata_status = pixiv_client.get_ugoira_metadata(

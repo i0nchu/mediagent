@@ -16,6 +16,7 @@ from mediagent.core.filesystem import PathSafetyError, ensure_inside
 LAYOUT_SCANNER_FRIENDLY_V1 = "scanner-friendly-v1"
 LAYOUT_SCANNER_FRIENDLY_V2 = "scanner-friendly-v2"
 SUPPORTED_MEDIA_TYPES = {"photo", "video", "audio"}
+SUPPORTED_STORAGE_CATEGORIES = SUPPORTED_MEDIA_TYPES | {"comic", "comic-pages"}
 FILE_HEALTH_VALUES = {"valid", "missing", "corrupt", "unknown"}
 SOURCE_AVAILABILITY_VALUES = {"available", "deleted", "restricted", "unavailable", "unknown"}
 PART_PREFIX_BY_MEDIA_TYPE = {
@@ -75,6 +76,16 @@ def plan_storage_path(
     if media_type not in SUPPORTED_MEDIA_TYPES:
         raise PathSafetyError(f"Unsupported media type: {media_type or '<empty>'}")
 
+    metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+    storage_category = str(
+        file_info.get("storage_category")
+        or item.get("storage_category")
+        or metadata.get("storage_category")
+        or media_type
+    ).strip()
+    if storage_category not in SUPPORTED_STORAGE_CATEGORIES:
+        raise PathSafetyError(f"Unsupported storage category: {storage_category or '<empty>'}")
+
     platform = safe_storage_segment(item.get("platform") or "unknown-platform")
     remote_id = safe_storage_segment(item.get("remote_id") or "unknown-id")
     source_dt, date_source = source_datetime(item, file_info, now=now)
@@ -85,10 +96,10 @@ def plan_storage_path(
     extension = file_extension(file_info)
     filename = f"{yyyymmdd}__{platform}__{remote_id}__{part}{extension}"
     if include_platform_layer:
-        relative_path = Path(platform) / media_type / yyyy / mm / filename
+        relative_path = Path(platform) / storage_category / yyyy / mm / filename
         layout = LAYOUT_SCANNER_FRIENDLY_V2
     else:
-        relative_path = Path(media_type) / yyyy / mm / filename
+        relative_path = Path(storage_category) / yyyy / mm / filename
         layout = LAYOUT_SCANNER_FRIENDLY_V1
     final_path = (root / relative_path).resolve()
     ensure_inside(final_path, [root])

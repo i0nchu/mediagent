@@ -30,6 +30,10 @@ MEDIA_ITEM_SCHEMA = {
         "author_name": {"type": "string"},
         "media_type": {"type": "string", "enum": ["photo", "video", "audio"]},
         "status": {"type": "string"},
+        "source_availability": {
+            "type": "string",
+            "enum": ["available", "deleted", "restricted", "unavailable", "unknown"],
+        },
         "metadata": {"type": "object"},
     },
 }

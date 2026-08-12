@@ -97,9 +97,10 @@ def upsert_media_item(db_path: Path, item: dict[str, Any]) -> dict[str, Any]:
             """
             INSERT INTO media_items (
                 platform, remote_id, source_url, author_id, author_name,
-                media_type, status, metadata_json, created_at, updated_at
+                media_type, status, metadata_json, created_at, updated_at,
+                source_availability
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(platform, remote_id) DO UPDATE SET
                 source_url = excluded.source_url,
                 author_id = excluded.author_id,
@@ -111,6 +112,10 @@ def upsert_media_item(db_path: Path, item: dict[str, Any]) -> dict[str, Any]:
                     ELSE excluded.status
                 END,
                 metadata_json = excluded.metadata_json,
+                source_availability = CASE
+                    WHEN excluded.source_availability = 'unknown' THEN media_items.source_availability
+                    ELSE excluded.source_availability
+                END,
                 updated_at = excluded.updated_at
             """,
             (
@@ -124,6 +129,7 @@ def upsert_media_item(db_path: Path, item: dict[str, Any]) -> dict[str, Any]:
                 json.dumps(metadata, sort_keys=True),
                 now,
                 now,
+                item.get("source_availability", "unknown"),
             ),
         )
         row = connection.execute(

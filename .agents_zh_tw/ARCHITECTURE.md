@@ -81,7 +81,7 @@ Agent Core V1 不是 scheduler，也不是廣泛 autonomous planner。它必須�
 - `auth.py`：local OAuth/PKCE setup、explicit refresh-token auth、token refresh、credential file support、auth session model
 - `client.py`：Pixiv App API user detail、bookmarked illustrations、artwork detail、ugoira metadata calls
 - `links.py`：explicit artwork URL/id normalization，以及給共享 link-first resolver pipeline 使用的 Pixiv artwork-detail resolution
-- `parser.py`：把 Pixiv works 轉成 normalized media items，包含多頁作品與 ugoira metadata
+- `parser.py`：把 Pixiv works 轉成 normalized media items，包含 `illustration` / `comic` / `animation` work types、多頁作品、unavailable placeholder rejection 與 ugoira metadata
 
 `platforms/telegram/` 目前包含：
 
@@ -184,6 +184,10 @@ platform collector output
 ```
 
 `pixiv.bookmarks.collect`、`pixiv.bookmarks.sync`、`telegram.messages.collect` 與 `telegram.messages.sync` 仍是有用且已實作的流程。X bookmark collection 與 Reddit saved collection 已有 fixture/fake-client coverage，但除非使用者明確恢復 auth-assisted account collection，否則它們不是目前擴展路徑。
+
+Pixiv 會分開保存實體 media type 與作品 work type。漫畫原始頁面仍是 `media_type: photo`，但 `metadata.work_type: comic` 會選擇 `comic-pages`；CBZ 封裝層則在 `comic` 下為每個作品寫入一個 deterministic archive。一般插畫使用 `illustration` / `photo`，ugoira 使用 `animation` / `video`，因此原始頁面、漫畫閱讀器成品與一般圖片彼此分離。
+
+`core/comics.py` 的 CBZ writer 本身與平台無關，但目前只有 Pixiv 完成 automatic comic classification 與 packaging 接線。未來 resolver 若能可靠提供 `work_type:comic`、有序頁面與作品 metadata，就能共用相同的 `comic-pages` -> `comic` contract；不能只因多圖就推定是漫畫。
 
 ## Future Policy Layer
 

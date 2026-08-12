@@ -30,10 +30,14 @@
 - Dedicated resolver を持つ known platform page domains は `reserved_platform_page` guard で受け止めます。そのため unsupported Instagram pages、Pixiv non-artwork pages、Imgur gallery/album-style pages は generic HTML/media resolution に fall through せず、structured skips を返します。既存 live DB/library の `instagram_com` rows は、この guard 追加前の historical residue です。
 - Deterministic sync helpers は `src/mediagent/core/sync.py` にあります。
 - Universal storage planning は `src/mediagent/core/storage.py` にあります。
-- Default shared-root storage layout は `scanner-friendly-v2` です: `<platform>/<media_type>/<yyyy>/<mm>/<filename>`。
+- Default shared-root storage layout は `scanner-friendly-v2` です: `<platform>/<storage_category>/<yyyy>/<mm>/<filename>`。Storage category は通常 media type と同じですが、Pixiv manga source pages は photo files のまま `comic-pages`、packaged CBZ は `comic` を使います。
 - `MEDIAGENT_<PLATFORM>_LIBRARY_DIR` による platform-specific library roots に対応しています。例: `MEDIAGENT_PIXIV_LIBRARY_DIR`。
 - Platform-specific roots はすでにその platform に scoped されているものとして扱うため、default では追加の platform directory を省略します。
 - Pixiv bookmark sync は collect -> upsert -> status filter -> storage path plan -> partial download finalization -> file record -> item status update に対応しています。
+- Pixiv artwork normalization は `work_type: illustration|comic|animation` を保持します。Official `type:manga` source pages は `pixiv/comic-pages/...`、deterministic CBZ は `pixiv/comic/...`、`illust` は multi-page でも `pixiv/photo/...` に保存します。
+- `pixiv.comics.package` は complete downloaded manga pages を `ComicInfo.xml` 付きの atomic deterministic CBZ に package します。`pixiv.bookmarks.sync` は `package_comics:true` で opt in できます。
+- Pixiv invisible stubs と `s.pximg.net/.../limit_*.png` だけを返す placeholder responses は unavailable として扱い、download しません。
+- `pixiv.bookmarks.sync` は明示的な `repair_missing_files:true` に対応します。Default reruns は external cleanup が files を `.trash` に移しても、DB の downloaded items を引き続き skip します。
 - Pixiv bookmark sync は `media_types` filtering 使用時に、`bookmarks:public:photo` のような scoped cursor を保存します。
 - Telegram message sync は durable processing が成功した後に、`messages:saved_messages:photo-video` のような per-source scoped cursors を保存します。
 - Low-profile Telegram inbox link resolver support は Agent SKILL usage 向けの hidden stable tools として提供されています。Telegram は ingest provenance として扱い、解決後の `origin_source` を media item と storage layout の platform として使います。
@@ -74,6 +78,8 @@
 - `pixiv.link.resolve`
 - `pixiv.bookmarks.collect`
 - `pixiv.bookmarks.sync`
+- `pixiv.library.reconcile`
+- `pixiv.comics.package`
 - `instagram.auth.login`
 - `instagram.auth.status`
 - `instagram.auth.ensure_session`
@@ -154,6 +160,11 @@
 - Verification 後の library state: 372 downloaded file records、372 valid files、0 missing、0 corrupt、0 unknown。Rebuilt library は約 880M です。
 
 ## Latest Repair-Mode State
+
+- Pixiv には offline `pixiv.library.reconcile` plan/apply flow があります。Legacy work-type metadata を更新し、existing manga source pages を `photo` または legacy `comic` から `comic-pages` へ atomic move し、sidecars も同時に移動し、known placeholder downloads を quarantine し、DB paths を更新します。Apply には `confirm:true` が必要です。
+- Local development DB の plan verification では Pixiv items 309 件: comic 26、illustration 280、animation 3、unavailable placeholder records 17、blocked actions 0 でした。Local library では legacy comic source files 245 件が記録 path に存在しないため、in-place move ではなく opt-in repair が必要です。
+- `.trash` 内の files は missing library files として扱い、自動では戻しません。`repair_missing_files:true` は planned library path に新しい copy を download し、`.trash` は変更しません。
+- Locked offline suite は 268 tests に成功しています。Pixiv work classification、unavailable placeholder rejection、reconciliation plan/apply/confirmation、comic-page/sidecar atomic moves、placeholder quarantine、missing-file repair、deterministic CBZ creation、missing-source refusal、DB recording、rerun reuse、bookmark-sync packaging integration を含みます。
 
 - `link.media.sync` は `repair_missing_files: true` による明示的 file-health-aware repair をサポートします。
 - `telegram.inbox.sync_links` と `telegram.messages.sync` も、既存 sync logic 上の compatibility paths として同じ option を公開します。

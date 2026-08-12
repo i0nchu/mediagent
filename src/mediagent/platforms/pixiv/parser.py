@@ -6,6 +6,18 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 
+PIXIV_WORK_TYPES = {
+    "illust": "illustration",
+    "manga": "comic",
+    "ugoira": "animation",
+}
+PIXIV_STORAGE_CATEGORIES = {
+    "illustration": "photo",
+    "comic": "comic-pages",
+    "animation": "video",
+}
+
+
 def parse_bookmarks(
     payload: dict[str, Any],
     *,
@@ -28,12 +40,19 @@ def parse_illust(
     remote_id = str(illust["id"])
     user = illust.get("user") if isinstance(illust.get("user"), dict) else {}
     pixiv_type = illust.get("type")
-    files = _files_for_illust(illust, ugoira_metadata=ugoira_metadata)
+    work_type = pixiv_work_type(pixiv_type)
+    storage_category = PIXIV_STORAGE_CATEGORIES[work_type]
+    unavailable_reason = pixiv_unavailable_reason(illust)
+    files = [] if unavailable_reason else _files_for_illust(illust, ugoira_metadata=ugoira_metadata)
+    for file_info in files:
+        file_info["storage_category"] = storage_category
     media_type = "video" if pixiv_type == "ugoira" else "photo"
     metadata = {
         "title": illust.get("title"),
         "caption": illust.get("caption"),
         "pixiv_type": pixiv_type,
+        "work_type": work_type,
+        "storage_category": storage_category,
         "create_date": illust.get("create_date"),
         "page_count": illust.get("page_count"),
         "width": illust.get("width"),
@@ -46,8 +65,11 @@ def parse_illust(
         "is_muted": illust.get("is_muted"),
         "tools": illust.get("tools", []),
         "tags": _tags(illust.get("tags", [])),
+        "series": illust.get("series") if isinstance(illust.get("series"), dict) else None,
         "files": files,
     }
+    if unavailable_reason:
+        metadata["availability_reason"] = unavailable_reason
     if ugoira_metadata:
         metadata["ugoira_metadata"] = ugoira_metadata
     return {
@@ -57,8 +79,46 @@ def parse_illust(
         "source_url": f"https://www.pixiv.net/artworks/{remote_id}",
         "author_id": str(user.get("id")) if user.get("id") is not None else None,
         "author_name": user.get("name"),
+        "source_availability": "unavailable" if unavailable_reason else "available",
+        "status": "skipped" if unavailable_reason else "discovered",
         "metadata": metadata,
     }
+
+
+def pixiv_work_type(pixiv_type: Any) -> str:
+    return PIXIV_WORK_TYPES.get(str(pixiv_type or "").strip().lower(), "illustration")
+
+
+def pixiv_unavailable_reason(illust: dict[str, Any]) -> str | None:
+    if illust.get("visible") is False:
+        return "visible_false"
+    urls = _candidate_image_urls(illust)
+    if urls and all(is_pixiv_placeholder_url(url) for url in urls):
+        return "placeholder_asset"
+    return None
+
+
+def is_pixiv_placeholder_url(value: Any) -> bool:
+    parsed = urlparse(str(value or ""))
+    basename = parsed.path.rsplit("/", 1)[-1].lower()
+    return (parsed.hostname or "").lower() == "s.pximg.net" and basename.startswith("limit_")
+
+
+def _candidate_image_urls(illust: dict[str, Any]) -> list[str]:
+    urls: list[str] = []
+    pages = illust.get("meta_pages")
+    if isinstance(pages, list):
+        for page in pages:
+            image_urls = page.get("image_urls") if isinstance(page, dict) else None
+            if isinstance(image_urls, dict):
+                urls.extend(str(url) for url in image_urls.values() if url)
+    single_page = illust.get("meta_single_page")
+    if isinstance(single_page, dict):
+        urls.extend(str(url) for url in single_page.values() if url)
+    image_urls = illust.get("image_urls")
+    if isinstance(image_urls, dict):
+        urls.extend(str(url) for url in image_urls.values() if url)
+    return urls
 
 
 def next_max_bookmark_id(next_url: str | None) -> str | None:

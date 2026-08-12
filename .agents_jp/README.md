@@ -25,6 +25,7 @@ Mediagent は現在、agentic-ready なツール基盤です。まだ完全な w
 - credential/auth primitives と redacted session status
 - X OAuth PKCE、token exchange/refresh/status、bookmark collection tools
 - Pixiv local OAuth/PKCE setup、explicit refresh-token auth、token refresh/status、bookmark collection tools
+- Pixiv work-type classification、legacy-library reconciliation、official manga の deterministic CBZ packaging
 - Telegram user-session media source tools。explicit local login、auth status、dialog listing、message/link-inbox collection、Telegram-specific media download、deterministic message sync を含みます
 - Reddit OAuth config/auth tools と saved-media collection tools。ただし現在は deferred legacy/advanced capability として保持します
 - `link.queue.upsert` と `link.media.sync` による first-class link-first tools、および direct media、bounded single-media HTML、Imgur、Pixiv artwork links、anonymous Reddit explicit links/static galleries、Redgifs direct/watch links の resolver foundations
@@ -48,6 +49,8 @@ uv run --locked mediagent tools list --json
 uv run --locked mediagent tools inspect pixiv.auth.login --json
 uv run --locked mediagent tools inspect pixiv.bookmarks.collect --json
 uv run --locked mediagent tools inspect pixiv.bookmarks.sync --json
+uv run --locked mediagent tools inspect pixiv.library.reconcile --json
+uv run --locked mediagent tools inspect pixiv.comics.package --json
 uv run --locked mediagent tools inspect core.cleanup.media_state --json
 uv run --locked mediagent tools inspect telegram.auth.login --json
 uv run --locked mediagent tools inspect telegram.messages.sync --json

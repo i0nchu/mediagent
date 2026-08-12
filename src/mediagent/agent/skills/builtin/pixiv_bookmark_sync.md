@@ -5,6 +5,7 @@ allowed_tools:
   - pixiv.auth.status
   - pixiv.auth.refresh
   - pixiv.bookmarks.sync
+  - pixiv.comics.package
 default_dry_run: false
 risk_level: write_files_network_credentials
 requires_initial_tool_call: false
@@ -43,10 +44,11 @@ Conservative defaults:
 - `include_ugoira_metadata`: true
 - `write_sidecar_metadata`: false
 - `retry_failed`: false
+- `package_comics`: true
 
 ## Tool Calling Strategy
 
-Use `pixiv.bookmarks.sync` for the normal workflow.
+Use `pixiv.bookmarks.sync` with `package_comics:true` for the normal workflow so new official Pixiv manga are also packaged as CBZ. Use `pixiv.comics.package` to package already-downloaded legacy manga without downloading them again.
 
 For recurring sync/update tasks, call `pixiv.bookmarks.sync` with `stop_on_known:true`, a bounded `max_pages`, and no invented `limit`. This scans from the newest bookmarks and stops when it reaches an already known terminal item.
 
@@ -61,7 +63,7 @@ Use `pixiv.auth.refresh` only when an auth result clearly reports an expired ses
 ## Example Dry-Run Action
 
 ```json
-{"action":"call_tool","tool":"pixiv.bookmarks.sync","input":{"restrict":"public","full_sync":true,"stop_on_known":false,"store_cursor":false,"include_ugoira_metadata":true,"write_sidecar_metadata":false,"retry_failed":false},"dry_run":true,"reason":"Preview all downloadable Pixiv bookmark media before writing files."}
+{"action":"call_tool","tool":"pixiv.bookmarks.sync","input":{"restrict":"public","full_sync":true,"stop_on_known":false,"store_cursor":false,"include_ugoira_metadata":true,"write_sidecar_metadata":false,"retry_failed":false,"package_comics":true},"dry_run":true,"reason":"Preview all downloadable Pixiv bookmark media and comic packages before writing files."}
 ```
 
 ## Common Errors
