@@ -40,7 +40,7 @@ class BottomToolTests(unittest.TestCase):
             self.assertTrue(first.is_success)
             self.assertTrue(second.is_success)
             self.assertTrue(db_path.exists())
-            self.assertEqual(second.data["schema_version"], "7")
+            self.assertEqual(second.data["schema_version"], "8")
 
     def test_run_record_writes_summary_without_secrets(self) -> None:
         registry = create_default_registry()
@@ -287,7 +287,7 @@ class BottomToolTests(unittest.TestCase):
 
         self.assertTrue(result.is_success)
         self.assertIn("downloaded_at", columns)
-        self.assertEqual(schema_version, "7")
+        self.assertEqual(schema_version, "8")
         self.assertIsNotNone(downloaded_at)
 
     def test_media_file_upsert_is_idempotent_with_null_remote_url(self) -> None:

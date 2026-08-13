@@ -4,6 +4,19 @@ This file tracks known caveats that matter for the next handoff. Resolved histor
 
 ## Open
 
+### Comic adapters require opt-in live verification
+
+- **Status:** Offline implementation complete; external verification open.
+- **Observed in:** `src/mediagent/platforms/nhentai/`, `src/mediagent/platforms/jmcomic/`, `src/mediagent/tools/comic_tools.py`.
+- **Current behavior:** Fixtures cover direct exact scope, shared inbox dispatch, complete favorite snapshots, reusable sessions, encrypted JM envelopes, image restoration, repair, stable file identity, and atomic CBZ packaging. The user verified nhentai cookie authentication, favorites sync, and direct resolve/download. The refresh endpoint returned HTTP 403 while the imported session remained usable, so refresh now reports `nhentai_refresh_rejected` instead of success. JM live download/favorite sync remains unverified.
+- **Expected next step:** Use repository-local DB/library/session paths and the runbook's bounded live tests. Do not point initial tests at production paths or start recurring services yet.
+
+### Provider contracts are undocumented and may change
+
+- **Status:** Open external dependency risk.
+- **Current behavior:** nhentai authentication requires a browser-provided cookie session because interactive CAPTCHA/proof-of-work login is intentionally not automated. JMComic uses an undocumented encrypted mobile API and CDN scrambling rules.
+- **Expected next step:** Return structured auth/rate-limit/response errors, preserve the last complete favorite snapshot on any collection failure, and update fixtures before changing parser behavior.
+
 ### 0. Pixiv CBZ packaging is implemented but not live-migrated
 
 - **Status:** Open external verification.
@@ -125,4 +138,4 @@ This file tracks known caveats that matter for the next handoff. Resolved histor
 - Localized issue handoffs have been synced with the current English issue state.
 - Localized TODO handoffs now include the Pixiv `pixiv.auth.login` / OAuth PKCE planning update, including authorization-code exchange, credential-file writing, redaction tests, and skipped-by-default live browser tests.
 - English, Traditional Chinese, and Japanese handoff docs have been synced to the Pixiv first-slice status.
-- The default test suite is green: `uv run --locked python -m unittest discover -s tests` runs 271 tests successfully.
+- The default test suite is green: `uv run --locked python -m unittest discover -s tests` runs 323 tests successfully.

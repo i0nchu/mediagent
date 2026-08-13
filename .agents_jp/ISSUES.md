@@ -1,5 +1,15 @@
 # 実装上の注意点
 
+## Comic adapter の opt-in live verification が未完了
+
+- **状態:** offline 実装完了、外部検証は未完了。
+- **現在:** fixture で direct exact、shared inbox dispatch、完全 favorite snapshot、session 再利用、JM encrypted envelope／image restore、repair、stable file identity、atomic CBZ を検証済み。User は nhentai cookie auth、favorites sync、direct resolve/download を確認済み。現在 session が利用可能なまま refresh endpoint は HTTP 403 を返したため、refresh は success ではなく `nhentai_refresh_rejected` を返す。JM live download/favorites は未検証。
+- **次:** RUNBOOK の repo-local DB/library/session path で bounded live test を行う。検証前に production path や recurring service を使わない。
+
+## 外部 provider contract は変更される可能性がある
+
+nhentai login は browser cookie session を必要とし、CAPTCHA／proof-of-work のため username/password automation は意図的に実装しない。JMComic は undocumented encrypted mobile API と CDN scramble rule を使用する。auth、rate-limit、response error は structured result にし、collection failure 時は前回の完全 snapshot を保持する。
+
 このファイルは次回引き継ぎでまだ重要な caveats だけを記録します。解決済みの履歴は、実装判断に影響しない限り Open に残しません。
 
 ## Open
@@ -125,4 +135,4 @@
 - Localized issue handoffs は現在の英語版 issue state に同期済みです。
 - Localized TODO handoffs は Pixiv `pixiv.auth.login` / OAuth PKCE planning update に対応済みで、authorization-code exchange、credential-file writing、redaction tests、skipped-by-default live browser tests を含みます。
 - 英語、繁体字中国語、日本語の handoff docs は Pixiv first-slice status に同期済みです。
-- default test suite は green です: `uv run --locked python -m unittest discover -s tests` が 271 tests passing です。
+- default test suite は green です: `uv run --locked python -m unittest discover -s tests` が 323 tests passing です。

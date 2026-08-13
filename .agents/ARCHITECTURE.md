@@ -143,6 +143,8 @@ explicit URL source
 
 This is now the primary product direction. URL sources may be CLI JSON, queued DB rows, Telegram inbox links, future workflow steps, or future Agent/SKILL calls.
 
+The shared link intake performs dedicated comic dispatch before the generic resolver chain. Supported nhentai gallery and JMComic album/photo/cover links received through `link.media.sync`, queued `link_queue` rows, or `telegram.inbox.sync_links` all enter `comic.link.sync` with exact scope. Telegram remains ingest provenance; it does not change the source platform or create favorite/follow state. Future inbox implementations should enqueue links and call `link.media.sync` instead of implementing provider routing themselves.
+
 `link_queue.normalized_url` is only the first intake dedupe layer. Resolvers must also emit canonical aliases and source/media identity where possible, so short links, canonical post links, old site links, provider watch URLs, and direct media URLs do not create duplicate downloads for the same content.
 
 `link_queue` has a schema-v7 lifecycle foundation for cron or daemon usage. It is the URL resolution queue, not the file-download lifecycle:
@@ -189,9 +191,17 @@ platform collector output
 
 Pixiv keeps physical media type separate from work type. Manga source pages remain `media_type: photo`, while `metadata.work_type: comic` selects `comic-pages`; the Kavita-oriented CBZ packaging layer writes archives under `comic/<series-directory>/`. One-shots receive a unique series identity plus `Number=1`, `Count=1`, and `Format=One-Shot`; real series share one directory and use normalized `Series`, `Number`, optional `Volume`, and optional `Count`. Normal illustrations use `illustration` / `photo`, and ugoira uses `animation` / `video`.
 
-The descriptor and CBZ writer in `core/comics.py` are platform-neutral, but automatic comic classification and packaging are currently wired only to Pixiv. Future authorized-source adapters may share the same normalized `metadata.comic` and `comic-pages` -> `comic` contract when they can provide reliable `work_type:comic`, ordered pages, series/chapter/volume identity, and work metadata; multi-image count alone must not imply a comic.
+The descriptor and CBZ writer in `core/comics.py` are platform-neutral. Pixiv, nhentai, and JMComic now share normalized `metadata.comic` and the `comic-pages` -> `comic` packaging contract. Future authorized-source adapters may join the same flow when they provide reliable `work_type:comic`, ordered pages, series/chapter/volume identity, and work metadata; multi-image count alone must not imply a comic.
 
 ## Future Policy Layer
+
+## Comic Target And Collection Flow
+
+Comic source pages remain `media_type: photo`; `metadata.work_type: comic` and `storage_category: comic-pages` select the comic pipeline. `metadata.comic` is provider-neutral and carries stable work/series/chapter identity. A complete healthy page set is atomically packaged under `comic/` as a CBZ with `ComicInfo.xml`.
+
+Direct URL scope is deterministic and never creates follow state. Account favorites commit a complete collection snapshot in one SQLite transaction. An incomplete or failed pagination must not deactivate old memberships. Removing a favorite deactivates only that provenance and never deletes downloaded pages or CBZ files. Active JM album memberships are re-resolved on later favorite syncs to discover new chapters; nhentai favorite galleries are exact.
+
+Schema v8 adds `source_collections` and `source_collection_memberships`. Stable per-page file keys prevent rotating CDN URLs from creating duplicate media-file rows. Credential-bearing headers, cookies, API tokens, and JM decode runtime metadata remain outside persisted media metadata.
 
 RuleSpec is a planned policy layer, not an implemented runtime feature.
 

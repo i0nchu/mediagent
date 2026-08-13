@@ -1,5 +1,13 @@
 # Mediagent Architecture
 
+## Comic target と collection flow（2026-08-13）
+
+コミックの元ページは `media_type: photo` のまま、`metadata.work_type: comic` と `storage_category: comic-pages` で処理を選択する。provider-neutral な `metadata.comic` が作品、series、chapter identity を保持する。宣言された全ページが正常な場合に限り、`comic/` 配下へ `ComicInfo.xml` 付き CBZ を atomic に生成する。
+
+直接 URL は follow state を作らない。favorites は全ページを完全に収集してから一つの SQLite transaction で snapshot を commit し、途中失敗時には旧 membership を無効化しない。favorite 解除は provenance のみ停止し、既存 page／CBZ は削除しない。active な JM favorite album は次回同期で再解決して新章を検出し、nhentai favorite は exact のままとする。
+
+Schema v8 は `source_collections` と `source_collection_memberships` を追加する。安定した page file key により CDN URL のローテーションで重複 row を作らない。cookie、token、機密 header、JM runtime decode は永続 metadata に保存しない。
+
 ## Product Boundary
 
 Mediagent は media の収集と download だけを担当します。media library management、media browsing、repost、sharing、gallery UI は提供しません。
@@ -141,6 +149,8 @@ explicit URL source
 
 これが現在の主要 product direction です。URL source は CLI JSON、queued DB rows、Telegram inbox links、future workflow steps、future Agent/SKILL calls になり得ます。
 
+Shared link intake は generic resolver chain より前に dedicated comic dispatch を行います。`link.media.sync`、queued `link_queue` rows、`telegram.inbox.sync_links` から受け取った nhentai gallery と JMComic album/photo/cover links は、すべて exact scope で `comic.link.sync` に入ります。Telegram は ingest provenance のままで、source platform を変更せず、favorite/follow state も作りません。Future inbox implementation は provider routing を個別実装せず、link を enqueue して `link.media.sync` を呼びます。
+
 `link_queue.normalized_url` は最初の intake dedupe layer にすぎません。Resolvers は可能な場合、canonical aliases と source/media identity も出力し、short links、canonical post links、old site links、provider watch URLs、direct media URLs が同じ content を指す場合に duplicate downloads が発生しないようにします。
 
 `link_queue` には schema v7 lifecycle foundation があり、cron または daemon usage の土台になります。これは URL resolution queue であり、file-download lifecycle ではありません。
@@ -187,7 +197,7 @@ platform collector output
 
 Pixiv では physical media type と work type を分離します。Manga source pages は `media_type: photo` のままですが、`metadata.work_type: comic` が `comic-pages` を選択し、Kavita-oriented CBZ layer は `comic/<series-directory>/` に archive を書きます。One-shot は unique series identity と `Number=1`、`Count=1`、`Format=One-Shot` を使い、real series は同じ directory を共有して normalized `Series`、`Number`、optional `Volume`、optional `Count` を使います。Normal illustrations は `illustration` / `photo`、ugoira は `animation` / `video` のままです。
 
-`core/comics.py` の descriptor/CBZ writer 自体は platform-neutral ですが、automatic comic classification/package wiring は現在 Pixiv のみです。Future authorized-source adapters が reliable な `work_type:comic`、ordered pages、series/chapter/volume identity、work metadata を提供できれば、normalized `metadata.comic` と同じ `comic-pages` -> `comic` contract を共有できます。Multi-image count だけで comic と推定してはいけません。
+`core/comics.py` の descriptor/CBZ writer は platform-neutral です。Pixiv、nhentai、JMComic は現在 normalized `metadata.comic` と `comic-pages` -> `comic` packaging contract を共有します。Future authorized-source adapters も reliable な `work_type:comic`、ordered pages、series/chapter/volume identity、work metadata を提供できれば同じ flow に参加できます。Multi-image count だけで comic と推定してはいけません。
 
 ## Future Policy Layer
 

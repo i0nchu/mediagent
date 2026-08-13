@@ -1,5 +1,49 @@
 # Mediagent Runbook
 
+## 本機漫畫 live test
+
+第一次只使用 repo 內開發路徑：
+
+```bash
+export MEDIAGENT_DATA_DIR=/home/ion/projects/mediagent/tmp/live/comics
+export MEDIAGENT_LIBRARY_DIR=/home/ion/projects/mediagent/tmp/live/comics/library
+export MEDIAGENT_DB_PATH=/home/ion/projects/mediagent/tmp/live/comics/mediagent.sqlite3
+export MEDIAGENT_NHENTAI_SESSION_FILE=/home/ion/projects/mediagent/tmp/live/comics/credentials/nhentai_session.json
+export MEDIAGENT_JMCOMIC_SESSION_FILE=/home/ion/projects/mediagent/tmp/live/comics/credentials/jmcomic_session.json
+mkdir -p "$MEDIAGENT_DATA_DIR/credentials" "$MEDIAGENT_LIBRARY_DIR"
+uv run --locked mediagent tools run core.db.init --json
+```
+
+若 `.env` 仍有數字開頭的舊變數，不要 `source .env`；先改成 `MEDIAGENT_JMCOMIC_USERNAME`／`MEDIAGENT_JMCOMIC_PASSWORD`。
+
+```bash
+uv run --locked mediagent tools run comic.link.sync --input examples/tools/comic.link.sync.nhentai.json --dry-run --json
+uv run --locked mediagent tools run comic.link.sync --input examples/tools/comic.link.sync.nhentai.json --json
+uv run --locked mediagent tools run nhentai.auth.status --input examples/tools/nhentai.auth.status.json --json
+uv run --locked mediagent tools run nhentai.auth.refresh --input examples/tools/nhentai.auth.refresh.json --json
+uv run --locked mediagent tools run nhentai.favorites.sync --input examples/tools/nhentai.favorites.sync.json --dry-run --json
+```
+
+nhentai 收藏需先從已登入瀏覽器匯出一次 cookie jar；可使用 Mediagent JSON session，或將 Netscape 格式 `cookies.txt` 指定給 `MEDIAGENT_NHENTAI_COOKIE_FILE`。refresh 會維持原格式並將權限設為 `0600`。不自動化帳密、CAPTCHA 或 proof-of-work。
+
+工具結果有兩層語意。最外層 `status` 表示所要求的工具操作是否成功；對 `auth.status` 查詢而言，最外層 success 只表示檢查正常完成，不表示已登入。請查看 `data.auth_status`、`data.authenticated`、`data.reusable`、`data.remote_verified`。本機可載入但尚未向 provider 驗證的 session 會回報 `authenticated: null`、`remote_verified: false`。
+
+瀏覽器匯入的 session 可能在 nhentai refresh endpoint 收到 HTTP 403，但 authenticated favorites 仍可正常使用。`nhentai.auth.refresh` 會再做一次只讀 favorites 驗證供診斷，但 refresh 操作仍以最外層 failure 回報，`error.code` 為 `nhentai_refresh_rejected`；data 會明確指出沒有 rotation、目前 auth 仍可用。若驗證也失敗，則回報 `nhentai_auth_required`，此時需重新從瀏覽器匯出 cookie。
+
+JMComic 也接受 `JMCOMIC_USERNAME`、`JMCOMIC_PASSWORD`、`JMCOMIC_SESSION_FILE`；推薦的 `MEDIAGENT_JMCOMIC_*` 若同時存在會優先採用。
+
+```bash
+uv run --locked mediagent tools run jmcomic.auth.status --input examples/tools/jmcomic.auth.status.json --json
+uv run --locked mediagent tools run jmcomic.auth.login --input examples/tools/jmcomic.auth.login.json --json
+uv run --locked mediagent tools run comic.link.sync --input examples/tools/comic.link.sync.jmcomic-album.json --dry-run --json
+uv run --locked mediagent tools run comic.link.sync --input examples/tools/comic.link.sync.jmcomic-album.json --json
+uv run --locked mediagent tools run jmcomic.favorites.sync --input examples/tools/jmcomic.favorites.sync.json --dry-run --json
+```
+
+第二次相同執行應下載 0 個健康頁面並回報 existing CBZ。直接 JM album 不建立 follow，只有收藏同步會。執行期間不要刪 SQLite `-wal`／`-shm`。
+
+Telegram inbox 與未來自製 inbox 不需要各自呼叫平台漫畫工具。支援的 nhentai／JMComic links 會經過共用 `link.media.sync` intake，在 generic HTML resolution 前自動分派至 exact comic adapter。因此從 inbox 傳入 direct comic link，只會下載／封裝該連結的作品，不會啟用 series follow。可查看 `summary.comic_links_considered` 與 CBZ counters 確認分派結果。
+
 ## 環境
 
 使用 Python 3.12+。

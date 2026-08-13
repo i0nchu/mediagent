@@ -100,6 +100,14 @@ class CliTests(unittest.TestCase):
         self.assertEqual(payload["data"]["summary"]["skipped_links"], 1)
         self.assertEqual(payload["data"]["links"][0]["resolution"]["skip_reason"], "unsafe_url")
 
+    def test_public_link_sync_recognizes_comic_links(self) -> None:
+        from mediagent.cli import _is_comic_link
+
+        self.assertTrue(_is_comic_link("https://nhentai.net/g/513148/"))
+        self.assertTrue(_is_comic_link("https://18comic.vip/album/624076/?series_sort=1"))
+        self.assertTrue(_is_comic_link("https://18comic.vip/photo/1459311/"))
+        self.assertFalse(_is_comic_link("https://example.com/file.jpg"))
+
     def test_tools_run_json_runtime_failure(self) -> None:
         completed = self.run_cli(
             "tools",

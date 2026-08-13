@@ -1,5 +1,12 @@
 # Mediagent 焦點 TODO
 
+## 漫畫來源後續
+
+- [ ] 僅用 repo 內本機路徑，分別 live test 一個 nhentai gallery、JM photo、JM album 與兩個收藏來源。
+- [ ] Live test 過期 cookie 的復原與瀏覽器重新匯入；provider 已用 HTTP 403 拒絕 refresh，因此不要加入密碼／CAPTCHA 自動化，也不要假設能自動續期。
+- [ ] 正式部署 timer 前，先 live 驗證 JM 收藏分頁與一個小型 scrambled chapter。
+- [ ] 等既有 single-run lock／timer hardening 完成後才新增部署 unit。
+
 本檔只追蹤接下來要做的實作與驗證工作。已完成狀態、live-test 歷史與已解決問題請放在 `STATE.md`、`ISSUES.md` 與 `RUNBOOK.md`。
 
 更新本 TODO 時，必須在同一次變更中同步更新英文與日文版本：

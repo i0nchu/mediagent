@@ -1,5 +1,16 @@
 # Mediagent 現在の状態
 
+## 2026-08-13 コミックソース更新
+
+- SQLite schema は v8。atomic collection snapshot と active/inactive membership を実装済み。
+- nhentai は exact gallery、完全 favorite pagination、再利用／refresh 可能な browser-cookie session（0600）を実装済み。
+- JMComic は album/photo/trusted-cover、暗号化 mobile API、再利用 login session、完全 album/favorite manifest、vertical-slice 復元を実装済み。
+- `comic.link.sync` は常に exact。`nhentai.favorites.sync` は gallery exact、`jmcomic.favorites.sync` は active favorite album のみ follow する。
+- Shared link intake は generic HTML resolution の前に recognized nhentai/JMComic links を exact comic adapter へ dispatch する。direct `link.media.sync`、queued links、Telegram inbox、同じ queue/tool boundary を使う future inbox に適用され、Telegram provenance は保持するが follow state は作らない。
+- 完全な chapter は `ComicInfo.xml` 付き Kavita CBZ に atomic package する。一章だけの JM album も安定した series layout を維持し、将来の新章で既存 CBZ を移動させない。
+- favorite 解除で media は削除せず、不完全 snapshot は commit しない。
+- この更新後の locked offline suite は 327 tests pass。
+
 ## 実装済み
 
 - Package layout は `src/mediagent/` にあります。
@@ -11,7 +22,7 @@
 - Agent Core V1 は `src/mediagent/agent/` にあり、SKILL loading、strict JSON action parsing、Ollama integration、tool allowlist enforcement、dry-run/execute boundaries、compact/redacted tool-result feedback を含みます。
 - Built-in English agent SKILL files は `src/mediagent/agent/skills/builtin/` にあります。
 - Agent CLI commands は `mediagent agent run`、`mediagent agent skills list`、`mediagent agent skills inspect` です。
-- SQLite 初期化は `src/mediagent/core/db.py` にあり、現在の schema version は `7` です。old media item/file tables と stable `link_queue` lifecycle/retry/provenance fields の idempotent migration に対応しています。
+- SQLite 初期化は `src/mediagent/core/db.py` にあり、現在の schema version は `8` です。old media item/file tables、stable `link_queue` lifecycle/retry/provenance fields、comic source collection memberships の idempotent migration に対応しています。
 - ファイル安全 helper は `src/mediagent/core/filesystem.py` にあります。
 - credential/auth primitives は `src/mediagent/core/auth.py` にあります。
 - rate-limit metadata parsing は `src/mediagent/core/rate_limit.py` にあります。

@@ -1,5 +1,16 @@
 # Mediagent Current State
 
+## 2026-08-13 Comic Source Update
+
+- SQLite schema is version 8 with atomic source collection snapshots and active/inactive memberships.
+- `platforms/nhentai/` supports exact gallery resolution, ordered image manifests, complete favorite pagination, reusable browser-cookie sessions, and session refresh/persistence with mode `0600`.
+- `platforms/jmcomic/` supports strict album/photo/trusted-cover links, encrypted mobile API envelopes, reusable login sessions, complete album/favorite manifests, and deterministic vertical-slice image restoration.
+- `comic.link.sync` always applies exact direct-link scope. `nhentai.favorites.sync` uses exact gallery targets; `jmcomic.favorites.sync` follows only active favorite albums.
+- Shared link intake now dispatches recognized nhentai/JMComic links to the exact comic adapter before generic HTML resolution. This covers direct `link.media.sync`, queued links, Telegram inbox input, and future inboxes built on the same queue/tool boundary; Telegram provenance is retained without creating follow state.
+- Comic pages use stable identities and `comic-pages`; complete chapters are atomically packaged as Kavita-oriented CBZ files with `ComicInfo.xml`. One-chapter JM albums retain a series layout so a later new chapter does not move the original archive.
+- Favorite removal stops follow state but does not delete media. Incomplete collection snapshots are never committed.
+- The locked offline suite passes 327 tests after this update.
+
 ## Implemented
 
 - Package layout exists under `src/mediagent/`.
@@ -12,7 +23,7 @@
 - Built-in English agent SKILL files exist under `src/mediagent/agent/skills/builtin/`.
 - Agent CLI commands exist: `mediagent agent run`, `mediagent agent skills list`, and `mediagent agent skills inspect`.
 - SQLite schema initialization exists in `src/mediagent/core/db.py`.
-- Current SQLite schema version is `7`, with idempotent migration support for old media item/file tables and the stable `link_queue` lifecycle/retry/provenance fields.
+- Current SQLite schema version is `8`, with idempotent migration support for old media item/file tables, stable `link_queue` lifecycle/retry/provenance fields, and comic source collection memberships.
 - Filesystem safety helpers exist in `src/mediagent/core/filesystem.py`.
 - Secret redaction helpers exist in `src/mediagent/core/redaction.py`.
 - HTTP abstraction exists in `src/mediagent/core/http.py`.

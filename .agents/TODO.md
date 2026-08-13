@@ -9,6 +9,13 @@ When updating this TODO, update the Traditional Chinese and Japanese copies in t
 
 ## Current Focus: systemd Timer Hardening
 
+## Comic Source Follow-up
+
+- [ ] Run opt-in local live tests for one nhentai direct gallery, one JM photo, one JM album, and both favorite sources using only repository-local data paths.
+- [ ] Live-test expired-cookie recovery and browser re-import; the provider rejected refresh with HTTP 403, so do not add password/CAPTCHA automation or assume automatic renewal.
+- [ ] Verify JM favorite pagination and one small scrambled chapter against the live API before deploying a recurring timer.
+- [ ] Add deployment units only after live verification and the existing single-run lock/timer-hardening work.
+
 Goal: harden the existing Agent-mode timer deployment before adding another long-running source or scheduler layer.
 
 - [ ] Add a deployment-oriented environment-check profile for the enabled Telegram inbox, Pixiv bookmark, and optional Instagram saved-media sources.

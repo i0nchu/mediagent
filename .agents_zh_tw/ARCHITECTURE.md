@@ -1,5 +1,13 @@
 # Mediagent 架構
 
+## 漫畫 target 與收藏流程（2026-08-13）
+
+漫畫來源頁維持 `media_type: photo`，由 `metadata.work_type: comic` 與 `storage_category: comic-pages` 選入漫畫流程；平台中立的 `metadata.comic` 保存作品、系列與章節 identity。只有所有宣告頁面健康完整時，才會在 `comic/` 下原子產生含 `ComicInfo.xml` 的 CBZ。
+
+直接 URL 不建立追蹤。帳號收藏必須先完整抓完所有分頁，才可在單一 SQLite transaction 提交 snapshot；任何不完整或失敗的收集都不得停用舊 membership。取消收藏只停用該來源，不刪既有頁面或 CBZ。active 的 JM album 收藏會在之後同步時重新解析以發現新章，nhentai 收藏則維持 exact。
+
+Schema v8 新增 `source_collections` 與 `source_collection_memberships`。穩定 page file key 避免 CDN URL 輪替造成重複紀錄；cookies、token、敏感 headers 與 JM runtime decode 資料不得寫入持久 metadata。
+
 ## 產品邊界
 
 Mediagent 只負責蒐集與下載媒體。它不管理媒體庫、不瀏覽媒體、不 repost、不分享，也不提供 gallery UI。
@@ -141,6 +149,8 @@ explicit URL source
 
 這是目前主要產品方向。URL source 可以是 CLI JSON、queued DB rows、Telegram inbox links、未來 workflow steps 或未來 Agent/SKILL calls。
 
+共用 link intake 會在 generic resolver chain 前先做 dedicated comic dispatch。由 `link.media.sync`、queued `link_queue` rows 或 `telegram.inbox.sync_links` 收到的 nhentai gallery 與 JMComic album/photo/cover links，都會以 exact scope 進入 `comic.link.sync`。Telegram 只保留為 ingest provenance，不會改變來源平台，也不會建立收藏／follow state。未來自製 inbox 應把 links 寫入 queue 後呼叫 `link.media.sync`，不應各自重做 provider routing。
+
 `link_queue.normalized_url` 只作為第一層 intake dedupe。Resolver 還必須在可行時輸出 canonical aliases 與 source/media identity，避免 short links、canonical post links、old site links、provider watch URLs、direct media URLs 指向同一內容時產生重複下載。
 
 `link_queue` 已具備 schema v7 lifecycle foundation，可作為 cron 或 daemon 使用前的基底。它是 URL resolution queue，不是檔案下載 lifecycle：
@@ -187,7 +197,7 @@ platform collector output
 
 Pixiv 會分開保存實體 media type 與作品 work type。漫畫原始頁面仍是 `media_type: photo`，但 `metadata.work_type: comic` 會選擇 `comic-pages`；Kavita-oriented CBZ 封裝層則寫入 `comic/<series-directory>/`。單篇會取得唯一 series identity，並使用 `Number=1`、`Count=1`、`Format=One-Shot`；真正系列會共用同一資料夾，並使用 normalized `Series`、`Number`、optional `Volume` 與 optional `Count`。一般插畫仍使用 `illustration` / `photo`，ugoira 使用 `animation` / `video`。
 
-`core/comics.py` 的 descriptor 與 CBZ writer 本身與平台無關，但目前只有 Pixiv 完成 automatic comic classification 與 packaging 接線。未來 authorized-source adapters 若能可靠提供 `work_type:comic`、有序頁面、series/chapter/volume identity 與作品 metadata，就能共用 normalized `metadata.comic` 和 `comic-pages` -> `comic` contract；不能只因多圖就推定是漫畫。
+`core/comics.py` 的 descriptor 與 CBZ writer 與平台無關。Pixiv、nhentai 與 JMComic 現在共用 normalized `metadata.comic` 與 `comic-pages` -> `comic` packaging contract。未來 authorized-source adapters 若能可靠提供 `work_type:comic`、有序頁面、series/chapter/volume identity 與作品 metadata，也能加入同一流程；不能只因多圖就推定是漫畫。
 
 ## Future Policy Layer
 

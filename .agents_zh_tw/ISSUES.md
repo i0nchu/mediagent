@@ -1,5 +1,15 @@
 # 實作議題
 
+## 漫畫 adapter 尚待 opt-in live verification
+
+- **狀態：** 離線實作完成，外部驗證未完成。
+- **目前行為：** fixtures 已涵蓋 direct exact、共用 inbox 分派、完整收藏 snapshot、session 重用、JM 加密 envelope／圖片還原、repair、穩定 file identity 與原子 CBZ。使用者已驗證 nhentai cookie auth、favorites sync 與 direct resolve/download。refresh endpoint 在現有 session 仍可用時回傳 HTTP 403，因此 refresh 現在會回報 `nhentai_refresh_rejected`，不再誤報 success。JM live download/favorites 仍未驗證。
+- **下一步：** 依 RUNBOOK 使用 repo-local DB/library/session 路徑做 bounded live test，尚未驗證前不要指向正式路徑或啟動 recurring service。
+
+## 外部 provider contract 可能變動
+
+nhentai 登入需要瀏覽器提供 cookie session，因 CAPTCHA／proof-of-work 而刻意不自動化帳密登入。JMComic 使用未公開的加密 mobile API 與 CDN scramble 規則。auth、rate-limit 或 response 錯誤必須結構化返回；收藏收集失敗時保留上一次完整 snapshot。
+
 本檔記錄下一次接手仍需要注意的 caveats。已解決的歷史問題不應長期保留在 Open，除非仍影響實作判斷。
 
 ## Open
@@ -125,4 +135,4 @@
 - Localized issue handoffs 已同步到目前英文 issue 狀態。
 - Localized TODO handoffs 已包含 Pixiv `pixiv.auth.login` / OAuth PKCE planning update，包括 authorization-code exchange、credential-file writing、redaction tests，以及 skipped-by-default live browser tests。
 - 英文、繁中、日文 handoff docs 已同步到 Pixiv first-slice status。
-- 預設測試是綠燈：`uv run --locked python -m unittest discover -s tests` 通過 271 個測試。
+- 預設測試是綠燈：`uv run --locked python -m unittest discover -s tests` 通過 323 個測試。

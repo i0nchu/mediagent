@@ -40,6 +40,7 @@ from mediagent.core.tooling import (
 from mediagent.platforms.telegram import auth as telegram_auth
 from mediagent.platforms.telegram import client as telegram_client
 from mediagent.platforms.telegram import parser as telegram_parser
+from mediagent.tools import link_tools
 from mediagent.tools.metadata_tools import metadata_write
 
 
@@ -826,8 +827,22 @@ async def inbox_sync_links(context: ToolContext, input_data: dict[str, Any]) -> 
         "files_downloaded": 0,
         "files_failed": 0,
         "bytes_written": 0,
+        "comic_links_considered": 0,
+        "comic_links_failed": 0,
+        "cbz_packaged": 0,
+        "cbz_existing": 0,
+        "cbz_failed_or_incomplete": 0,
     }
     warnings: list[str] = []
+    comic_route = await link_tools.sync_dedicated_comic_links(
+        context,
+        input_data,
+        links,
+        db_path=db_path,
+    )
+    links = comic_route["remaining_links"]
+    resolutions.extend(comic_route["links"])
+    warnings.extend(comic_route["warnings"])
     for link in links:
         resolution = default_link_resolver_registry().resolve(link["original_url"], request=resolver_request)
         resolutions.append({"link": _safe_link_record(link), "resolution": sanitize_link_resolution_for_output(resolution)})
@@ -907,22 +922,29 @@ async def inbox_sync_links(context: ToolContext, input_data: dict[str, Any]) -> 
             link_items=True,
         )
         summary.update(candidate_summary)
+        link_tools.merge_comic_route_summary(summary, comic_route["summary"])
         _merge_telegram_sync_summary(summary, telegram_summary)
-        planned_downloads = []
+        planned_downloads = list(comic_route["planned_downloads"])
         for item in items_to_sync:
             planned_downloads.extend(_planned_link_downloads(context, input_data, item))
         planned_downloads.extend(telegram_planned_downloads)
         summary["queued"] += len(items_to_sync)
-        return ToolResult.success(
-            {
-                "platform": "telegram",
-                "db_path": str(db_path),
-                "summary": {**summary, "cursor_stored": False, "cursor_reason": "dry_run"},
-                "links": resolutions,
-                "planned_downloads": planned_downloads,
-            },
-            warnings=warnings,
-        )
+        data = {
+            "platform": "telegram",
+            "db_path": str(db_path),
+            "summary": {**summary, "cursor_stored": False, "cursor_reason": "dry_run"},
+            "links": resolutions,
+            "planned_downloads": planned_downloads,
+        }
+        if comic_route["failed"]:
+            return ToolResult.failure(
+                "telegram_inbox_sync_links_partial" if summary["resolved"] else "telegram_inbox_sync_links_failed",
+                "Telegram inbox preview could not resolve every dedicated comic source.",
+                data=data,
+                warnings=warnings,
+                category=ErrorCategory.NETWORK,
+            )
+        return ToolResult.success(data, warnings=warnings)
 
     db.initialize_database(db_path)
     for item in resolved_items:
@@ -937,11 +959,12 @@ async def inbox_sync_links(context: ToolContext, input_data: dict[str, Any]) -> 
         link_items=True,
     )
     summary.update(candidate_summary)
+    link_tools.merge_comic_route_summary(summary, comic_route["summary"])
     _merge_telegram_sync_summary(summary, telegram_summary)
     summary["queued"] += len(items_to_sync)
 
-    item_results: list[dict[str, Any]] = list(telegram_item_results)
-    artifacts: list[dict[str, str]] = list(telegram_artifacts)
+    item_results: list[dict[str, Any]] = [*comic_route["items"], *telegram_item_results]
+    artifacts: list[dict[str, str]] = [*comic_route["artifacts"], *telegram_artifacts]
     for item in items_to_sync:
         result = await _sync_one_link_item(context, db_path, item, input_data)
         item_results.append(result)
@@ -957,7 +980,7 @@ async def inbox_sync_links(context: ToolContext, input_data: dict[str, Any]) -> 
         warnings.extend(result["warnings"])
 
     run_status = "success"
-    if summary["failed"] or summary["partial"]:
+    if summary["failed"] or summary["partial"] or comic_route["failed"]:
         run_status = "partial" if summary["downloaded"] else "failed"
     cursor_decision = _telegram_link_cursor_decision(input_data, run_status=run_status)
     if cursor_decision["should_store"]:
@@ -982,6 +1005,7 @@ async def inbox_sync_links(context: ToolContext, input_data: dict[str, Any]) -> 
         "links": resolutions,
         "items": item_results,
         "telegram_message_links": telegram_link_results,
+        "packages": comic_route["packages"],
     }
     if run_status == "success":
         return ToolResult.success(data, artifacts=artifacts, warnings=warnings)

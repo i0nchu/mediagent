@@ -61,6 +61,7 @@ def build_parser() -> argparse.ArgumentParser:
     link_sync.add_argument("--write-sidecar-metadata", action="store_true", help="Write JSON sidecar metadata files.")
     link_sync.add_argument("--overwrite", action="store_true", help="Overwrite existing known target files.")
     link_sync.add_argument("--retry-failed", action="store_true", help="Retry media items currently marked failed.")
+    link_sync.add_argument("--repair-missing-files", action="store_true", help="Redownload tracked files that are missing or unhealthy.")
     link_sync.add_argument("--max-html-bytes", type=int, default=None, help=argparse.SUPPRESS)
     link_sync.add_argument("--max-media-bytes", type=int, default=None, help=argparse.SUPPRESS)
     link_sync.add_argument("--timeout-seconds", type=float, default=None, help=argparse.SUPPRESS)
@@ -173,27 +174,38 @@ def handle_tools_run(args: argparse.Namespace) -> int:
 
 
 def handle_link_sync(args: argparse.Namespace) -> int:
+    comic_link = _is_comic_link(args.url)
     input_data: dict[str, Any] = {
         "url": args.url,
-        "write_sidecar_metadata": args.write_sidecar_metadata,
         "overwrite": args.overwrite,
-        "retry_failed": args.retry_failed,
     }
+    if not comic_link or args.retry_failed:
+        input_data["retry_failed"] = args.retry_failed
+    if not comic_link or args.repair_missing_files:
+        input_data["repair_missing_files"] = args.repair_missing_files
+    if not comic_link:
+        input_data["write_sidecar_metadata"] = args.write_sidecar_metadata
     optional_fields = {
         "db_path": args.db_path,
         "library_root": args.library_root,
-        "target_dir": args.target_dir,
-        "max_html_bytes": args.max_html_bytes,
+        "target_dir": None if comic_link else args.target_dir,
+        "max_html_bytes": None if comic_link else args.max_html_bytes,
         "max_media_bytes": args.max_media_bytes,
         "timeout_seconds": args.timeout_seconds,
     }
     input_data.update({key: value for key, value in optional_fields.items() if value is not None})
     return run_tool_command(
-        tool="link.media.sync",
+        tool="comic.link.sync" if comic_link else "link.media.sync",
         input_data=input_data,
         json_output=args.json,
         dry_run=args.dry_run,
     )
+
+
+def _is_comic_link(url: str) -> bool:
+    from mediagent.tools.comic_tools import comic_link_provider
+
+    return comic_link_provider(url) is not None
 
 
 def handle_agent_skills_list(args: argparse.Namespace) -> int:

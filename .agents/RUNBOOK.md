@@ -10,6 +10,61 @@ Preferred command runner:
 uv run --locked ...
 ```
 
+## Local Comic Live Tests
+
+Use only repository-local development paths for the first live run:
+
+```bash
+export MEDIAGENT_DATA_DIR=/home/ion/projects/mediagent/tmp/live/comics
+export MEDIAGENT_LIBRARY_DIR=/home/ion/projects/mediagent/tmp/live/comics/library
+export MEDIAGENT_DB_PATH=/home/ion/projects/mediagent/tmp/live/comics/mediagent.sqlite3
+export MEDIAGENT_NHENTAI_SESSION_FILE=/home/ion/projects/mediagent/tmp/live/comics/credentials/nhentai_session.json
+export MEDIAGENT_JMCOMIC_SESSION_FILE=/home/ion/projects/mediagent/tmp/live/comics/credentials/jmcomic_session.json
+mkdir -p "$MEDIAGENT_DATA_DIR/credentials" "$MEDIAGENT_LIBRARY_DIR"
+uv run --locked mediagent tools run core.db.init --json
+```
+
+Do not `source .env` while it contains legacy names beginning with a digit. Rename them to `MEDIAGENT_JMCOMIC_USERNAME` and `MEDIAGENT_JMCOMIC_PASSWORD` first.
+
+nhentai direct links work anonymously when the provider allows it:
+
+```bash
+uv run --locked mediagent tools run comic.link.sync \
+  --input examples/tools/comic.link.sync.nhentai.json --dry-run --json
+uv run --locked mediagent tools run comic.link.sync \
+  --input examples/tools/comic.link.sync.nhentai.json --json
+```
+
+For favorites, export a logged-in browser cookie jar once. Mediagent accepts either its private JSON session format or a Netscape-format `cookies.txt`; point `MEDIAGENT_NHENTAI_COOKIE_FILE` at the latter. Refresh preserves the configured format and enforces mode `0600`. Mediagent intentionally does not automate username/password plus CAPTCHA/proof-of-work login.
+
+Tool results have two distinct layers. The top-level `status` says whether the requested tool operation succeeded. For an `auth.status` inspection, top-level success means the inspection completed; it does not mean login succeeded. Read `data.auth_status`, `data.authenticated`, `data.reusable`, and `data.remote_verified`. A locally loadable session that was not checked against the provider reports `authenticated: null` and `remote_verified: false`.
+
+An imported browser session may receive HTTP 403 from nhentai's refresh endpoint even while authenticated favorites access still works. `nhentai.auth.refresh` performs a read-only favorites check after that response for diagnostics, but the refresh operation still returns top-level failure with `error.code: nhentai_refresh_rejected`. Its data states that rotation failed while current authentication remains usable. If the check also fails, it returns `nhentai_auth_required` and the browser cookie must be exported again.
+
+```bash
+uv run --locked mediagent tools run nhentai.auth.status --input examples/tools/nhentai.auth.status.json --json
+uv run --locked mediagent tools run nhentai.auth.refresh --input examples/tools/nhentai.auth.refresh.json --json
+uv run --locked mediagent tools run nhentai.favorites.sync --input examples/tools/nhentai.favorites.sync.json --dry-run --json
+uv run --locked mediagent tools run nhentai.favorites.sync --input examples/tools/nhentai.favorites.sync.json --json
+```
+
+JMComic can create and reuse a session from configured credentials. `JMCOMIC_USERNAME`, `JMCOMIC_PASSWORD`, and `JMCOMIC_SESSION_FILE` are accepted compatibility names; the `MEDIAGENT_JMCOMIC_*` names remain preferred and take precedence. Test a small album before favorites:
+
+```bash
+uv run --locked mediagent tools run jmcomic.auth.status --input examples/tools/jmcomic.auth.status.json --json
+uv run --locked mediagent tools run jmcomic.auth.login --input examples/tools/jmcomic.auth.login.json --json
+uv run --locked mediagent tools run comic.link.sync \
+  --input examples/tools/comic.link.sync.jmcomic-album.json --dry-run --json
+uv run --locked mediagent tools run comic.link.sync \
+  --input examples/tools/comic.link.sync.jmcomic-album.json --json
+uv run --locked mediagent tools run jmcomic.favorites.sync \
+  --input examples/tools/jmcomic.favorites.sync.json --dry-run --json
+```
+
+Inspect only summaries and files under the local root. A second identical run should download zero healthy pages and report existing CBZ files. Direct JM album runs never create follow memberships; only `jmcomic.favorites.sync` does. Do not delete SQLite `-wal` or `-shm` files during a run.
+
+Telegram inbox and future custom inboxes do not need provider-specific comic commands. Supported nhentai/JMComic links pass through the shared `link.media.sync` intake and are automatically dispatched to the exact comic adapter before generic HTML resolution. Sending a direct comic link through an inbox therefore downloads/packages that linked work only; it never enables series follow. Inspect `summary.comic_links_considered` plus the CBZ counters to confirm dispatch.
+
 Fallback during local development:
 
 ```bash

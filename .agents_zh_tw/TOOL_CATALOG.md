@@ -1,5 +1,13 @@
 # Mediagent 工具目錄
 
+## 漫畫工具（2026-08-13）
+
+- `comic.link.sync`：exact nhentai gallery 或 JM album/photo/cover 下載、修復與 CBZ。
+- `nhentai.auth.status`、`nhentai.auth.refresh`：安全檢查、刷新並保存 browser session。
+- `nhentai.favorites.sync`：完整收藏 inbox snapshot；每個 gallery 為 exact。
+- `jmcomic.auth.status`、`jmcomic.auth.login`：安全狀態與 mobile API session 登入保存。
+- `jmcomic.favorites.sync`：完整收藏 inbox snapshot；active album 持續發現新章。
+
 用這份文件快速理解目前已註冊的工具。精確 schema 請用：
 
 ```bash

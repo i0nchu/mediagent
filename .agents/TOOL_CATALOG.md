@@ -1,5 +1,15 @@
 # Mediagent Tool Catalog
 
+## Comic Tools (2026-08-13)
+
+- `comic.link.sync`: exact nhentai gallery or JMComic album/photo/cover download, repair, and CBZ packaging.
+- `nhentai.auth.status`: safe reusable-session status.
+- `nhentai.auth.refresh`: refresh and atomically persist the browser session.
+- `nhentai.favorites.sync`: complete favorites-as-inbox snapshot; each gallery is exact.
+- `jmcomic.auth.status`: safe configured credential/session status.
+- `jmcomic.auth.login`: mobile API login and private reusable-session persistence.
+- `jmcomic.favorites.sync`: complete favorites-as-inbox snapshot; active albums are followed for new chapters.
+
 Use this catalog to understand the currently registered tools. Inspect exact schemas with:
 
 ```bash

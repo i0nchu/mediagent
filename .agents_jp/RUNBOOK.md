@@ -1,5 +1,49 @@
 # Mediagent Runbook
 
+## Local comic live test
+
+最初の live test は repo 内の開発 path のみを使う。
+
+```bash
+export MEDIAGENT_DATA_DIR=/home/ion/projects/mediagent/tmp/live/comics
+export MEDIAGENT_LIBRARY_DIR=/home/ion/projects/mediagent/tmp/live/comics/library
+export MEDIAGENT_DB_PATH=/home/ion/projects/mediagent/tmp/live/comics/mediagent.sqlite3
+export MEDIAGENT_NHENTAI_SESSION_FILE=/home/ion/projects/mediagent/tmp/live/comics/credentials/nhentai_session.json
+export MEDIAGENT_JMCOMIC_SESSION_FILE=/home/ion/projects/mediagent/tmp/live/comics/credentials/jmcomic_session.json
+mkdir -p "$MEDIAGENT_DATA_DIR/credentials" "$MEDIAGENT_LIBRARY_DIR"
+uv run --locked mediagent tools run core.db.init --json
+```
+
+`.env` に数字で始まる旧変数が残っている場合は `source .env` しない。先に `MEDIAGENT_JMCOMIC_USERNAME`／`MEDIAGENT_JMCOMIC_PASSWORD` へ変更する。
+
+```bash
+uv run --locked mediagent tools run comic.link.sync --input examples/tools/comic.link.sync.nhentai.json --dry-run --json
+uv run --locked mediagent tools run comic.link.sync --input examples/tools/comic.link.sync.nhentai.json --json
+uv run --locked mediagent tools run nhentai.auth.status --input examples/tools/nhentai.auth.status.json --json
+uv run --locked mediagent tools run nhentai.auth.refresh --input examples/tools/nhentai.auth.refresh.json --json
+uv run --locked mediagent tools run nhentai.favorites.sync --input examples/tools/nhentai.favorites.sync.json --dry-run --json
+```
+
+nhentai favorites では login 済み browser から cookie jar を一度 export する。Mediagent JSON session のほか、Netscape 形式 `cookies.txt` を `MEDIAGENT_NHENTAI_COOKIE_FILE` で指定できる。refresh は形式を維持し、permission を `0600` にする。username/password、CAPTCHA、proof-of-work は自動化しない。
+
+tool result には二つの意味層がある。top-level `status` は要求した tool operation が成功したかを示す。`auth.status` inspection の top-level success は inspection 完了だけを意味し、login 成功を意味しない。`data.auth_status`、`data.authenticated`、`data.reusable`、`data.remote_verified` を確認する。local で load 可能だが provider に未検証の session は `authenticated: null`、`remote_verified: false` を返す。
+
+browser から import した session は authenticated favorites が利用可能でも、nhentai refresh endpoint から HTTP 403 を受ける場合がある。`nhentai.auth.refresh` は診断用に read-only favorites check を行うが、refresh operation 自体は top-level failure とし、`error.code: nhentai_refresh_rejected` を返す。data は rotation 失敗と current auth が利用可能であることを明示する。check も失敗した場合は `nhentai_auth_required` となり、browser cookie の再 export が必要である。
+
+JMComic は `JMCOMIC_USERNAME`、`JMCOMIC_PASSWORD`、`JMCOMIC_SESSION_FILE` も受け付ける。推奨の `MEDIAGENT_JMCOMIC_*` が同時に存在する場合はそちらを優先する。
+
+```bash
+uv run --locked mediagent tools run jmcomic.auth.status --input examples/tools/jmcomic.auth.status.json --json
+uv run --locked mediagent tools run jmcomic.auth.login --input examples/tools/jmcomic.auth.login.json --json
+uv run --locked mediagent tools run comic.link.sync --input examples/tools/comic.link.sync.jmcomic-album.json --dry-run --json
+uv run --locked mediagent tools run comic.link.sync --input examples/tools/comic.link.sync.jmcomic-album.json --json
+uv run --locked mediagent tools run jmcomic.favorites.sync --input examples/tools/jmcomic.favorites.sync.json --dry-run --json
+```
+
+同じ二回目の実行は healthy page を 0 件 download し、existing CBZ を報告すること。直接 JM album は follow を作らず、favorite sync のみが作る。実行中に SQLite `-wal`／`-shm` を削除しない。
+
+Telegram inbox と future custom inbox は provider-specific comic command を個別に呼ぶ必要がない。対応 nhentai/JMComic links は shared `link.media.sync` intake を通り、generic HTML resolution より前に exact comic adapter へ自動 dispatch される。そのため inbox の direct comic link は linked work だけを download/package し、series follow は有効にしない。`summary.comic_links_considered` と CBZ counters で dispatch を確認できる。
+
 ## 環境
 
 Python 3.12+ を使います。

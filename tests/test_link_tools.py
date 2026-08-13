@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from mediagent.core import db
 from mediagent.core.http import HttpResponse
@@ -17,7 +17,7 @@ from mediagent.core.links import (
     resolution_to_media_item,
     validate_url_safety,
 )
-from mediagent.core.tooling import ToolContext
+from mediagent.core.tooling import ToolContext, ToolResult
 from mediagent.tools.defaults import create_default_registry
 from tests.test_telegram_tools import FakeTelegramClient, _telegram_context
 
@@ -885,6 +885,186 @@ class LinkResolverTests(unittest.TestCase):
 
 
 class LinkQueueAndSyncTests(unittest.TestCase):
+    def test_link_media_sync_routes_nhentai_to_exact_comic_adapter(self) -> None:
+        registry = create_default_registry()
+        comic_result = ToolResult.success(
+            {
+                "targets": [{"provider": "nhentai", "target": "gallery:513148", "policy": "exact"}],
+                "policy": "exact",
+                "summary": {"resolved_items": 1, "queued": 0, "cbz_existing": 1},
+                "items": [],
+                "packages": [],
+            }
+        )
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            context = ToolContext.from_env(
+                dry_run=True,
+                cwd=root,
+                env={"MEDIAGENT_DATA_DIR": str(root)},
+            )
+            with patch(
+                "mediagent.tools.comic_tools.comic_link_sync",
+                new=AsyncMock(return_value=comic_result),
+            ) as comic_sync, patch(
+                "mediagent.tools.link_tools.default_link_resolver_registry",
+                side_effect=AssertionError("generic resolver must not receive comic links"),
+            ):
+                result = asyncio.run(
+                    registry.run(
+                        "link.media.sync",
+                        {
+                            "db_path": str(root / "state.sqlite3"),
+                            "url": "https://nhentai.net/g/513148/",
+                        },
+                        context,
+                    )
+                )
+
+        self.assertTrue(result.is_success, result.to_dict())
+        self.assertEqual(result.data["summary"]["comic_links_considered"], 1)
+        self.assertEqual(result.data["summary"]["resolved"], 1)
+        self.assertEqual(result.data["summary"]["cbz_existing"], 1)
+        self.assertEqual(comic_sync.await_args.args[1]["url"], "https://nhentai.net/g/513148/")
+        self.assertEqual(comic_sync.await_args.args[1]["_ingest_provenance"]["platform"], "cli")
+
+    def test_telegram_inbox_routes_nhentai_to_same_exact_comic_adapter(self) -> None:
+        registry = create_default_registry()
+        url = "https://nhentai.net/g/672279/"
+        fake = CombinedTelegramLinkClient(
+            messages={
+                "curated": [
+                    {
+                        "id": 23,
+                        "date": "2026-08-13T10:00:00+00:00",
+                        "chat": {"id": "curated", "title": "Inbox", "type": "channel"},
+                        "text": f"save this {url}",
+                        "media": [],
+                    }
+                ]
+            },
+            http=FakeLinkHttpClient(),
+        )
+        comic_result = ToolResult.success(
+            {
+                "targets": [{"provider": "nhentai", "target": "gallery:672279", "policy": "exact"}],
+                "policy": "exact",
+                "summary": {"resolved_items": 1, "queued": 0, "cbz_existing": 1},
+                "items": [],
+                "packages": [],
+            }
+        )
+        with TemporaryDirectory() as temp_dir:
+            context, _, db_path = _telegram_context(temp_dir, fake)
+            with patch(
+                "mediagent.tools.comic_tools.comic_link_sync",
+                new=AsyncMock(return_value=comic_result),
+            ) as comic_sync, patch(
+                "mediagent.tools.telegram_tools.default_link_resolver_registry",
+                side_effect=AssertionError("generic resolver must not receive comic links"),
+            ):
+                result = asyncio.run(
+                    registry.run(
+                        "telegram.inbox.sync_links",
+                        {"db_path": str(db_path), "chat": "curated"},
+                        context,
+                    )
+                )
+            queued = db.list_links(db_path)
+
+        self.assertTrue(result.is_success, result.to_dict())
+        self.assertEqual(result.data["summary"]["comic_links_considered"], 1)
+        self.assertEqual(result.data["summary"]["resolved"], 1)
+        self.assertEqual(queued[0]["status"], "resolved")
+        self.assertEqual(comic_sync.await_args.args[1]["url"], url)
+        provenance = comic_sync.await_args.args[1]["_ingest_provenance"]
+        self.assertEqual(provenance["platform"], "telegram")
+        self.assertEqual(provenance["message_id"], "23")
+
+    def test_link_media_sync_merges_comic_and_generic_links(self) -> None:
+        registry = create_default_registry()
+        media_url = f"https://{PUBLIC_TEST_IP}/photo.jpg"
+        http = FakeLinkHttpClient()
+        http.heads[media_url] = HttpResponse(
+            200,
+            {"Content-Type": "image/jpeg", "Content-Length": "10"},
+            b"",
+        )
+        comic_result = ToolResult.success(
+            {
+                "targets": [{"provider": "nhentai", "target": "gallery:513148", "policy": "exact"}],
+                "policy": "exact",
+                "summary": {"resolved_items": 1, "queued": 1},
+                "planned_downloads": [{"platform": "nhentai", "remote_id": "gallery:513148"}],
+                "items": [],
+                "packages": [],
+            }
+        )
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            context = ToolContext.from_env(
+                dry_run=True,
+                cwd=root,
+                env={"MEDIAGENT_DATA_DIR": str(root)},
+                http_client=http,
+            )
+            with patch(
+                "mediagent.tools.comic_tools.comic_link_sync",
+                new=AsyncMock(return_value=comic_result),
+            ):
+                result = asyncio.run(
+                    registry.run(
+                        "link.media.sync",
+                        {
+                            "db_path": str(root / "state.sqlite3"),
+                            "urls": ["https://nhentai.net/g/513148/", media_url],
+                        },
+                        context,
+                    )
+                )
+
+        self.assertTrue(result.is_success, result.to_dict())
+        self.assertEqual(result.data["summary"]["resolved"], 2)
+        self.assertEqual(result.data["summary"]["queued"], 2)
+        self.assertEqual(len(result.data["planned_downloads"]), 2)
+
+    def test_link_media_sync_does_not_report_success_when_comic_dispatch_fails(self) -> None:
+        registry = create_default_registry()
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            context = ToolContext.from_env(
+                dry_run=True,
+                cwd=root,
+                env={"MEDIAGENT_DATA_DIR": str(root)},
+            )
+            with patch(
+                "mediagent.tools.comic_tools.comic_link_sync",
+                new=AsyncMock(
+                    return_value=ToolResult.failure(
+                        "nhentai_api_failed",
+                        "Provider request failed.",
+                        category="network",
+                    )
+                ),
+            ), patch(
+                "mediagent.tools.link_tools.default_link_resolver_registry",
+                side_effect=AssertionError("generic resolver must not receive comic links"),
+            ):
+                result = asyncio.run(
+                    registry.run(
+                        "link.media.sync",
+                        {
+                            "db_path": str(root / "state.sqlite3"),
+                            "url": "https://nhentai.net/g/513148/",
+                        },
+                        context,
+                    )
+                )
+
+        self.assertFalse(result.is_success)
+        self.assertEqual(result.error.code, "link_media_sync_failed")
+        self.assertEqual(result.data["summary"]["comic_links_failed"], 1)
+
     def test_link_queue_upsert_tool_queues_urls_without_experimental_flag(self) -> None:
         registry = create_default_registry()
         url = f"https://{PUBLIC_TEST_IP}/photo.jpg#one"

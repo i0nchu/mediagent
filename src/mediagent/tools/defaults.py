@@ -6,6 +6,7 @@ from mediagent.core.tooling import ToolRegistry
 from mediagent.tools import (
     auth_tools,
     cleanup_tools,
+    comic_tools,
     core_tools,
     download_tools,
     instagram_tools,
@@ -27,6 +28,7 @@ def create_default_registry() -> ToolRegistry:
     for module in (
         core_tools,
         cleanup_tools,
+        comic_tools,
         auth_tools,
         media_tools,
         storage_tools,
