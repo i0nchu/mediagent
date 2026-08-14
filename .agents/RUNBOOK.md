@@ -44,6 +44,7 @@ An imported browser session may receive HTTP 403 from nhentai's refresh endpoint
 ```bash
 uv run --locked mediagent tools run nhentai.auth.status --input examples/tools/nhentai.auth.status.json --json
 uv run --locked mediagent tools run nhentai.auth.refresh --input examples/tools/nhentai.auth.refresh.json --json
+uv run --locked mediagent tools run nhentai.favorites.collect --input examples/tools/nhentai.favorites.collect.json --dry-run --summary-json
 uv run --locked mediagent tools run nhentai.favorites.sync --input examples/tools/nhentai.favorites.sync.json --dry-run --json
 uv run --locked mediagent tools run nhentai.favorites.sync --input examples/tools/nhentai.favorites.sync.json --json
 ```
@@ -57,6 +58,8 @@ uv run --locked mediagent tools run comic.link.sync \
   --input examples/tools/comic.link.sync.jmcomic-album.json --dry-run --json
 uv run --locked mediagent tools run comic.link.sync \
   --input examples/tools/comic.link.sync.jmcomic-album.json --json
+uv run --locked mediagent tools run jmcomic.favorites.collect \
+  --input examples/tools/jmcomic.favorites.collect.json --dry-run --summary-json
 uv run --locked mediagent tools run jmcomic.favorites.sync \
   --input examples/tools/jmcomic.favorites.sync.json --dry-run --json
 ```
@@ -64,6 +67,8 @@ uv run --locked mediagent tools run jmcomic.favorites.sync \
 As an optional alternative, a Netscape-format browser export may be configured through `MEDIAGENT_JMCOMIC_COOKIE_FILE` or `JMCOMIC_COOKIE_FILE`; pointing `*_SESSION_FILE` directly at a `.txt` or `.cookies` path also works. Only cookies belonging to trusted JMComic domains are imported. A later session write preserves Netscape format and mode `0600`. When both cookie-file and session-file variables are set, the cookie-file variable takes precedence.
 
 Inspect only summaries and files under the local root. A second identical run should download zero healthy pages and report existing CBZ files. Direct JM album runs never create follow memberships; only `jmcomic.favorites.sync` does. Do not delete SQLite `-wal` or `-shm` files during a run.
+
+Follow is implemented by periodically rerunning `jmcomic.favorites.sync`; it is not a resident daemon. The complete favorite snapshot updates active membership, and each active album is resolved again so new chapters are discovered. System-level examples live under `deploy/systemd/system/`; they use one shared non-blocking run lock and compact `--summary-json` journal output. `nhentai.favorites.sync` may use the same timer pattern to discover newly favorited exact galleries, but it does not infer or follow a series.
 
 If JMComic pages downloaded before the filename-hash descramble fix show horizontally reordered bands, `repair_missing_files` is not sufficient because those files still exist and are recorded as healthy. Explicitly redownload and rebuild that exact album with `mediagent link sync '<album-url>' --overwrite --json`. The operation uses `.partial` and atomic replacement; verify the resulting images and CBZ locally before any server deployment.
 

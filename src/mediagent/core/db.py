@@ -11,6 +11,7 @@ from typing import Any
 
 
 SCHEMA_VERSION = "8"
+SQLITE_BUSY_TIMEOUT_MILLISECONDS = 30_000
 
 
 def initialize_database(db_path: Path) -> None:
@@ -31,8 +32,15 @@ def initialize_database(db_path: Path) -> None:
 
 
 def connect(db_path: Path) -> sqlite3.Connection:
-    connection = sqlite3.connect(db_path)
+    # Recurring source timers share one SQLite database.  A short writer must
+    # be allowed to finish instead of making another otherwise healthy run
+    # fail immediately with ``database is locked``.
+    connection = sqlite3.connect(
+        db_path,
+        timeout=SQLITE_BUSY_TIMEOUT_MILLISECONDS / 1_000,
+    )
     connection.row_factory = sqlite3.Row
+    connection.execute(f"PRAGMA busy_timeout = {SQLITE_BUSY_TIMEOUT_MILLISECONDS}")
     return connection
 
 

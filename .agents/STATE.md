@@ -1,6 +1,6 @@
 # Mediagent Current State
 
-## 2026-08-13 Comic Source Update
+## 2026-08-14 Comic Source Update
 
 - SQLite schema is version 8 with atomic source collection snapshots and active/inactive memberships.
 - `platforms/nhentai/` supports exact gallery resolution, ordered image manifests, complete favorite pagination, reusable browser-cookie sessions, and session refresh/persistence with mode `0600`.
@@ -9,10 +9,13 @@
 - JMComic transport decodes bounded gzip/deflate API responses before JSON/AES envelope parsing. A sanitized live public-album probe verified the current endpoint returns gzip and now decodes album `349717` successfully.
 - JMComic segment-count hashing now uses the filename stem, matching the maintained upstream decoder. Album `349717` page `00001.webp` previously produced 18 segments but correctly produces 10. Explicit comic `overwrite` now requeues terminal downloaded items so affected pages and CBZ packages can be rebuilt atomically.
 - `comic.link.sync` always applies exact direct-link scope. `nhentai.favorites.sync` uses exact gallery targets; `jmcomic.favorites.sync` follows only active favorite albums.
+- `nhentai.favorites.collect` and `jmcomic.favorites.collect` provide summary-only complete-snapshot diagnostics without downloads or membership changes. JM credential login/session reuse and a live three-page collection of 42 favorite albums are verified. The current nhentai browser cookie returns HTTP 401 and must be re-exported before its live collection can be repeated.
+- A full JM favorites dry-run expanded those 42 albums into 1,081 chapters and 49,137 planned page downloads. A bounded real favorites sync committed all 42 active memberships, downloaded and verified 108/108 pages for one selected album, packaged one valid CBZ with `ComicInfo.xml`, and reran with zero downloads plus one existing CBZ. Large identity lookups are chunked below SQLite limits, and favorites sync processes one target at a time so earlier albums remain durable if a later target fails.
+- SQLite connections use a 30-second busy timeout. System-level comic favorite timer examples use a shared non-blocking run lock and compact `--summary-json` output; follow is periodic rerunning of `jmcomic.favorites.sync`, not a resident daemon.
 - Shared link intake now dispatches recognized nhentai/JMComic links to the exact comic adapter before generic HTML resolution. This covers direct `link.media.sync`, queued links, Telegram inbox input, and future inboxes built on the same queue/tool boundary; Telegram provenance is retained without creating follow state.
 - Comic pages use stable identities and `comic-pages`; complete chapters are atomically packaged as Kavita-oriented CBZ files with `ComicInfo.xml`. One-chapter JM albums retain a series layout so a later new chapter does not move the original archive.
 - Favorite removal stops follow state but does not delete media. Incomplete collection snapshots are never committed.
-- The locked offline suite passes 333 tests after this update.
+- The locked offline suite passes 341 tests after this update.
 
 ## Implemented
 

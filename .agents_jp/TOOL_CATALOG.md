@@ -1,11 +1,13 @@
 # Mediagent Tool Catalog
 
-## Comic tools（2026-08-13）
+## Comic tools（2026-08-14）
 
 - `comic.link.sync`: exact nhentai gallery または JM album/photo/cover の download、repair、CBZ package。
 - `nhentai.auth.status`、`nhentai.auth.refresh`: reusable browser session の安全な状態確認／refresh／保存。
+- `nhentai.favorites.collect`: download や membership 変更をせず complete remote favorites/auth を診断。
 - `nhentai.favorites.sync`: 完全 favorites inbox snapshot。各 gallery は exact。
 - `jmcomic.auth.status`、`jmcomic.auth.login`: 安全な設定状態と mobile API session login／保存。
+- `jmcomic.favorites.collect`: download や membership 変更をせず complete remote favorites/auth を診断。
 - `jmcomic.favorites.sync`: 完全 favorites inbox snapshot。active album の新章を追跡。
 
 現在登録されている tools を理解するためのカタログです。正確な schema は次で確認します。
@@ -21,6 +23,7 @@ uv run --locked mediagent tools run <tool-name> --input examples/tools/<tool-nam
 ```
 
 safe preview に対応する tool では `--dry-run` を付けます。
+定期 service では `--json` の代わりに `--summary-json` を使い、journal の詳細出力を抑えます。
 
 ## Agent Core V1 Commands
 

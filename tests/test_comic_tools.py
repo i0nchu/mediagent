@@ -7,6 +7,7 @@ import unittest
 import zipfile
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from PIL import Image
@@ -37,9 +38,11 @@ class ComicToolTests(unittest.TestCase):
                 "comic.link.sync",
                 "nhentai.auth.status",
                 "nhentai.auth.refresh",
+                "nhentai.favorites.collect",
                 "nhentai.favorites.sync",
                 "jmcomic.auth.status",
                 "jmcomic.auth.login",
+                "jmcomic.favorites.collect",
                 "jmcomic.favorites.sync",
             }.issubset(names)
         )
@@ -197,6 +200,24 @@ class ComicToolTests(unittest.TestCase):
         refresh.assert_called_once()
         save.assert_called_once()
 
+    def test_nhentai_favorites_collect_reports_complete_snapshot_without_targets(self) -> None:
+        context = ToolContext.from_env(dry_run=True, cwd=Path.cwd(), env={})
+        collection = {
+            "complete": True,
+            "pages_fetched": 2,
+            "expected_total": 1,
+            "targets": [{"provider_work_id": "gallery:123", "title": "private favorite"}],
+        }
+        with patch.object(comic_tools.nh_auth, "load_session", return_value={"cookies": {}}), patch.object(
+            comic_tools.nh_client, "collect_favorites", return_value=collection
+        ):
+            result = asyncio.run(comic_tools.nhentai_favorites_collect(context, {}))
+
+        self.assertTrue(result.is_success, result.to_dict())
+        self.assertEqual(result.data["favorites_seen"], 1)
+        self.assertEqual(result.data["pages_fetched"], 2)
+        self.assertNotIn("targets", result.data)
+
     def test_nhentai_refresh_403_reuses_session_when_favorites_still_work(self) -> None:
         with TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -247,6 +268,22 @@ class ComicToolTests(unittest.TestCase):
         self.assertFalse(result.data["authenticated"])
         self.assertFalse(result.data["session_present"])
         self.assertFalse(result.data["reusable"])
+
+    def test_jmcomic_favorites_collect_reports_follow_count_without_targets(self) -> None:
+        context = ToolContext.from_env(dry_run=True, cwd=Path.cwd(), env={})
+        collection = SimpleNamespace(
+            pages_fetched=3,
+            total=2,
+            items=(SimpleNamespace(album_id="1"), SimpleNamespace(album_id="2")),
+        )
+        client = SimpleNamespace(collect_favorites=lambda: collection)
+        with patch.object(comic_tools, "_jm_client", return_value=client):
+            result = asyncio.run(comic_tools.jmcomic_favorites_collect(context, {}))
+
+        self.assertTrue(result.is_success, result.to_dict())
+        self.assertEqual(result.data["favorites_seen"], 2)
+        self.assertEqual(result.data["following"], 2)
+        self.assertNotIn("targets", result.data)
 
     def test_changed_tracked_manifest_rebuilds_existing_cbz(self) -> None:
         with TemporaryDirectory() as temp_dir:
@@ -326,6 +363,71 @@ class ComicToolTests(unittest.TestCase):
         self.assertTrue(second.is_success, second.to_dict())
         self.assertEqual(names, ["001.png", "ComicInfo.xml"])
         self.assertTrue(old_sources_exist)
+
+    def test_large_collection_dry_run_chunks_identity_queries(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            database = root / "state.sqlite3"
+            db.initialize_database(database)
+            context = ToolContext.from_env(
+                dry_run=True,
+                cwd=root,
+                env={
+                    "MEDIAGENT_DATA_DIR": str(root),
+                    "MEDIAGENT_LIBRARY_DIR": str(root / "library"),
+                    "MEDIAGENT_DB_PATH": str(database),
+                },
+            )
+            items = []
+            for index in range(1_100):
+                item = json.loads(json.dumps(_comic_item()))
+                item["remote_id"] = f"gallery:{index}"
+                item["metadata"]["comic"]["provider_work_id"] = f"gallery:{index}"
+                items.append(item)
+
+            result = asyncio.run(comic_tools._sync_items(context, {}, items))
+
+        self.assertTrue(result.is_success, result.to_dict())
+        self.assertEqual(result.data["summary"]["resolved_items"], 1_100)
+
+    def test_favorite_sync_continues_after_one_target_resolution_failure(self) -> None:
+        context = ToolContext.from_env(
+            dry_run=True,
+            cwd=Path.cwd(),
+            env={
+                "MEDIAGENT_DATA_DIR": "/tmp/mediagent-comic-test",
+                "MEDIAGENT_LIBRARY_DIR": "/tmp/mediagent-comic-test/library",
+                "MEDIAGENT_DB_PATH": "/tmp/mediagent-comic-test/state.sqlite3",
+            },
+        )
+        targets = [
+            {"target_type": "album", "target_id": "bad"},
+            {"target_type": "album", "target_id": "good"},
+        ]
+
+        def resolve_target(target):
+            if target["target_id"] == "bad":
+                raise ValueError("removed target")
+            return [_comic_item()]
+
+        with patch.object(
+            comic_tools,
+            "_sync_items",
+            new=AsyncMock(
+                return_value=ToolResult.success(
+                    {"summary": {"resolved_items": 1, "queued": 1, "planned_files": 1}}
+                )
+            ),
+        ) as sync_items:
+            result = asyncio.run(
+                comic_tools._sync_favorite_targets(context, {}, targets, resolve_target)
+            )
+
+        self.assertFalse(result.is_success)
+        self.assertEqual(result.error.code, "comic_favorites_sync_partial")
+        self.assertEqual(result.data["summary"]["targets_processed"], 1)
+        self.assertEqual(result.data["summary"]["targets_failed"], 1)
+        sync_items.assert_awaited_once()
 
 
 def _comic_item() -> dict:

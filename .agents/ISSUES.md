@@ -4,12 +4,12 @@ This file tracks known caveats that matter for the next handoff. Resolved histor
 
 ## Open
 
-### Comic adapters require opt-in live verification
+### nhentai browser-cookie renewal still requires live re-verification
 
-- **Status:** Offline implementation complete; external verification open.
+- **Status:** JMComic live verification complete; nhentai cookie renewal remains external.
 - **Observed in:** `src/mediagent/platforms/nhentai/`, `src/mediagent/platforms/jmcomic/`, `src/mediagent/tools/comic_tools.py`.
-- **Current behavior:** Fixtures cover direct exact scope, shared inbox dispatch, complete favorite snapshots, reusable JSON/Netscape sessions, credential login recovery from an invalid old session, encrypted JM envelopes, image restoration, repair, stable file identity, and atomic CBZ packaging. The user verified nhentai cookie authentication, favorites sync, and direct resolve/download. The refresh endpoint returned HTTP 403 while the imported session remained usable, so refresh now reports `nhentai_refresh_rejected` instead of success. JM live credential login, download, and favorite sync remain unverified.
-- **Expected next step:** Use repository-local DB/library/session paths and the runbook's bounded live tests. Do not point initial tests at production paths or start recurring services yet.
+- **Current behavior:** JM credential login/session reuse, three-page collection of 42 favorite albums, a full 1,081-chapter/49,137-page dry-run, and a bounded 108-page real sync with valid CBZ plus zero-download rerun are live verified. The user previously verified nhentai cookie auth/favorites/direct download, but that imported cookie now returns HTTP 401; password/CAPTCHA automation remains intentionally unsupported.
+- **Expected next step:** Re-export a fresh nhentai browser cookie and repeat `nhentai.favorites.collect` plus a bounded sync using repository-local paths before enabling its timer.
 
 ### Provider contracts are undocumented and may change
 

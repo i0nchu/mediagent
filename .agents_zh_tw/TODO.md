@@ -2,10 +2,10 @@
 
 ## 漫畫來源後續
 
-- [ ] 僅用 repo 內本機路徑，分別 live test 一個 nhentai gallery、JM photo、JM album 與兩個收藏來源。
+- [ ] 重新匯出新的 nhentai browser cookie，再跑完整收藏 collect/sync live test；先前由使用者驗證的 cookie 現在回 HTTP 401。
 - [ ] Live test 過期 cookie 的復原與瀏覽器重新匯入；provider 已用 HTTP 403 拒絕 refresh，因此不要加入密碼／CAPTCHA 自動化，也不要假設能自動續期。
-- [ ] 正式部署 timer 前，先 live 驗證 JM 收藏分頁與一個小型 scrambled chapter。
-- [ ] 等既有 single-run lock／timer hardening 完成後才新增部署 unit。
+- [x] 已 live 驗證 JM 帳密登入/session 重用、三頁收藏分頁、42 albums／1,081 chapters 完整 dry-run，以及一個 108 頁的 bounded 真實收藏同步與 CBZ/dedupe。
+- [x] 已新增 system-level 漫畫收藏 timer 範例，具備共用 run lock 與 summary-only journal。
 
 本檔只追蹤接下來要做的實作與驗證工作。已完成狀態、live-test 歷史與已解決問題請放在 `STATE.md`、`ISSUES.md` 與 `RUNBOOK.md`。
 

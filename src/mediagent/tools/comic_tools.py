@@ -54,6 +54,12 @@ def definitions() -> list[ToolDefinition]:
         Permission.READ_FILES,
         Permission.WRITE_FILES,
     )
+    collect_permissions = (
+        Permission.READ_ENV,
+        Permission.READ_CREDENTIALS,
+        Permission.WRITE_CREDENTIALS,
+        Permission.NETWORK,
+    )
     return [
         ToolDefinition(
             spec=ToolSpec(
@@ -98,6 +104,20 @@ def definitions() -> list[ToolDefinition]:
         ),
         ToolDefinition(
             spec=ToolSpec(
+                name="nhentai.favorites.collect",
+                description="Validate nhentai authentication and collect one complete favorites snapshot without downloading.",
+                input_schema={
+                    "type": "object",
+                    "properties": {"session_file": {"type": "string"}, "timeout_seconds": {"type": "number"}},
+                },
+                output_schema={"type": "object"},
+                permissions=collect_permissions,
+                dry_run_supported=True,
+            ),
+            handler=nhentai_favorites_collect,
+        ),
+        ToolDefinition(
+            spec=ToolSpec(
                 name="nhentai.favorites.sync",
                 description="Treat the complete nhentai favorites list as an inbox and sync each gallery exactly once.",
                 input_schema={"type": "object", "properties": {**common_sync_properties, "session_file": {"type": "string"}}},
@@ -128,6 +148,20 @@ def definitions() -> list[ToolDefinition]:
                 dry_run_supported=False,
             ),
             handler=jmcomic_auth_login,
+        ),
+        ToolDefinition(
+            spec=ToolSpec(
+                name="jmcomic.favorites.collect",
+                description="Validate JMComic authentication and collect one complete favorites snapshot without downloading.",
+                input_schema={
+                    "type": "object",
+                    "properties": {"session_file": {"type": "string"}, "timeout_seconds": {"type": "number"}},
+                },
+                output_schema={"type": "object"},
+                permissions=collect_permissions,
+                dry_run_supported=True,
+            ),
+            handler=jmcomic_favorites_collect,
         ),
         ToolDefinition(
             spec=ToolSpec(
@@ -360,19 +394,44 @@ async def nhentai_favorites_sync(context: ToolContext, input_data: dict[str, Any
             "exact",
         )
         selected = _limit(targets, input_data.get("download_limit"))
-        items = []
-        for target in selected:
-            items.extend(
-                nh_client.resolve_exact(
+        result = await _sync_favorite_targets(
+            context,
+            input_data,
+            selected,
+            lambda target: nh_client.resolve_exact(
                     f"https://nhentai.net/g/{target['target_id']}/",
                     http_client=context.http_client,
                     session=session,
                     timeout=float(input_data.get("timeout_seconds", 30.0)),
-                )
-            )
-        result = await _sync_items(context, input_data, items)
+                ),
+        )
         result.data.update({"collection": "favorites", "target_policy": "exact", "snapshot": snapshot, "favorites_seen": len(targets)})
         return result
+    except Exception as exc:
+        return _provider_failure(exc)
+
+
+async def nhentai_favorites_collect(context: ToolContext, input_data: dict[str, Any]) -> ToolResult:
+    try:
+        session = nh_auth.load_session(env=context.env, cwd=context.cwd, session_file=input_data.get("session_file"))
+        collection = nh_client.collect_favorites(
+            http_client=context.http_client,
+            session=session,
+            timeout=float(input_data.get("timeout_seconds", 30.0)),
+        )
+        if not collection.get("complete"):
+            raise ValueError("nhentai favorites snapshot is incomplete.")
+        return ToolResult.success(
+            {
+                "provider": "nhentai",
+                "collection": "favorites",
+                "complete": True,
+                "pages_fetched": int(collection.get("pages_fetched") or 0),
+                "expected_total": collection.get("expected_total"),
+                "favorites_seen": len(collection.get("targets") or []),
+                "target_policy": "exact",
+            }
+        )
     except Exception as exc:
         return _provider_failure(exc)
 
@@ -460,11 +519,14 @@ async def jmcomic_favorites_sync(context: ToolContext, input_data: dict[str, Any
             "series_and_follow",
         )
         selected = _limit(targets, input_data.get("download_limit"))
-        items = []
-        for target in selected:
-            resolution = client.resolve_exact(f"https://18comic.vip/album/{target['target_id']}/")
-            items.extend(resolution.normalized_items())
-        result = await _sync_items(context, input_data, items)
+        result = await _sync_favorite_targets(
+            context,
+            input_data,
+            selected,
+            lambda target: client.resolve_exact(
+                f"https://18comic.vip/album/{target['target_id']}/"
+            ).normalized_items(),
+        )
         result.data.update(
             {
                 "collection": "favorites",
@@ -477,6 +539,111 @@ async def jmcomic_favorites_sync(context: ToolContext, input_data: dict[str, Any
         if not context.dry_run:
             _persist_jm_session_if_configured(context, input_data, client)
         return result
+    except Exception as exc:
+        return _provider_failure(exc)
+
+
+async def _sync_favorite_targets(
+    context: ToolContext,
+    input_data: dict[str, Any],
+    targets: list[dict[str, Any]],
+    resolve_target: Any,
+) -> ToolResult:
+    summary: dict[str, int] = {}
+    items: list[dict[str, Any]] = []
+    packages: list[dict[str, Any]] = []
+    artifacts: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    failures: list[dict[str, Any]] = []
+    attempted = 0
+    processed = 0
+    for target in targets:
+        attempted += 1
+        try:
+            resolved_items = resolve_target(target)
+        except Exception as exc:
+            failed = _provider_failure(exc)
+            failures.append(_target_failure(target, failed))
+            if failed.error and failed.error.category in {ErrorCategory.AUTH, ErrorCategory.RATE_LIMIT}:
+                break
+            continue
+        target_result = await _sync_items(context, input_data, resolved_items)
+        processed += 1
+        target_summary = target_result.data.get("summary") or {}
+        for key, value in target_summary.items():
+            if isinstance(value, int) and not isinstance(value, bool):
+                summary[key] = summary.get(key, 0) + value
+        items.extend(target_result.data.get("items") or [])
+        packages.extend(target_result.data.get("packages") or [])
+        artifacts.extend(target_result.artifacts)
+        warnings.extend(target_result.warnings)
+        if not target_result.is_success:
+            failures.append(_target_failure(target, target_result))
+            if target_result.error and target_result.error.category in {ErrorCategory.AUTH, ErrorCategory.RATE_LIMIT}:
+                break
+    data = {
+        "dry_run": context.dry_run,
+        "db_path": str(_required_db_path(context, input_data)),
+        "library_root": str(_library_root(context, input_data)),
+        "summary": {
+            **summary,
+            "targets_selected": len(targets),
+            "targets_attempted": attempted,
+            "targets_processed": processed,
+            "targets_failed": len(failures),
+            "targets_unprocessed": len(targets) - attempted,
+        },
+        "items": items,
+        "packages": packages,
+        "target_failures": failures,
+    }
+    if not failures:
+        return ToolResult.success(data, artifacts=artifacts, warnings=warnings)
+    category = next(
+        (
+            ErrorCategory(failure["category"])
+            for failure in failures
+            if failure.get("category") in {ErrorCategory.AUTH.value, ErrorCategory.RATE_LIMIT.value}
+        ),
+        ErrorCategory.NETWORK,
+    )
+    return ToolResult.failure(
+        "comic_favorites_sync_partial",
+        "Comic favorites sync completed with one or more failed targets.",
+        data=data,
+        warnings=warnings,
+        category=category,
+    )
+
+
+def _target_failure(target: dict[str, Any], result: ToolResult) -> dict[str, Any]:
+    error = result.error
+    return {
+        "target_type": str(target.get("target_type") or "unknown"),
+        "target_id": str(target.get("target_id") or "unknown"),
+        "code": error.code if error else "comic_target_failed",
+        "category": error.category.value if error else ErrorCategory.RUNTIME.value,
+    }
+
+
+async def jmcomic_favorites_collect(context: ToolContext, input_data: dict[str, Any]) -> ToolResult:
+    try:
+        client = _jm_client(context, input_data, login_if_needed=not context.dry_run)
+        collection = client.collect_favorites()
+        if not context.dry_run:
+            _persist_jm_session_if_configured(context, input_data, client)
+        return ToolResult.success(
+            {
+                "provider": "jmcomic",
+                "collection": "favorites",
+                "complete": True,
+                "pages_fetched": collection.pages_fetched,
+                "expected_total": collection.total,
+                "favorites_seen": len(collection.items),
+                "target_policy": "series_and_follow",
+                "following": len(collection.items),
+            }
+        )
     except Exception as exc:
         return _provider_failure(exc)
 
@@ -506,17 +673,23 @@ async def _sync_items(context: ToolContext, input_data: dict[str, Any], items: l
         repair_missing_files=bool(input_data.get("repair_missing_files", True)),
     )
     if context.dry_run:
+        planned_downloads = [
+            plan
+            for item in candidates
+            for plan in link_tools._planned_downloads(context, input_data, item)
+        ]
         return ToolResult.success(
             {
                 "dry_run": True,
                 "db_path": str(db_path),
                 "library_root": str(library_root),
-                "summary": {"resolved_items": len(items), "queued": len(candidates), **skipped},
-                "planned_downloads": [
-                    plan
-                    for item in candidates
-                    for plan in link_tools._planned_downloads(context, input_data, item)
-                ],
+                "summary": {
+                    "resolved_items": len(items),
+                    "queued": len(candidates),
+                    "planned_files": len(planned_downloads),
+                    **skipped,
+                },
+                "planned_downloads": planned_downloads,
             }
         )
     db.initialize_database(db_path)
@@ -574,19 +747,29 @@ async def _sync_items(context: ToolContext, input_data: dict[str, Any], items: l
 def _load_comic_items(db_path: Path, identities: set[tuple[str, str]]) -> list[dict[str, Any]]:
     if not identities:
         return []
-    clauses = " OR ".join("(platform = ? AND remote_id = ?)" for _ in identities)
-    params = [value for identity in sorted(identities) for value in identity]
+    item_rows = []
+    file_rows = []
     with db.connect(db_path) as connection:
-        item_rows = connection.execute(
-            f"SELECT id, platform, remote_id, source_url, author_id, author_name, media_type, status, metadata_json, source_availability FROM media_items WHERE {clauses} ORDER BY id",
-            params,
-        ).fetchall()
+        for identity_batch in _chunked(sorted(identities), 400):
+            placeholders = ",".join("(?, ?)" for _ in identity_batch)
+            params = [value for identity in identity_batch for value in identity]
+            item_rows.extend(
+                connection.execute(
+                    f"SELECT id, platform, remote_id, source_url, author_id, author_name, media_type, status, metadata_json, source_availability FROM media_items WHERE (platform, remote_id) IN ({placeholders}) ORDER BY id",
+                    params,
+                ).fetchall()
+            )
+        item_rows.sort(key=lambda row: int(row["id"]))
         item_ids = [int(row["id"]) for row in item_rows]
-        placeholders = ",".join("?" for _ in item_ids)
-        file_rows = connection.execute(
-            f"SELECT id, media_item_id, file_key, remote_url, local_path, mime_type, size_bytes, checksum, status, library_relative_path, storage_layout, file_health, source_timestamp, verified_at FROM media_files WHERE media_item_id IN ({placeholders}) ORDER BY id",
-            item_ids,
-        ).fetchall() if item_ids else []
+        for item_id_batch in _chunked(item_ids, 900):
+            placeholders = ",".join("?" for _ in item_id_batch)
+            file_rows.extend(
+                connection.execute(
+                    f"SELECT id, media_item_id, file_key, remote_url, local_path, mime_type, size_bytes, checksum, status, library_relative_path, storage_layout, file_health, source_timestamp, verified_at FROM media_files WHERE media_item_id IN ({placeholders}) ORDER BY id",
+                    item_id_batch,
+                ).fetchall()
+            )
+        file_rows.sort(key=lambda row: int(row["id"]))
     files: dict[int, list[dict[str, Any]]] = {}
     for row in file_rows:
         files.setdefault(int(row["media_item_id"]), []).append(dict(row))
@@ -604,13 +787,17 @@ def _changed_manifest_identities(
     if not db_path.exists() or not items:
         return set()
     identities = {(str(item["platform"]), str(item["remote_id"])) for item in items}
-    clauses = " OR ".join("(platform = ? AND remote_id = ?)" for _ in identities)
-    params = [value for identity in sorted(identities) for value in identity]
+    rows = []
     with db.connect(db_path) as connection:
-        rows = connection.execute(
-            f"SELECT platform, remote_id, metadata_json FROM media_items WHERE {clauses}",
-            params,
-        ).fetchall()
+        for identity_batch in _chunked(sorted(identities), 400):
+            placeholders = ",".join("(?, ?)" for _ in identity_batch)
+            params = [value for identity in identity_batch for value in identity]
+            rows.extend(
+                connection.execute(
+                    f"SELECT platform, remote_id, metadata_json FROM media_items WHERE (platform, remote_id) IN ({placeholders})",
+                    params,
+                ).fetchall()
+            )
     previous = {
         (str(row["platform"]), str(row["remote_id"])): json.loads(row["metadata_json"])
         for row in rows
@@ -634,6 +821,10 @@ def _manifest_keys(metadata: dict[str, Any]) -> tuple[str, ...]:
         for key in [link_tools._stable_file_key(file_info) or str(file_info.get("url") or "")]
         if key
     )
+
+
+def _chunked(values: list[Any], size: int) -> list[list[Any]]:
+    return [values[index : index + size] for index in range(0, len(values), size)]
 
 
 def _favorites_collection_key(account_id: Any) -> str:

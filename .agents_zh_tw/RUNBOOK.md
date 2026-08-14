@@ -21,6 +21,7 @@ uv run --locked mediagent tools run comic.link.sync --input examples/tools/comic
 uv run --locked mediagent tools run comic.link.sync --input examples/tools/comic.link.sync.nhentai.json --json
 uv run --locked mediagent tools run nhentai.auth.status --input examples/tools/nhentai.auth.status.json --json
 uv run --locked mediagent tools run nhentai.auth.refresh --input examples/tools/nhentai.auth.refresh.json --json
+uv run --locked mediagent tools run nhentai.favorites.collect --input examples/tools/nhentai.favorites.collect.json --dry-run --summary-json
 uv run --locked mediagent tools run nhentai.favorites.sync --input examples/tools/nhentai.favorites.sync.json --dry-run --json
 ```
 
@@ -37,12 +38,15 @@ uv run --locked mediagent tools run jmcomic.auth.status --input examples/tools/j
 uv run --locked mediagent tools run jmcomic.auth.login --input examples/tools/jmcomic.auth.login.json --json
 uv run --locked mediagent tools run comic.link.sync --input examples/tools/comic.link.sync.jmcomic-album.json --dry-run --json
 uv run --locked mediagent tools run comic.link.sync --input examples/tools/comic.link.sync.jmcomic-album.json --json
+uv run --locked mediagent tools run jmcomic.favorites.collect --input examples/tools/jmcomic.favorites.collect.json --dry-run --summary-json
 uv run --locked mediagent tools run jmcomic.favorites.sync --input examples/tools/jmcomic.favorites.sync.json --dry-run --json
 ```
 
 若要改用瀏覽器 session，可透過 `MEDIAGENT_JMCOMIC_COOKIE_FILE` 或 `JMCOMIC_COOKIE_FILE` 指定 Netscape `cookies.txt`；也可讓 `*_SESSION_FILE` 直接指向 `.txt`／`.cookies`。只會匯入 trusted JMComic domains 的 cookies；後續寫回會維持 Netscape 格式與 `0600`。同時設定 cookie-file 與 session-file 時，cookie-file 優先。
 
 第二次相同執行應下載 0 個健康頁面並回報 existing CBZ。直接 JM album 不建立 follow，只有收藏同步會。執行期間不要刪 SQLite `-wal`／`-shm`。
+
+follow 的實作是由 timer 定期重跑 `jmcomic.favorites.sync`，不是常駐 daemon。完整收藏 snapshot 更新 active membership，之後重新解析每個 active album 以發現新章。system-level 範例位於 `deploy/systemd/system/`，使用共用 non-blocking run lock 與精簡的 `--summary-json` journal。`nhentai.favorites.sync` 也可用相同 timer 發現新收藏的 exact gallery，但不會推測或追蹤系列。
 
 若在 filename-hash descramble 修正前下載的 JMComic 頁面呈現水平帶狀錯位，`repair_missing_files` 不足以修正，因為檔案仍存在且 DB 視為健康。請用 `mediagent link sync '<album-url>' --overwrite --json` 明確重新下載該 exact album 並重建 CBZ。流程會用 `.partial` 與 atomic replacement；先在本機確認圖片／CBZ 正常，再部署至 server。
 

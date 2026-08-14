@@ -94,7 +94,13 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Path to JSON input. Use '-' to read stdin. Defaults to an empty object.",
     )
-    tools_run.add_argument("--json", action="store_true", help="Emit machine-readable JSON.")
+    tool_output = tools_run.add_mutually_exclusive_group()
+    tool_output.add_argument("--json", action="store_true", help="Emit complete machine-readable JSON.")
+    tool_output.add_argument(
+        "--summary-json",
+        action="store_true",
+        help="Emit a compact machine-readable summary suitable for recurring service logs.",
+    )
     tools_run.add_argument("--dry-run", action="store_true", help="Run without tool side effects.")
     tools_run.add_argument("--allow-experimental", action="store_true", help=argparse.SUPPRESS)
     tools_run.set_defaults(handler=handle_tools_run)
@@ -168,6 +174,7 @@ def handle_tools_run(args: argparse.Namespace) -> int:
         tool=args.tool,
         input_data=input_data,
         json_output=args.json,
+        summary_json=args.summary_json,
         dry_run=args.dry_run,
         allow_experimental=args.allow_experimental,
     )
@@ -198,6 +205,7 @@ def handle_link_sync(args: argparse.Namespace) -> int:
         tool="comic.link.sync" if comic_link else "link.media.sync",
         input_data=input_data,
         json_output=args.json,
+        summary_json=False,
         dry_run=args.dry_run,
     )
 
@@ -299,6 +307,7 @@ def run_tool_command(
     tool: str,
     input_data: dict[str, Any],
     json_output: bool,
+    summary_json: bool,
     dry_run: bool,
     allow_experimental: bool = False,
 ) -> int:
@@ -320,7 +329,9 @@ def run_tool_command(
         "run_id": context.run_id,
         **result.to_dict(),
     }
-    if json_output:
+    if summary_json:
+        print_json(_summary_tool_payload(payload))
+    elif json_output:
         print_json(payload)
     else:
         print_human_result(payload)
@@ -329,6 +340,38 @@ def run_tool_command(
     if result.error and result.error.category.value in VALIDATION_ERROR_CATEGORIES:
         return EXIT_VALIDATION_ERROR
     return EXIT_RUNTIME_FAILURE
+
+
+def _summary_tool_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+    compact_data = {
+        key: data[key]
+        for key in (
+            "provider",
+            "collection",
+            "policy",
+            "target_policy",
+            "complete",
+            "pages_fetched",
+            "expected_total",
+            "favorites_seen",
+            "following",
+            "dry_run",
+            "snapshot",
+            "summary",
+        )
+        if key in data
+    }
+    return {
+        "tool": payload.get("tool"),
+        "run_id": payload.get("run_id"),
+        "status": payload.get("status"),
+        "data": compact_data,
+        "artifact_count": len(payload.get("artifacts") or []),
+        "warnings": payload.get("warnings") or [],
+        "rate_limit": payload.get("rate_limit"),
+        "error": payload.get("error"),
+    }
 
 
 def build_llm_client() -> OllamaClient:

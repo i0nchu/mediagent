@@ -80,6 +80,24 @@ class CliTests(unittest.TestCase):
         self.assertEqual(payload["status"], "success")
         self.assertEqual(payload["tool"], "core.env.check")
 
+    def test_tools_run_summary_json_omits_verbose_tool_data(self) -> None:
+        completed = self.run_cli(
+            "tools",
+            "run",
+            "core.env.check",
+            "--summary-json",
+            "--input",
+            "-",
+            input_text=json.dumps({"required": []}),
+        )
+
+        self.assertEqual(completed.returncode, 0)
+        payload = json.loads(completed.stdout)
+        self.assertEqual(payload["status"], "success")
+        self.assertEqual(payload["tool"], "core.env.check")
+        self.assertEqual(payload["data"], {})
+        self.assertEqual(payload["artifact_count"], 0)
+
     def test_public_link_sync_entrypoint_uses_link_media_sync(self) -> None:
         with TemporaryDirectory() as temp_dir:
             completed = self.run_cli(

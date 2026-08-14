@@ -21,6 +21,7 @@ uv run --locked mediagent tools run comic.link.sync --input examples/tools/comic
 uv run --locked mediagent tools run comic.link.sync --input examples/tools/comic.link.sync.nhentai.json --json
 uv run --locked mediagent tools run nhentai.auth.status --input examples/tools/nhentai.auth.status.json --json
 uv run --locked mediagent tools run nhentai.auth.refresh --input examples/tools/nhentai.auth.refresh.json --json
+uv run --locked mediagent tools run nhentai.favorites.collect --input examples/tools/nhentai.favorites.collect.json --dry-run --summary-json
 uv run --locked mediagent tools run nhentai.favorites.sync --input examples/tools/nhentai.favorites.sync.json --dry-run --json
 ```
 
@@ -37,12 +38,15 @@ uv run --locked mediagent tools run jmcomic.auth.status --input examples/tools/j
 uv run --locked mediagent tools run jmcomic.auth.login --input examples/tools/jmcomic.auth.login.json --json
 uv run --locked mediagent tools run comic.link.sync --input examples/tools/comic.link.sync.jmcomic-album.json --dry-run --json
 uv run --locked mediagent tools run comic.link.sync --input examples/tools/comic.link.sync.jmcomic-album.json --json
+uv run --locked mediagent tools run jmcomic.favorites.collect --input examples/tools/jmcomic.favorites.collect.json --dry-run --summary-json
 uv run --locked mediagent tools run jmcomic.favorites.sync --input examples/tools/jmcomic.favorites.sync.json --dry-run --json
 ```
 
 Optional alternative として、Netscape browser export を `MEDIAGENT_JMCOMIC_COOKIE_FILE` または `JMCOMIC_COOKIE_FILE` で指定できる。`*_SESSION_FILE` を `.txt`／`.cookies` path に直接向けてもよい。Trusted JMComic domains の cookies だけを import し、後の書き戻しも Netscape format と mode `0600` を維持する。cookie-file と session-file の両方を設定した場合は cookie-file を優先する。
 
 同じ二回目の実行は healthy page を 0 件 download し、existing CBZ を報告すること。直接 JM album は follow を作らず、favorite sync のみが作る。実行中に SQLite `-wal`／`-shm` を削除しない。
+
+follow は常駐 daemon ではなく、timer が `jmcomic.favorites.sync` を定期的に再実行することで実現する。complete favorite snapshot で active membership を更新し、各 active album を再 resolve して新章を発見する。system-level example は `deploy/systemd/system/` にあり、shared non-blocking run lock と compact `--summary-json` journal output を使う。`nhentai.favorites.sync` も同じ timer pattern で新しい exact favorite gallery を発見できるが、series を推測／follow しない。
 
 Filename-hash descramble fix 前に download した JMComic page が horizontal band reorder を示す場合、file は存在して DB で healthy のため `repair_missing_files` だけでは直らない。`mediagent link sync '<album-url>' --overwrite --json` でその exact album を明示的に再 download し、CBZ を rebuild する。`.partial` と atomic replacement を使うため、server deployment 前に local image/CBZ を確認する。
 

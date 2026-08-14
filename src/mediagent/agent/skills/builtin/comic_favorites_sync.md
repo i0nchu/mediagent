@@ -4,9 +4,11 @@ description: Sync comics from the configured nhentai or JMComic favorites collec
 allowed_tools:
   - nhentai.auth.status
   - nhentai.auth.refresh
+  - nhentai.favorites.collect
   - nhentai.favorites.sync
   - jmcomic.auth.status
   - jmcomic.auth.login
+  - jmcomic.favorites.collect
   - jmcomic.favorites.sync
 default_dry_run: false
 risk_level: write_files_network_credentials
@@ -16,6 +18,7 @@ supported_intents:
   - sync nhentai favorites
   - sync JMComic or 18comic favorites
   - retry failed or repair missing favorite comic files
+  - validate or count configured comic favorites without downloading
 unsupported_intents:
   - download a directly provided comic URL
   - search either provider
@@ -30,6 +33,10 @@ Use this skill only when the user asks to synchronize the configured account fav
 - `jmcomic.favorites.sync` treats each favorite album as `series_and_follow`, downloading its current chapters and discovering new chapters on later runs while it remains favorited.
 
 Direct links belong to `explicit_link_download` and never enable follow behavior.
+
+Use `*.favorites.collect` when the user asks only to validate authentication,
+pagination, or favorite counts without downloading. It never changes collection
+membership. Normal synchronization and follow runs use `*.favorites.sync`.
 
 Do not pass `download_limit` unless the user explicitly requests a bounded download. Collection enumeration must still complete before favorite removals are committed. Both sync tools retry failed pages, repair missing files, and package complete chapters as CBZ by default.
 

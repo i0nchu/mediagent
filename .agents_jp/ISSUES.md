@@ -1,10 +1,10 @@
 # 実装上の注意点
 
-## Comic adapter の opt-in live verification が未完了
+## nhentai browser cookie renewal の live re-verification が未完了
 
-- **状態:** offline 実装完了、外部検証は未完了。
-- **現在:** fixture で direct exact、shared inbox dispatch、完全 favorite snapshot、JSON／Netscape session 再利用、invalid な旧 session からの credential login recovery、JM encrypted envelope／image restore、repair、stable file identity、atomic CBZ を検証済み。User は nhentai cookie auth、favorites sync、direct resolve/download を確認済み。現在 session が利用可能なまま refresh endpoint は HTTP 403 を返したため、refresh は success ではなく `nhentai_refresh_rejected` を返す。JM live credential login、download/favorites は未検証。
-- **次:** RUNBOOK の repo-local DB/library/session path で bounded live test を行う。検証前に production path や recurring service を使わない。
+- **状態:** JMComic live verification 完了。nhentai cookie renewal は外部操作待ち。
+- **現在:** JM credential login/session reuse、3 pages・42 favorite albums、1,081 chapters／49,137 pages full dry-run、108-page bounded real sync、valid CBZ、0-download rerun は live 検証済み。User が以前検証した nhentai cookie auth/favorites/direct download の cookie は現在 HTTP 401。Password/CAPTCHA automation は引き続き意図的に unsupported。
+- **次:** 新しい nhentai browser cookie を再 export し、repo-local paths で `nhentai.favorites.collect` と bounded sync を再実行してから timer を enable する。
 
 ## 外部 provider contract は変更される可能性がある
 
