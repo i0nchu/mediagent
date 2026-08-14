@@ -46,7 +46,7 @@ Optional alternative として、Netscape browser export を `MEDIAGENT_JMCOMIC_
 
 同じ二回目の実行は healthy page を 0 件 download し、existing CBZ を報告すること。直接 JM album は follow を作らず、favorite sync のみが作る。実行中に SQLite `-wal`／`-shm` を削除しない。
 
-follow は常駐 daemon ではなく、timer が `jmcomic.favorites.sync` を定期的に再実行することで実現する。complete favorite snapshot で active membership を更新し、各 active album を再 resolve して新章を発見する。system-level example は `deploy/systemd/system/` にあり、shared non-blocking run lock と compact `--summary-json` journal output を使う。`nhentai.favorites.sync` も同じ timer pattern で新しい exact favorite gallery を発見できるが、series を推測／follow しない。
+follow は常駐 daemon ではなく、timer が `jmcomic.favorites.sync` を定期的に再実行することで実現する。complete favorite snapshot で active membership を更新し、各 active album を再 resolve して新章を発見する。system-level example は `deploy/systemd/system/` にあり、`/data/services/mediagent` unit は `server` account と明示的な `HOME`／`PATH`、shared non-blocking run lock、compact `--summary-json` journal output を使う。`nhentai.favorites.sync` も同じ timer pattern で新しい exact favorite gallery を発見できるが、series を推測／follow しない。
 
 Filename-hash descramble fix 前に download した JMComic page が horizontal band reorder を示す場合、file は存在して DB で healthy のため `repair_missing_files` だけでは直らない。`mediagent link sync '<album-url>' --overwrite --json` でその exact album を明示的に再 download し、CBZ を rebuild する。`.partial` と atomic replacement を使うため、server deployment 前に local image/CBZ を確認する。
 

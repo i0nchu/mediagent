@@ -1,7 +1,9 @@
 # Mediagent system-level comic favorite timers
 
 These units run deterministic favorite sync tools from the production checkout at
-`/data/services/mediagent`. They do not turn direct links into follow targets.
+`/data/services/mediagent` as the production account `server`. They set `HOME`
+and `PATH` explicitly so a system service can locate the account's user-installed
+`uv`. They do not turn direct links into follow targets.
 
 - `nhentai.favorites.sync` treats every currently favorited gallery as exact and
   discovers newly favorited galleries on later runs.
@@ -20,8 +22,8 @@ manual full sync from the production checkout. The collect command validates the
 complete remote snapshot without downloading or changing collection membership:
 
 ```bash
-sudo -u ion bash -lc 'cd /data/services/mediagent && set -a && source .env && set +a && uv run --locked mediagent tools run jmcomic.favorites.collect --summary-json'
-sudo -u ion bash -lc 'cd /data/services/mediagent && set -a && source .env && set +a && uv run --locked mediagent tools run nhentai.favorites.collect --summary-json'
+sudo -u server bash -lc 'cd /data/services/mediagent && set -a && source .env && set +a && uv run --locked mediagent tools run jmcomic.favorites.collect --summary-json'
+sudo -u server bash -lc 'cd /data/services/mediagent && set -a && source .env && set +a && uv run --locked mediagent tools run nhentai.favorites.collect --summary-json'
 ```
 
 Install and verify the system units:

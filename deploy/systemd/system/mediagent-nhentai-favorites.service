@@ -7,11 +7,13 @@ ConditionPathExists=/data/services/mediagent/.env
 
 [Service]
 Type=oneshot
-User=ion
-Group=ion
+User=server
+Group=server
 WorkingDirectory=/data/services/mediagent
 EnvironmentFile=/data/services/mediagent/.env
-ExecStart=/usr/bin/flock --nonblock --conflict-exit-code 75 /run/lock/mediagent-sync.lock /home/ion/.local/bin/uv run --locked mediagent tools run nhentai.favorites.sync --input /data/services/mediagent/deploy/systemd/system/nhentai.favorites.sync.json --summary-json
+Environment=HOME=/home/server
+Environment=PATH=/home/server/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/flock --nonblock --conflict-exit-code 75 /run/lock/mediagent-sync.lock /usr/bin/env uv run --locked mediagent tools run nhentai.favorites.sync --input /data/services/mediagent/deploy/systemd/system/nhentai.favorites.sync.json --summary-json
 SuccessExitStatus=75
 TimeoutStartSec=12h
 UMask=0077

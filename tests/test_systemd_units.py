@@ -20,6 +20,12 @@ class SystemComicTimerTests(unittest.TestCase):
             self.assertIn("SuccessExitStatus=75", service)
             self.assertIn("--summary-json", service)
             self.assertNotIn(" --json", service)
+            self.assertIn("User=server", service)
+            self.assertIn("Group=server", service)
+            self.assertIn("Environment=HOME=/home/server", service)
+            self.assertIn("/home/server/.local/bin", service)
+            self.assertIn("/usr/bin/env uv run", service)
+            self.assertNotIn("/home/ion", service)
 
     def test_comic_timer_inputs_enable_retry_and_missing_file_repair(self) -> None:
         for provider in ("jmcomic", "nhentai"):
