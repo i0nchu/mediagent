@@ -10,6 +10,8 @@
 
 nhentai login は browser cookie session を必要とし、CAPTCHA／proof-of-work のため username/password automation は意図的に実装しない。JMComic は undocumented encrypted mobile API と CDN scramble rule を使用する。auth、rate-limit、response error は structured result にし、collection failure 時は前回の完全 snapshot を保持する。
 
+JMComic API は adapter が gzip support を宣言すると JSON envelope を gzip encode する。Transport は bounded gzip／deflate decode を行い、malformed、incomplete、oversized、unsupported encoding は response body を含まない sanitized structured error として返す。
+
 このファイルは次回引き継ぎでまだ重要な caveats だけを記録します。解決済みの履歴は、実装判断に影響しない限り Open に残しません。
 
 ## Open

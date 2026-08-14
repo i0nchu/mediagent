@@ -6,11 +6,12 @@
 - nhentai 支援 exact gallery、完整收藏分頁、可重用及刷新之瀏覽器 cookie session（0600）。
 - JMComic 支援 album/photo/可信封面、加密 mobile API、可重用登入 session、完整 album／收藏 manifest 與垂直切片還原。
 - JMComic session 可由設定好的帳號密碼建立，也可選擇載入 Netscape `cookies.txt`。Cookie-file path 會保留原格式與 `0600`；明確執行 `jmcomic.auth.login` 時，無效舊 session 不會阻擋登入，成功後會被取代。
+- JMComic transport 會在 JSON／AES envelope parsing 前，以 bounded 方式解壓 gzip／deflate API response。已用不含憑證與內容的 public album probe 驗證目前 endpoint 回 gzip，修正後可成功 decode album `349717`。
 - `comic.link.sync` 永遠 exact；`nhentai.favorites.sync` 以 gallery exact 同步；`jmcomic.favorites.sync` 只追蹤 active favorite albums。
 - 共用 link intake 現在會在 generic HTML resolution 前，先把辨識到的 nhentai／JMComic links 分派給 exact comic adapter。direct `link.media.sync`、queued links、Telegram inbox，以及未來沿用相同 queue/tool boundary 的 inbox 都會生效；Telegram provenance 會保留，但不會建立 follow state。
 - 完整章節會原子封裝為含 `ComicInfo.xml` 的 Kavita CBZ；只有一章的 JM album 仍維持穩定 series layout，避免未來新增章節時搬動舊 CBZ。
 - 取消收藏不刪媒體，不完整 snapshot 不提交。
-- 本次 locked offline suite 為 329 tests 全數通過。
+- 本次 locked offline suite 為 331 tests 全數通過。
 
 ## 已完成
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import time
+import zlib
 from dataclasses import dataclass
 from http.cookies import SimpleCookie
 from typing import Any
@@ -28,6 +29,7 @@ from mediagent.platforms.jmcomic.parser import (
 DEFAULT_API_BASE_URL = "https://www.cdngwc.net"
 DEFAULT_IMAGE_DOMAIN = "cdn-msp.jmapiproxy2.cc"
 _SCRAMBLE_RE = re.compile(r"(?:var\s+)?scramble_id\s*=\s*['\"]?(\d+)")
+_MAX_API_RESPONSE_BYTES = 16 * 1024 * 1024
 
 
 class JMComicClientError(Exception):
@@ -174,13 +176,21 @@ class JMComicApiTransport:
         if not 200 <= response.status_code < 300:
             raise JMComicClientError("jmcomic_request_failed", "JMComic API request failed.", status_code=response.status_code)
         response_cookies = {**(cookies or {}), **_response_cookies(response.headers)}
+        try:
+            response_content = _decode_response_content(response.content, response.headers)
+        except ValueError as exc:
+            raise JMComicClientError(
+                "jmcomic_response_invalid",
+                str(exc),
+                status_code=response.status_code,
+            ) from exc
         if path == "/chapter_view_template":
-            text = response.content.decode("utf-8", errors="replace")
+            text = response_content.decode("utf-8", errors="replace")
             match = _SCRAMBLE_RE.search(text)
             payload: Any = {"scramble_id": match.group(1)} if match else {}
         else:
             try:
-                payload = decode_api_envelope(response.content, timestamp=timestamp, decrypt=self.decrypt)
+                payload = decode_api_envelope(response_content, timestamp=timestamp, decrypt=self.decrypt)
             except ValueError as exc:
                 raise JMComicClientError("jmcomic_response_invalid", str(exc), status_code=response.status_code) from exc
         return JMComicTransportResult(payload, response_cookies, response.status_code)
@@ -339,3 +349,38 @@ def _response_cookies(headers: dict[str, str]) -> dict[str, str]:
     except Exception:
         return {}
     return {name: morsel.value for name, morsel in jar.items()}
+
+
+def _decode_response_content(content: bytes, headers: dict[str, str]) -> bytes:
+    encoding = next(
+        (str(value).strip().lower() for name, value in headers.items() if name.lower() == "content-encoding"),
+        "",
+    )
+    if encoding in {"", "identity"}:
+        if len(content) > _MAX_API_RESPONSE_BYTES:
+            raise ValueError("JMComic API response exceeds the decoded size limit.")
+        return content
+    if encoding == "gzip":
+        return _decompress_bounded(content, zlib.MAX_WBITS | 16)
+    if encoding == "deflate":
+        try:
+            return _decompress_bounded(content, zlib.MAX_WBITS)
+        except ValueError:
+            return _decompress_bounded(content, -zlib.MAX_WBITS)
+    raise ValueError("JMComic API returned an unsupported content encoding.")
+
+
+def _decompress_bounded(content: bytes, window_bits: int) -> bytes:
+    try:
+        decoder = zlib.decompressobj(window_bits)
+        decoded = decoder.decompress(content, _MAX_API_RESPONSE_BYTES + 1)
+        if len(decoded) > _MAX_API_RESPONSE_BYTES or decoder.unconsumed_tail:
+            raise ValueError("JMComic API response exceeds the decoded size limit.")
+        decoded += decoder.flush(_MAX_API_RESPONSE_BYTES + 1 - len(decoded))
+    except zlib.error as exc:
+        raise ValueError("JMComic API returned an invalid compressed response.") from exc
+    if len(decoded) > _MAX_API_RESPONSE_BYTES:
+        raise ValueError("JMComic API response exceeds the decoded size limit.")
+    if not decoder.eof:
+        raise ValueError("JMComic API returned an incomplete compressed response.")
+    return decoded

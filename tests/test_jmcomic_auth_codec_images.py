@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import gzip
 import json
 import os
 import tempfile
@@ -12,9 +13,11 @@ from unittest.mock import MagicMock, patch
 
 from PIL import Image
 
+from mediagent.core.http import HttpResponse
 from mediagent.core.tooling import ToolContext
 from mediagent.platforms.jmcomic import auth as jm_auth
 from mediagent.platforms.jmcomic.auth import JMComicSession, load_config, load_session, save_session
+from mediagent.platforms.jmcomic.client import JMComicApiTransport, JMComicClientError
 from mediagent.platforms.jmcomic.codec import api_headers, decode_api_envelope
 from mediagent.platforms.jmcomic.images import (
     materialize_page_content,
@@ -138,6 +141,25 @@ class JMComicCodecTests(unittest.TestCase):
             {"id": "2"},
         )
 
+    def test_transport_decompresses_gzip_api_envelope_before_json_decode(self) -> None:
+        payload = gzip.compress(json.dumps({"code": 200, "data": {"id": "349717"}}).encode())
+        http = _EncodedJMComicHttpClient(payload, encoding="gzip")
+        transport = JMComicApiTransport(http_client=http, clock=lambda: 1700000000)
+
+        result = transport.request("/album", params={"id": "349717"})
+
+        self.assertEqual(result.payload, {"id": "349717"})
+
+    def test_transport_rejects_invalid_gzip_without_exposing_response_body(self) -> None:
+        http = _EncodedJMComicHttpClient(b"private upstream body", encoding="gzip")
+        transport = JMComicApiTransport(http_client=http, clock=lambda: 1700000000)
+
+        with self.assertRaises(JMComicClientError) as caught:
+            transport.request("/album", params={"id": "349717"})
+
+        self.assertEqual(caught.exception.code, "jmcomic_response_invalid")
+        self.assertNotIn("private upstream body", str(caught.exception))
+
 
 class JMComicImageTests(unittest.TestCase):
     def test_scramble_segment_count_matches_threshold_behavior(self) -> None:
@@ -161,6 +183,20 @@ class JMComicImageTests(unittest.TestCase):
             {"provider": "jmcomic", "vertical_segments": 2},
         )
         self.assertEqual(Image.open(BytesIO(materialized)).getpixel((0, 0)), (255, 0, 0))
+
+
+class _EncodedJMComicHttpClient:
+    def __init__(self, content: bytes, *, encoding: str) -> None:
+        self.content = content
+        self.encoding = encoding
+
+    def get(self, url, *, headers=None, timeout=30.0):
+        return HttpResponse(
+            200,
+            {"Content-Type": "application/json", "Content-Encoding": self.encoding},
+            self.content,
+            url,
+        )
 
 
 if __name__ == "__main__":

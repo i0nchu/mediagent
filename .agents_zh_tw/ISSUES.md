@@ -10,6 +10,8 @@
 
 nhentai 登入需要瀏覽器提供 cookie session，因 CAPTCHA／proof-of-work 而刻意不自動化帳密登入。JMComic 使用未公開的加密 mobile API 與 CDN scramble 規則。auth、rate-limit 或 response 錯誤必須結構化返回；收藏收集失敗時保留上一次完整 snapshot。
 
+JMComic API 目前會在 adapter 宣告支援 gzip 時壓縮 JSON envelope。Transport 已加入 bounded gzip／deflate decode；損壞、不完整、超限或不支援的 encoding 會回傳不含 response body 的 sanitized structured error。
+
 本檔記錄下一次接手仍需要注意的 caveats。已解決的歷史問題不應長期保留在 Open，除非仍影響實作判斷。
 
 ## Open
