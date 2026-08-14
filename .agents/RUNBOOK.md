@@ -48,7 +48,7 @@ uv run --locked mediagent tools run nhentai.favorites.sync --input examples/tool
 uv run --locked mediagent tools run nhentai.favorites.sync --input examples/tools/nhentai.favorites.sync.json --json
 ```
 
-JMComic can create and reuse a session from configured credentials. `JMCOMIC_USERNAME`, `JMCOMIC_PASSWORD`, and `JMCOMIC_SESSION_FILE` are accepted compatibility names; the `MEDIAGENT_JMCOMIC_*` names remain preferred and take precedence. Test a small album before favorites:
+JMComic can create and reuse a session directly from configured credentials; browser cookies are not required. `JMCOMIC_USERNAME`, `JMCOMIC_PASSWORD`, and `JMCOMIC_SESSION_FILE` are accepted compatibility names; the `MEDIAGENT_JMCOMIC_*` names remain preferred and take precedence. `jmcomic.auth.login` deliberately replaces an invalid old session instead of failing before the login request. Test a small album before favorites:
 
 ```bash
 uv run --locked mediagent tools run jmcomic.auth.status --input examples/tools/jmcomic.auth.status.json --json
@@ -60,6 +60,8 @@ uv run --locked mediagent tools run comic.link.sync \
 uv run --locked mediagent tools run jmcomic.favorites.sync \
   --input examples/tools/jmcomic.favorites.sync.json --dry-run --json
 ```
+
+As an optional alternative, a Netscape-format browser export may be configured through `MEDIAGENT_JMCOMIC_COOKIE_FILE` or `JMCOMIC_COOKIE_FILE`; pointing `*_SESSION_FILE` directly at a `.txt` or `.cookies` path also works. Only cookies belonging to trusted JMComic domains are imported. A later session write preserves Netscape format and mode `0600`. When both cookie-file and session-file variables are set, the cookie-file variable takes precedence.
 
 Inspect only summaries and files under the local root. A second identical run should download zero healthy pages and report existing CBZ files. Direct JM album runs never create follow memberships; only `jmcomic.favorites.sync` does. Do not delete SQLite `-wal` or `-shm` files during a run.
 

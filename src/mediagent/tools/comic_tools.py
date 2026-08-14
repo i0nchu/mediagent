@@ -673,7 +673,12 @@ def _jm_client(
     login_if_needed: bool,
     force_login: bool = False,
 ) -> JMComicClient:
-    session = jm_auth.load_session(env=context.env, cwd=context.cwd, session_file=input_data.get("session_file"))
+    try:
+        session = jm_auth.load_session(env=context.env, cwd=context.cwd, session_file=input_data.get("session_file"))
+    except jm_auth.JMComicAuthError:
+        if not force_login:
+            raise
+        session = jm_auth.JMComicSession({})
     client = JMComicClient(
         JMComicApiTransport(http_client=context.http_client, timeout=float(input_data.get("timeout_seconds", 30.0))),
         session=session,

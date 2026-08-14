@@ -8,7 +8,7 @@ This file tracks known caveats that matter for the next handoff. Resolved histor
 
 - **Status:** Offline implementation complete; external verification open.
 - **Observed in:** `src/mediagent/platforms/nhentai/`, `src/mediagent/platforms/jmcomic/`, `src/mediagent/tools/comic_tools.py`.
-- **Current behavior:** Fixtures cover direct exact scope, shared inbox dispatch, complete favorite snapshots, reusable sessions, encrypted JM envelopes, image restoration, repair, stable file identity, and atomic CBZ packaging. The user verified nhentai cookie authentication, favorites sync, and direct resolve/download. The refresh endpoint returned HTTP 403 while the imported session remained usable, so refresh now reports `nhentai_refresh_rejected` instead of success. JM live download/favorite sync remains unverified.
+- **Current behavior:** Fixtures cover direct exact scope, shared inbox dispatch, complete favorite snapshots, reusable JSON/Netscape sessions, credential login recovery from an invalid old session, encrypted JM envelopes, image restoration, repair, stable file identity, and atomic CBZ packaging. The user verified nhentai cookie authentication, favorites sync, and direct resolve/download. The refresh endpoint returned HTTP 403 while the imported session remained usable, so refresh now reports `nhentai_refresh_rejected` instead of success. JM live credential login, download, and favorite sync remain unverified.
 - **Expected next step:** Use repository-local DB/library/session paths and the runbook's bounded live tests. Do not point initial tests at production paths or start recurring services yet.
 
 ### Provider contracts are undocumented and may change

@@ -30,7 +30,7 @@ nhentai 收藏需先從已登入瀏覽器匯出一次 cookie jar；可使用 Med
 
 瀏覽器匯入的 session 可能在 nhentai refresh endpoint 收到 HTTP 403，但 authenticated favorites 仍可正常使用。`nhentai.auth.refresh` 會再做一次只讀 favorites 驗證供診斷，但 refresh 操作仍以最外層 failure 回報，`error.code` 為 `nhentai_refresh_rejected`；data 會明確指出沒有 rotation、目前 auth 仍可用。若驗證也失敗，則回報 `nhentai_auth_required`，此時需重新從瀏覽器匯出 cookie。
 
-JMComic 也接受 `JMCOMIC_USERNAME`、`JMCOMIC_PASSWORD`、`JMCOMIC_SESSION_FILE`；推薦的 `MEDIAGENT_JMCOMIC_*` 若同時存在會優先採用。
+JMComic 可以直接用設定好的帳號密碼建立並重用 session，不需要瀏覽器 cookie。也接受 `JMCOMIC_USERNAME`、`JMCOMIC_PASSWORD`、`JMCOMIC_SESSION_FILE`；推薦的 `MEDIAGENT_JMCOMIC_*` 若同時存在會優先採用。`jmcomic.auth.login` 會忽略並取代無效的舊 session，不會在送出登入 request 前就失敗。
 
 ```bash
 uv run --locked mediagent tools run jmcomic.auth.status --input examples/tools/jmcomic.auth.status.json --json
@@ -39,6 +39,8 @@ uv run --locked mediagent tools run comic.link.sync --input examples/tools/comic
 uv run --locked mediagent tools run comic.link.sync --input examples/tools/comic.link.sync.jmcomic-album.json --json
 uv run --locked mediagent tools run jmcomic.favorites.sync --input examples/tools/jmcomic.favorites.sync.json --dry-run --json
 ```
+
+若要改用瀏覽器 session，可透過 `MEDIAGENT_JMCOMIC_COOKIE_FILE` 或 `JMCOMIC_COOKIE_FILE` 指定 Netscape `cookies.txt`；也可讓 `*_SESSION_FILE` 直接指向 `.txt`／`.cookies`。只會匯入 trusted JMComic domains 的 cookies；後續寫回會維持 Netscape 格式與 `0600`。同時設定 cookie-file 與 session-file 時，cookie-file 優先。
 
 第二次相同執行應下載 0 個健康頁面並回報 existing CBZ。直接 JM album 不建立 follow，只有收藏同步會。執行期間不要刪 SQLite `-wal`／`-shm`。
 

@@ -3,7 +3,7 @@
 ## Comic adapter の opt-in live verification が未完了
 
 - **状態:** offline 実装完了、外部検証は未完了。
-- **現在:** fixture で direct exact、shared inbox dispatch、完全 favorite snapshot、session 再利用、JM encrypted envelope／image restore、repair、stable file identity、atomic CBZ を検証済み。User は nhentai cookie auth、favorites sync、direct resolve/download を確認済み。現在 session が利用可能なまま refresh endpoint は HTTP 403 を返したため、refresh は success ではなく `nhentai_refresh_rejected` を返す。JM live download/favorites は未検証。
+- **現在:** fixture で direct exact、shared inbox dispatch、完全 favorite snapshot、JSON／Netscape session 再利用、invalid な旧 session からの credential login recovery、JM encrypted envelope／image restore、repair、stable file identity、atomic CBZ を検証済み。User は nhentai cookie auth、favorites sync、direct resolve/download を確認済み。現在 session が利用可能なまま refresh endpoint は HTTP 403 を返したため、refresh は success ではなく `nhentai_refresh_rejected` を返す。JM live credential login、download/favorites は未検証。
 - **次:** RUNBOOK の repo-local DB/library/session path で bounded live test を行う。検証前に production path や recurring service を使わない。
 
 ## 外部 provider contract は変更される可能性がある

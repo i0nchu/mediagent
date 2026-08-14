@@ -30,7 +30,7 @@ tool result には二つの意味層がある。top-level `status` は要求し�
 
 browser から import した session は authenticated favorites が利用可能でも、nhentai refresh endpoint から HTTP 403 を受ける場合がある。`nhentai.auth.refresh` は診断用に read-only favorites check を行うが、refresh operation 自体は top-level failure とし、`error.code: nhentai_refresh_rejected` を返す。data は rotation 失敗と current auth が利用可能であることを明示する。check も失敗した場合は `nhentai_auth_required` となり、browser cookie の再 export が必要である。
 
-JMComic は `JMCOMIC_USERNAME`、`JMCOMIC_PASSWORD`、`JMCOMIC_SESSION_FILE` も受け付ける。推奨の `MEDIAGENT_JMCOMIC_*` が同時に存在する場合はそちらを優先する。
+JMComic は設定済み username/password から直接 reusable session を作成でき、browser cookie は必須ではない。`JMCOMIC_USERNAME`、`JMCOMIC_PASSWORD`、`JMCOMIC_SESSION_FILE` も受け付け、推奨の `MEDIAGENT_JMCOMIC_*` が同時に存在する場合はそちらを優先する。`jmcomic.auth.login` は invalid な旧 session を無視して置き換え、login request 前に失敗しない。
 
 ```bash
 uv run --locked mediagent tools run jmcomic.auth.status --input examples/tools/jmcomic.auth.status.json --json
@@ -39,6 +39,8 @@ uv run --locked mediagent tools run comic.link.sync --input examples/tools/comic
 uv run --locked mediagent tools run comic.link.sync --input examples/tools/comic.link.sync.jmcomic-album.json --json
 uv run --locked mediagent tools run jmcomic.favorites.sync --input examples/tools/jmcomic.favorites.sync.json --dry-run --json
 ```
+
+Optional alternative として、Netscape browser export を `MEDIAGENT_JMCOMIC_COOKIE_FILE` または `JMCOMIC_COOKIE_FILE` で指定できる。`*_SESSION_FILE` を `.txt`／`.cookies` path に直接向けてもよい。Trusted JMComic domains の cookies だけを import し、後の書き戻しも Netscape format と mode `0600` を維持する。cookie-file と session-file の両方を設定した場合は cookie-file を優先する。
 
 同じ二回目の実行は healthy page を 0 件 download し、existing CBZ を報告すること。直接 JM album は follow を作らず、favorite sync のみが作る。実行中に SQLite `-wal`／`-shm` を削除しない。
 

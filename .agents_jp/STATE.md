@@ -5,11 +5,12 @@
 - SQLite schema は v8。atomic collection snapshot と active/inactive membership を実装済み。
 - nhentai は exact gallery、完全 favorite pagination、再利用／refresh 可能な browser-cookie session（0600）を実装済み。
 - JMComic は album/photo/trusted-cover、暗号化 mobile API、再利用 login session、完全 album/favorite manifest、vertical-slice 復元を実装済み。
+- JMComic session は configured username/password から作成でき、optional な Netscape `cookies.txt` からも load できる。Cookie-file path は format と mode `0600` を維持し、明示的な `jmcomic.auth.login` は invalid な旧 session を無視して login 成功後に置き換える。
 - `comic.link.sync` は常に exact。`nhentai.favorites.sync` は gallery exact、`jmcomic.favorites.sync` は active favorite album のみ follow する。
 - Shared link intake は generic HTML resolution の前に recognized nhentai/JMComic links を exact comic adapter へ dispatch する。direct `link.media.sync`、queued links、Telegram inbox、同じ queue/tool boundary を使う future inbox に適用され、Telegram provenance は保持するが follow state は作らない。
 - 完全な chapter は `ComicInfo.xml` 付き Kavita CBZ に atomic package する。一章だけの JM album も安定した series layout を維持し、将来の新章で既存 CBZ を移動させない。
 - favorite 解除で media は削除せず、不完全 snapshot は commit しない。
-- この更新後の locked offline suite は 327 tests pass。
+- この更新後の locked offline suite は 329 tests pass。
 
 ## 実装済み
 

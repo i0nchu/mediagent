@@ -5,11 +5,12 @@
 - SQLite schema is version 8 with atomic source collection snapshots and active/inactive memberships.
 - `platforms/nhentai/` supports exact gallery resolution, ordered image manifests, complete favorite pagination, reusable browser-cookie sessions, and session refresh/persistence with mode `0600`.
 - `platforms/jmcomic/` supports strict album/photo/trusted-cover links, encrypted mobile API envelopes, reusable login sessions, complete album/favorite manifests, and deterministic vertical-slice image restoration.
+- JMComic sessions can be created from configured username/password or loaded from an optional Netscape `cookies.txt`. Cookie-file paths preserve their format and mode `0600`; explicit `jmcomic.auth.login` ignores an invalid old session and replaces it after successful credential login.
 - `comic.link.sync` always applies exact direct-link scope. `nhentai.favorites.sync` uses exact gallery targets; `jmcomic.favorites.sync` follows only active favorite albums.
 - Shared link intake now dispatches recognized nhentai/JMComic links to the exact comic adapter before generic HTML resolution. This covers direct `link.media.sync`, queued links, Telegram inbox input, and future inboxes built on the same queue/tool boundary; Telegram provenance is retained without creating follow state.
 - Comic pages use stable identities and `comic-pages`; complete chapters are atomically packaged as Kavita-oriented CBZ files with `ComicInfo.xml`. One-chapter JM albums retain a series layout so a later new chapter does not move the original archive.
 - Favorite removal stops follow state but does not delete media. Incomplete collection snapshots are never committed.
-- The locked offline suite passes 327 tests after this update.
+- The locked offline suite passes 329 tests after this update.
 
 ## Implemented
 

@@ -3,7 +3,7 @@
 ## 漫畫 adapter 尚待 opt-in live verification
 
 - **狀態：** 離線實作完成，外部驗證未完成。
-- **目前行為：** fixtures 已涵蓋 direct exact、共用 inbox 分派、完整收藏 snapshot、session 重用、JM 加密 envelope／圖片還原、repair、穩定 file identity 與原子 CBZ。使用者已驗證 nhentai cookie auth、favorites sync 與 direct resolve/download。refresh endpoint 在現有 session 仍可用時回傳 HTTP 403，因此 refresh 現在會回報 `nhentai_refresh_rejected`，不再誤報 success。JM live download/favorites 仍未驗證。
+- **目前行為：** fixtures 已涵蓋 direct exact、共用 inbox 分派、完整收藏 snapshot、JSON／Netscape session 重用、由無效舊 session 復原後執行帳密登入、JM 加密 envelope／圖片還原、repair、穩定 file identity 與原子 CBZ。使用者已驗證 nhentai cookie auth、favorites sync 與 direct resolve/download。refresh endpoint 在現有 session 仍可用時回傳 HTTP 403，因此 refresh 現在會回報 `nhentai_refresh_rejected`，不再誤報 success。JM live 帳密登入、download/favorites 仍未驗證。
 - **下一步：** 依 RUNBOOK 使用 repo-local DB/library/session 路徑做 bounded live test，尚未驗證前不要指向正式路徑或啟動 recurring service。
 
 ## 外部 provider contract 可能變動
