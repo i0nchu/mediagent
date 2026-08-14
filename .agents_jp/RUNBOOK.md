@@ -44,6 +44,8 @@ Optional alternative として、Netscape browser export を `MEDIAGENT_JMCOMIC_
 
 同じ二回目の実行は healthy page を 0 件 download し、existing CBZ を報告すること。直接 JM album は follow を作らず、favorite sync のみが作る。実行中に SQLite `-wal`／`-shm` を削除しない。
 
+Filename-hash descramble fix 前に download した JMComic page が horizontal band reorder を示す場合、file は存在して DB で healthy のため `repair_missing_files` だけでは直らない。`mediagent link sync '<album-url>' --overwrite --json` でその exact album を明示的に再 download し、CBZ を rebuild する。`.partial` と atomic replacement を使うため、server deployment 前に local image/CBZ を確認する。
+
 Telegram inbox と future custom inbox は provider-specific comic command を個別に呼ぶ必要がない。対応 nhentai/JMComic links は shared `link.media.sync` intake を通り、generic HTML resolution より前に exact comic adapter へ自動 dispatch される。そのため inbox の direct comic link は linked work だけを download/package し、series follow は有効にしない。`summary.comic_links_considered` と CBZ counters で dispatch を確認できる。
 
 ## 環境

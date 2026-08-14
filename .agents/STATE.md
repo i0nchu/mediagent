@@ -7,11 +7,12 @@
 - `platforms/jmcomic/` supports strict album/photo/trusted-cover links, encrypted mobile API envelopes, reusable login sessions, complete album/favorite manifests, and deterministic vertical-slice image restoration.
 - JMComic sessions can be created from configured username/password or loaded from an optional Netscape `cookies.txt`. Cookie-file paths preserve their format and mode `0600`; explicit `jmcomic.auth.login` ignores an invalid old session and replaces it after successful credential login.
 - JMComic transport decodes bounded gzip/deflate API responses before JSON/AES envelope parsing. A sanitized live public-album probe verified the current endpoint returns gzip and now decodes album `349717` successfully.
+- JMComic segment-count hashing now uses the filename stem, matching the maintained upstream decoder. Album `349717` page `00001.webp` previously produced 18 segments but correctly produces 10. Explicit comic `overwrite` now requeues terminal downloaded items so affected pages and CBZ packages can be rebuilt atomically.
 - `comic.link.sync` always applies exact direct-link scope. `nhentai.favorites.sync` uses exact gallery targets; `jmcomic.favorites.sync` follows only active favorite albums.
 - Shared link intake now dispatches recognized nhentai/JMComic links to the exact comic adapter before generic HTML resolution. This covers direct `link.media.sync`, queued links, Telegram inbox input, and future inboxes built on the same queue/tool boundary; Telegram provenance is retained without creating follow state.
 - Comic pages use stable identities and `comic-pages`; complete chapters are atomically packaged as Kavita-oriented CBZ files with `ComicInfo.xml`. One-chapter JM albums retain a series layout so a later new chapter does not move the original archive.
 - Favorite removal stops follow state but does not delete media. Incomplete collection snapshots are never committed.
-- The locked offline suite passes 331 tests after this update.
+- The locked offline suite passes 333 tests after this update.
 
 ## Implemented
 

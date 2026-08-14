@@ -12,6 +12,8 @@ nhentai login は browser cookie session を必要とし、CAPTCHA／proof-of-wo
 
 JMComic API は adapter が gzip support を宣言すると JSON envelope を gzip encode する。Transport は bounded gzip／deflate decode を行い、malformed、incomplete、oversized、unsupported encoding は response body を含まない sanitized structured error として返す。
 
+JMComic segment-count hash は image filename extension を除外する必要がある。`.jpg`／`.webp` を hash に含めると wrong horizontal band count でも structurally valid な image が生成され、filesystem health check では検出できない。Old affected files は explicit `--overwrite` が必要で、missing-file repair は存在する file を意図的に置き換えない。
+
 このファイルは次回引き継ぎでまだ重要な caveats だけを記録します。解決済みの履歴は、実装判断に影響しない限り Open に残しません。
 
 ## Open

@@ -16,6 +16,7 @@ This file tracks known caveats that matter for the next handoff. Resolved histor
 - **Status:** Open external dependency risk.
 - **Current behavior:** nhentai authentication requires a browser-provided cookie session because interactive CAPTCHA/proof-of-work login is intentionally not automated. JMComic uses an undocumented encrypted mobile API and CDN scrambling rules.
 - **Current behavior:** The JMComic API currently gzip-encodes JSON envelopes when the adapter advertises gzip support. Transport now performs bounded gzip/deflate decoding; malformed, incomplete, oversized, or unsupported encodings return sanitized structured errors without response bodies.
+- **Current behavior:** JMComic segment-count hashing must exclude the image filename extension. Including `.jpg`/`.webp` selects the wrong number of horizontal bands while still producing a structurally valid image, so filesystem health checks cannot detect it. Old affected files require explicit `--overwrite`; missing-file repair alone intentionally does not replace present files.
 - **Expected next step:** Return structured auth/rate-limit/response errors, preserve the last complete favorite snapshot on any collection failure, and update fixtures before changing parser behavior.
 
 ### 0. Pixiv CBZ packaging is implemented but not live-migrated

@@ -167,6 +167,28 @@ class JMComicImageTests(unittest.TestCase):
         self.assertEqual(scramble_segment_count(scramble_id=1, photo_id=250000, filename="1.jpg"), 10)
         self.assertEqual(scramble_segment_count(scramble_id=1, photo_id=500000, filename="1.jpg") % 2, 0)
 
+    def test_scramble_segment_hash_uses_filename_without_extension(self) -> None:
+        self.assertEqual(
+            scramble_segment_count(
+                scramble_id=220980,
+                photo_id=349717,
+                filename="00001.webp",
+            ),
+            10,
+        )
+        self.assertEqual(
+            scramble_segment_count(
+                scramble_id=220980,
+                photo_id=349717,
+                filename="00001.webp",
+            ),
+            scramble_segment_count(
+                scramble_id=220980,
+                photo_id=349717,
+                filename="00001.jpg",
+            ),
+        )
+
     def test_vertical_slice_restore_reverses_provider_slice_order(self) -> None:
         source = Image.new("RGB", (2, 4))
         # Provider order is bottom half first, top half second.

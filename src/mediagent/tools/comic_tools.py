@@ -493,6 +493,9 @@ async def _sync_items(context: ToolContext, input_data: dict[str, Any], items: l
         return ToolResult.failure("unsafe_path", str(exc), category=ErrorCategory.FILESYSTEM)
     items = _dedupe_items(items)
     statuses = db.get_media_statuses(db_path, items)
+    if input_data.get("overwrite"):
+        for item in items:
+            statuses.pop((item["platform"], item["remote_id"]), None)
     for identity in _changed_manifest_identities(db_path, items):
         statuses.pop(identity, None)
     candidates, skipped = link_tools._sync_candidates(

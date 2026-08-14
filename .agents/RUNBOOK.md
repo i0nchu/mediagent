@@ -65,6 +65,8 @@ As an optional alternative, a Netscape-format browser export may be configured t
 
 Inspect only summaries and files under the local root. A second identical run should download zero healthy pages and report existing CBZ files. Direct JM album runs never create follow memberships; only `jmcomic.favorites.sync` does. Do not delete SQLite `-wal` or `-shm` files during a run.
 
+If JMComic pages downloaded before the filename-hash descramble fix show horizontally reordered bands, `repair_missing_files` is not sufficient because those files still exist and are recorded as healthy. Explicitly redownload and rebuild that exact album with `mediagent link sync '<album-url>' --overwrite --json`. The operation uses `.partial` and atomic replacement; verify the resulting images and CBZ locally before any server deployment.
+
 Telegram inbox and future custom inboxes do not need provider-specific comic commands. Supported nhentai/JMComic links pass through the shared `link.media.sync` intake and are automatically dispatched to the exact comic adapter before generic HTML resolution. Sending a direct comic link through an inbox therefore downloads/packages that linked work only; it never enables series follow. Inspect `summary.comic_links_considered` plus the CBZ counters to confirm dispatch.
 
 Fallback during local development:

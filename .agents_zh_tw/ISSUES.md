@@ -12,6 +12,8 @@ nhentai 登入需要瀏覽器提供 cookie session，因 CAPTCHA／proof-of-work
 
 JMComic API 目前會在 adapter 宣告支援 gzip 時壓縮 JSON envelope。Transport 已加入 bounded gzip／deflate decode；損壞、不完整、超限或不支援的 encoding 會回傳不含 response body 的 sanitized structured error。
 
+JMComic segment-count hash 必須排除圖片副檔名。若把 `.jpg`／`.webp` 算進 hash，會選到錯誤的水平分段數，但輸出仍是結構有效圖片，因此 filesystem health check 無法發現。舊受影響檔案需明確使用 `--overwrite`；missing-file repair 刻意不會取代仍存在的檔案。
+
 本檔記錄下一次接手仍需要注意的 caveats。已解決的歷史問題不應長期保留在 Open，除非仍影響實作判斷。
 
 ## Open

@@ -44,6 +44,8 @@ uv run --locked mediagent tools run jmcomic.favorites.sync --input examples/tool
 
 第二次相同執行應下載 0 個健康頁面並回報 existing CBZ。直接 JM album 不建立 follow，只有收藏同步會。執行期間不要刪 SQLite `-wal`／`-shm`。
 
+若在 filename-hash descramble 修正前下載的 JMComic 頁面呈現水平帶狀錯位，`repair_missing_files` 不足以修正，因為檔案仍存在且 DB 視為健康。請用 `mediagent link sync '<album-url>' --overwrite --json` 明確重新下載該 exact album 並重建 CBZ。流程會用 `.partial` 與 atomic replacement；先在本機確認圖片／CBZ 正常，再部署至 server。
+
 Telegram inbox 與未來自製 inbox 不需要各自呼叫平台漫畫工具。支援的 nhentai／JMComic links 會經過共用 `link.media.sync` intake，在 generic HTML resolution 前自動分派至 exact comic adapter。因此從 inbox 傳入 direct comic link，只會下載／封裝該連結的作品，不會啟用 series follow。可查看 `summary.comic_links_considered` 與 CBZ counters 確認分派結果。
 
 ## 環境

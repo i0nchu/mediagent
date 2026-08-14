@@ -23,7 +23,7 @@ def scramble_segment_count(*, scramble_id: int | str, photo_id: int | str, filen
     if aid < SCRAMBLE_268850:
         return 10
     divisor = 10 if aid < SCRAMBLE_421926 else 8
-    digest = hashlib.md5(f"{aid}{Path(filename).name}".encode()).hexdigest()
+    digest = hashlib.md5(f"{aid}{Path(filename).stem}".encode()).hexdigest()
     return (ord(digest[-1]) % divisor) * 2 + 2
 
 

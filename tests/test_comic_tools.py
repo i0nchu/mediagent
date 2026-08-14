@@ -98,6 +98,35 @@ class ComicToolTests(unittest.TestCase):
             records = db.list_media_files(database, platform="nhentai", remote_id="gallery:123")
             self.assertEqual({record["file_key"] for record in records}, {"page:000001", "archive:cbz"})
 
+    def test_overwrite_redownloads_terminal_comic_and_rebuilds_package(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            library = root / "library"
+            database = root / "state.sqlite3"
+            context = ToolContext.from_env(
+                cwd=root,
+                env={
+                    "MEDIAGENT_DATA_DIR": str(root),
+                    "MEDIAGENT_LIBRARY_DIR": str(library),
+                    "MEDIAGENT_DB_PATH": str(database),
+                },
+                http_client=ImageHttpClient(_png_bytes()),
+            )
+            first = asyncio.run(comic_tools._sync_items(context, {}, [_comic_item()]))
+            second = asyncio.run(
+                comic_tools._sync_items(
+                    context,
+                    {"overwrite": True},
+                    [_comic_item()],
+                )
+            )
+
+        self.assertTrue(first.is_success, first.to_dict())
+        self.assertTrue(second.is_success, second.to_dict())
+        self.assertEqual(second.data["summary"]["queued"], 1)
+        self.assertEqual(second.data["summary"]["downloaded"], 1)
+        self.assertEqual(second.data["summary"]["cbz_packaged"], 1)
+
     def test_complete_snapshot_deactivates_removed_favorite_without_deleting_media(self) -> None:
         with TemporaryDirectory() as temp_dir:
             database = Path(temp_dir) / "state.sqlite3"
