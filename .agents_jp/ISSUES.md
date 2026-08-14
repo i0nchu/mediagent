@@ -1,5 +1,19 @@
 # 実装上の注意点
 
+## nhentai browser cookie renewal の live re-verification が未完了
+
+- **状態:** JMComic live verification 完了。nhentai cookie renewal は外部操作待ち。
+- **現在:** JM credential login/session reuse、3 pages・42 favorite albums、1,081 chapters／49,137 pages full dry-run、108-page bounded real sync、valid CBZ、0-download rerun は live 検証済み。User が以前検証した nhentai cookie auth/favorites/direct download の cookie は現在 HTTP 401。Password/CAPTCHA automation は引き続き意図的に unsupported。
+- **次:** 新しい nhentai browser cookie を再 export し、repo-local paths で `nhentai.favorites.collect` と bounded sync を再実行してから timer を enable する。
+
+## 外部 provider contract は変更される可能性がある
+
+nhentai login は browser cookie session を必要とし、CAPTCHA／proof-of-work のため username/password automation は意図的に実装しない。JMComic は undocumented encrypted mobile API と CDN scramble rule を使用する。auth、rate-limit、response error は structured result にし、collection failure 時は前回の完全 snapshot を保持する。
+
+JMComic API は adapter が gzip support を宣言すると JSON envelope を gzip encode する。Transport は bounded gzip／deflate decode を行い、malformed、incomplete、oversized、unsupported encoding は response body を含まない sanitized structured error として返す。
+
+JMComic segment-count hash は image filename extension を除外する必要がある。`.jpg`／`.webp` を hash に含めると wrong horizontal band count でも structurally valid な image が生成され、filesystem health check では検出できない。Old affected files は explicit `--overwrite` が必要で、missing-file repair は存在する file を意図的に置き換えない。
+
 このファイルは次回引き継ぎでまだ重要な caveats だけを記録します。解決済みの履歴は、実装判断に影響しない限り Open に残しません。
 
 ## Open
@@ -125,4 +139,4 @@
 - Localized issue handoffs は現在の英語版 issue state に同期済みです。
 - Localized TODO handoffs は Pixiv `pixiv.auth.login` / OAuth PKCE planning update に対応済みで、authorization-code exchange、credential-file writing、redaction tests、skipped-by-default live browser tests を含みます。
 - 英語、繁体字中国語、日本語の handoff docs は Pixiv first-slice status に同期済みです。
-- default test suite は green です: `uv run --locked python -m unittest discover -s tests` が 271 tests passing です。
+- default test suite は green です: `uv run --locked python -m unittest discover -s tests` が 323 tests passing です。

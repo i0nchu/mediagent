@@ -1,5 +1,19 @@
 # 實作議題
 
+## nhentai browser cookie 更新仍待 live re-verification
+
+- **狀態：** JMComic live 驗證完成；nhentai cookie 更新仍需外部操作。
+- **目前行為：** JM 帳密登入/session 重用、三頁 42 個 favorite albums、1,081 chapters／49,137 pages 完整 dry-run，以及 108 頁 bounded 真實同步、有效 CBZ 與 0-download rerun 都已 live 驗證。使用者先前驗證過 nhentai cookie auth/favorites/direct download，但該 cookie 現在回 HTTP 401；密碼/CAPTCHA 自動化仍刻意不支援。
+- **下一步：** 重新匯出新的 nhentai browser cookie，先在 repo-local paths 重跑 `nhentai.favorites.collect` 與 bounded sync，再啟用其 timer。
+
+## 外部 provider contract 可能變動
+
+nhentai 登入需要瀏覽器提供 cookie session，因 CAPTCHA／proof-of-work 而刻意不自動化帳密登入。JMComic 使用未公開的加密 mobile API 與 CDN scramble 規則。auth、rate-limit 或 response 錯誤必須結構化返回；收藏收集失敗時保留上一次完整 snapshot。
+
+JMComic API 目前會在 adapter 宣告支援 gzip 時壓縮 JSON envelope。Transport 已加入 bounded gzip／deflate decode；損壞、不完整、超限或不支援的 encoding 會回傳不含 response body 的 sanitized structured error。
+
+JMComic segment-count hash 必須排除圖片副檔名。若把 `.jpg`／`.webp` 算進 hash，會選到錯誤的水平分段數，但輸出仍是結構有效圖片，因此 filesystem health check 無法發現。舊受影響檔案需明確使用 `--overwrite`；missing-file repair 刻意不會取代仍存在的檔案。
+
 本檔記錄下一次接手仍需要注意的 caveats。已解決的歷史問題不應長期保留在 Open，除非仍影響實作判斷。
 
 ## Open
@@ -125,4 +139,4 @@
 - Localized issue handoffs 已同步到目前英文 issue 狀態。
 - Localized TODO handoffs 已包含 Pixiv `pixiv.auth.login` / OAuth PKCE planning update，包括 authorization-code exchange、credential-file writing、redaction tests，以及 skipped-by-default live browser tests。
 - 英文、繁中、日文 handoff docs 已同步到 Pixiv first-slice status。
-- 預設測試是綠燈：`uv run --locked python -m unittest discover -s tests` 通過 271 個測試。
+- 預設測試是綠燈：`uv run --locked python -m unittest discover -s tests` 通過 323 個測試。

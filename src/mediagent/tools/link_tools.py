@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 from datetime import UTC, datetime
 from pathlib import Path
+from collections.abc import Callable
 from typing import Any
 from urllib.parse import urlparse
 
@@ -275,15 +276,6 @@ async def media_sync(context: ToolContext, input_data: dict[str, Any]) -> ToolRe
     except ValueError as exc:
         return ToolResult.failure("missing_link_input", str(exc), category=ErrorCategory.VALIDATION)
     links = _limited_items(links, input_data.get("limit"))
-    policy = _link_safety_policy(input_data)
-    request = ResolveRequest(
-        http_client=context.http_client,
-        policy=policy,
-        env=context.env,
-        cwd=context.cwd,
-        allowed_write_roots=tuple(context.allowed_write_roots()),
-        dry_run=context.dry_run,
-    )
     resolutions: list[dict[str, Any]] = []
     resolved_items: list[dict[str, Any]] = []
     summary = {
@@ -306,8 +298,32 @@ async def media_sync(context: ToolContext, input_data: dict[str, Any]) -> ToolRe
         "files_downloaded": 0,
         "files_failed": 0,
         "bytes_written": 0,
+        "comic_links_considered": 0,
+        "comic_links_failed": 0,
+        "cbz_packaged": 0,
+        "cbz_existing": 0,
+        "cbz_failed_or_incomplete": 0,
     }
     warnings: list[str] = []
+    comic_route = await sync_dedicated_comic_links(
+        context,
+        input_data,
+        links,
+        db_path=db_path,
+    )
+    links = comic_route["remaining_links"]
+    resolutions.extend(comic_route["links"])
+    warnings.extend(comic_route["warnings"])
+
+    policy = _link_safety_policy(input_data)
+    request = ResolveRequest(
+        http_client=context.http_client,
+        policy=policy,
+        env=context.env,
+        cwd=context.cwd,
+        allowed_write_roots=tuple(context.allowed_write_roots()),
+        dry_run=context.dry_run,
+    )
     for link in links:
         resolution = default_link_resolver_registry().resolve(link["original_url"], request=request)
         resolutions.append({"link": _safe_link_record(link), "resolution": sanitize_link_resolution_for_output(resolution)})
@@ -339,27 +355,34 @@ async def media_sync(context: ToolContext, input_data: dict[str, Any]) -> ToolRe
     )
     summary.update(candidate_summary)
     summary["queued"] = len(items_to_sync)
+    merge_comic_route_summary(summary, comic_route["summary"])
 
     if context.dry_run:
-        planned_downloads = []
+        planned_downloads = list(comic_route["planned_downloads"])
         for item in items_to_sync:
             planned_downloads.extend(_planned_downloads(context, input_data, item))
-        return ToolResult.success(
-            {
-                "db_path": str(db_path),
-                "summary": summary,
-                "links": resolutions,
-                "planned_downloads": planned_downloads,
-            },
-            warnings=warnings,
-        )
+        data = {
+            "db_path": str(db_path),
+            "summary": summary,
+            "links": resolutions,
+            "planned_downloads": planned_downloads,
+        }
+        if comic_route["failed"]:
+            return ToolResult.failure(
+                "link_media_sync_partial" if summary["resolved"] else "link_media_sync_failed",
+                "Link media sync preview could not resolve every dedicated comic source.",
+                data=data,
+                warnings=warnings,
+                category=ErrorCategory.NETWORK,
+            )
+        return ToolResult.success(data, warnings=warnings)
 
     db.initialize_database(db_path)
     for item in resolved_items:
         db.upsert_media_item(db_path, item)
 
-    item_results: list[dict[str, Any]] = []
-    artifacts: list[dict[str, str]] = []
+    item_results: list[dict[str, Any]] = list(comic_route["items"])
+    artifacts: list[dict[str, str]] = list(comic_route["artifacts"])
     for item in items_to_sync:
         result = await _sync_one_link_item(context, db_path, item, input_data)
         item_results.append(result)
@@ -375,7 +398,7 @@ async def media_sync(context: ToolContext, input_data: dict[str, Any]) -> ToolRe
         warnings.extend(result["warnings"])
 
     run_status = "success"
-    if summary["failed"] or summary["partial"]:
+    if summary["failed"] or summary["partial"] or comic_route["failed"]:
         run_status = "partial" if summary["downloaded"] or summary["partial"] else "failed"
     db.insert_run(
         db_path,
@@ -391,6 +414,7 @@ async def media_sync(context: ToolContext, input_data: dict[str, Any]) -> ToolRe
         "summary": summary,
         "links": resolutions,
         "items": item_results,
+        "packages": comic_route["packages"],
     }
     if run_status == "success":
         return ToolResult.success(data, artifacts=artifacts, warnings=warnings)
@@ -401,6 +425,156 @@ async def media_sync(context: ToolContext, input_data: dict[str, Any]) -> ToolRe
         warnings=warnings,
         category=ErrorCategory.NETWORK,
     )
+
+
+async def sync_dedicated_comic_links(
+    context: ToolContext,
+    input_data: dict[str, Any],
+    links: list[dict[str, Any]],
+    *,
+    db_path: Path,
+) -> dict[str, Any]:
+    """Route recognized comic links through their multi-page exact adapters."""
+
+    from mediagent.tools import comic_tools
+
+    comic_links: list[tuple[dict[str, Any], str]] = []
+    remaining_links: list[dict[str, Any]] = []
+    for link in links:
+        provider = comic_tools.comic_link_provider(str(link.get("original_url") or ""))
+        if provider is None:
+            remaining_links.append(link)
+        else:
+            comic_links.append((link, provider))
+
+    summary = {
+        "comic_links_considered": len(comic_links),
+        "comic_links_failed": 0,
+        "resolved": 0,
+        "skipped_links": 0,
+        "queued": 0,
+        "skipped_items": 0,
+        "skipped_healthy": 0,
+        "repair_items": 0,
+        "repair_files_missing": 0,
+        "repair_files_corrupt": 0,
+        "repair_files_unhealthy": 0,
+        "repaired": 0,
+        "still_missing_files": 0,
+        "downloaded": 0,
+        "partial": 0,
+        "failed": 0,
+        "files_downloaded": 0,
+        "files_failed": 0,
+        "bytes_written": 0,
+        "cbz_packaged": 0,
+        "cbz_existing": 0,
+        "cbz_failed_or_incomplete": 0,
+    }
+    output_links: list[dict[str, Any]] = []
+    item_results: list[dict[str, Any]] = []
+    packages: list[dict[str, Any]] = []
+    planned_downloads: list[dict[str, Any]] = []
+    artifacts: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    route_failed = False
+
+    for link, provider in comic_links:
+        comic_input = dict(input_data)
+        for key in ("urls", "link_id", "link_ids", "status", "limit", "lease_seconds", "target_dir"):
+            comic_input.pop(key, None)
+        comic_input["url"] = link["original_url"]
+        comic_input["_ingest_provenance"] = _link_ingest_provenance(link)
+        result = await comic_tools.comic_link_sync(context, comic_input)
+        targets = result.data.get("targets") if isinstance(result.data, dict) else None
+        resolved = bool(targets)
+        error_code = result.error.code if result.error else None
+        resolution = {
+            "status": "resolved" if resolved else "skipped",
+            "resolver": f"{provider}_comic_exact",
+            "source_url": link["original_url"],
+            "normalized_url": link.get("normalized_url") or normalize_url(link["original_url"]),
+            "canonical_url": link.get("normalized_url") or normalize_url(link["original_url"]),
+            "origin_source": provider,
+            "media_type": "photo",
+            "remote_id": (targets or [{}])[0].get("target"),
+            "skip_reason": None if resolved else ("requires_auth" if result.error and result.error.category == ErrorCategory.AUTH else error_code),
+            "details": {
+                "work_type": "comic",
+                "policy": "exact",
+                "target_count": len(targets or []),
+                "error_code": error_code,
+            },
+        }
+        output_links.append(
+            {
+                "link": _safe_link_record(link),
+                "resolution": sanitize_link_resolution_for_output(resolution),
+            }
+        )
+        if not context.dry_run and link.get("id") is not None:
+            db.update_link_resolution(
+                db_path,
+                link_id=int(link["id"]),
+                status="resolved" if resolved else "skipped",
+                resolution=resolution,
+                skip_reason=resolution["skip_reason"],
+            )
+        if resolved:
+            summary["resolved"] += 1
+        else:
+            summary["skipped_links"] += 1
+        if not result.is_success:
+            route_failed = True
+            summary["comic_links_failed"] += 1
+
+        comic_summary = result.data.get("summary", {}) if isinstance(result.data, dict) else {}
+        for key in (
+            "queued",
+            "skipped_items",
+            "skipped_healthy",
+            "repair_items",
+            "repair_files_missing",
+            "repair_files_corrupt",
+            "repair_files_unhealthy",
+            "repaired",
+            "still_missing_files",
+            "downloaded",
+            "partial",
+            "failed",
+            "cbz_packaged",
+            "cbz_existing",
+            "cbz_failed_or_incomplete",
+        ):
+            summary[key] += int(comic_summary.get(key, 0) or 0)
+        current_items = result.data.get("items", []) if isinstance(result.data, dict) else []
+        item_results.extend(current_items)
+        for item_result in current_items:
+            summary["files_downloaded"] += int(item_result.get("files_downloaded", 0) or 0)
+            summary["files_failed"] += int(item_result.get("files_failed", 0) or 0)
+            summary["bytes_written"] += int(item_result.get("bytes_written", 0) or 0)
+        packages.extend(result.data.get("packages", []) if isinstance(result.data, dict) else [])
+        planned_downloads.extend(result.data.get("planned_downloads", []) if isinstance(result.data, dict) else [])
+        artifacts.extend(result.artifacts)
+        warnings.extend(result.warnings)
+
+    return {
+        "remaining_links": remaining_links,
+        "summary": summary,
+        "links": output_links,
+        "items": item_results,
+        "packages": packages,
+        "planned_downloads": planned_downloads,
+        "artifacts": artifacts,
+        "warnings": warnings,
+        "failed": route_failed,
+    }
+
+
+def merge_comic_route_summary(summary: dict[str, Any], comic_summary: dict[str, Any]) -> None:
+    for key, value in comic_summary.items():
+        if key in summary:
+            summary[key] += int(value or 0)
 
 
 def _resolve_url(context: ToolContext, raw_url: str, input_data: dict[str, Any]) -> dict[str, Any]:
@@ -595,13 +769,15 @@ def _sync_candidates(
 def _repair_assessment(db_path: Path, item: dict[str, Any]) -> dict[str, Any]:
     records = db.list_media_files(db_path, platform=item["platform"], remote_id=item["remote_id"])
     records_by_remote = {str(record.get("remote_url") or ""): record for record in records if record.get("remote_url")}
+    records_by_key = {str(record.get("file_key") or ""): record for record in records if record.get("file_key")}
     missing = 0
     corrupt = 0
     unhealthy = 0
     files: list[dict[str, Any]] = []
     for file_info in _link_item_files(item):
         remote_url = _file_remote_url(file_info)
-        record = records_by_remote.get(remote_url)
+        stable_key = _stable_file_key(file_info)
+        record = (records_by_key.get(stable_key) if stable_key else None) or records_by_remote.get(remote_url)
         reason = None
         health = None
         status = None
@@ -743,6 +919,7 @@ async def _sync_one_link_item(
             target_path=target_path,
             overwrite=overwrite,
             expected_mime_prefix=_expected_mime_prefix(file_info),
+            content_transform=_file_content_transform(file_info),
         )
         if download_result.is_success:
             db.upsert_media_file(
@@ -760,6 +937,7 @@ async def _sync_one_link_item(
                 file_health="valid",
                 source_timestamp=plan.source_timestamp,
                 verified_at=datetime.now(UTC).isoformat(),
+                file_key=_stable_file_key(file_info),
             )
             result["files_downloaded"] += 1
             result["bytes_written"] += download_result.data.get("size_bytes") or 0
@@ -810,6 +988,7 @@ def _download_file_safely(
     target_path: Path,
     overwrite: bool,
     expected_mime_prefix: str | None,
+    content_transform: Callable[[bytes], bytes] | None = None,
 ) -> ToolResult:
     partial_path = target_path.with_name(target_path.name + ".partial")
     try:
@@ -901,11 +1080,22 @@ def _download_file_safely(
             details={"mime_type": mime_type},
             category=ErrorCategory.NETWORK,
         )
+    content = response.content
+    if content_transform is not None:
+        try:
+            content = content_transform(content)
+        except Exception as exc:
+            return ToolResult.failure(
+                "download_transform_failed",
+                "Downloaded media could not be decoded.",
+                details={"exception_type": type(exc).__name__},
+                category=ErrorCategory.NETWORK,
+            )
     try:
         target_path.parent.mkdir(parents=True, exist_ok=True)
         if partial_path.exists():
             partial_path.unlink()
-        partial_path.write_bytes(response.content)
+        partial_path.write_bytes(content)
         checksum, size_bytes = _hash_file(partial_path)
         partial_path.replace(target_path)
     except Exception:
@@ -1018,6 +1208,39 @@ def _file_remote_url(file_info: dict[str, Any]) -> str:
     return str(file_info.get("remote_url") or file_info.get("url") or "")
 
 
+def _stable_file_key(file_info: dict[str, Any]) -> str | None:
+    value = (
+        file_info.get("file_key")
+        or file_info.get("content_identity")
+        or file_info.get("stable_url")
+    )
+    text = str(value or "").strip()
+    if text:
+        return text
+    if file_info.get("storage_category") == "comic-pages":
+        try:
+            page_number = int(file_info.get("page_number") or int(file_info.get("page", 0)) + 1)
+        except (TypeError, ValueError):
+            return None
+        return f"page:{page_number:06d}"
+    return None
+
+
+def _file_content_transform(file_info: dict[str, Any]) -> Callable[[bytes], bytes] | None:
+    runtime = file_info.get("runtime_decode")
+    if not isinstance(runtime, dict) or runtime.get("provider") != "jmcomic":
+        return None
+    try:
+        segments = int(runtime.get("vertical_segments") or 0)
+    except (TypeError, ValueError):
+        segments = 0
+    if segments <= 0:
+        return None
+    from mediagent.platforms.jmcomic.images import restore_vertical_slices
+
+    return lambda content: restore_vertical_slices(content, segment_count=segments)
+
+
 def _existing_file_record(
     db_path: Path,
     item: dict[str, Any],
@@ -1042,6 +1265,7 @@ def _existing_file_record(
         file_health="valid",
         source_timestamp=plan.source_timestamp,
         verified_at=datetime.now(UTC).isoformat(),
+        file_key=_stable_file_key(file_info),
     )
 
 
@@ -1053,22 +1277,25 @@ def _path_known_to_item(
 ) -> bool:
     if not db_path.exists():
         return False
+    stable_key = _stable_file_key(file_info)
     with db.connect(db_path) as connection:
+        identity_sql = "mf.file_key = ?" if stable_key else "mf.remote_url = ?"
+        identity = stable_key or _file_remote_url(file_info)
         row = connection.execute(
-            """
+            f"""
             SELECT mf.id
             FROM media_files mf
             JOIN media_items mi ON mi.id = mf.media_item_id
             WHERE mi.platform = ?
               AND mi.remote_id = ?
               AND mf.local_path = ?
-              AND mf.remote_url = ?
+              AND {identity_sql}
             """,
             (
                 item["platform"],
                 item["remote_id"],
                 str(target_path),
-                _file_remote_url(file_info),
+                identity,
             ),
         ).fetchone()
     return row is not None
@@ -1093,6 +1320,7 @@ def _record_failed_link_file(
         checksum=None,
         status="failed",
         file_health="unknown",
+        file_key=_stable_file_key(file_info),
     )
 
 
@@ -1142,6 +1370,8 @@ async def _write_sidecar_metadata(
 def _expected_mime_prefix(file_info: dict[str, Any]) -> str | None:
     if file_info.get("kind") == "ugoira_zip":
         return None
+    if file_info.get("kind") == "image":
+        return "image/"
     media_type = file_info.get("media_type")
     if media_type == "photo":
         return "image/"

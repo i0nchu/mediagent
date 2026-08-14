@@ -1,0 +1,28 @@
+{
+  "id": 123456,
+  "media_id": "900001",
+  "title": {
+    "english": "Example Gallery",
+    "japanese": "Example Japanese Title",
+    "pretty": "Example Pretty Title"
+  },
+  "cover": {
+    "path": "galleries/900001/cover.jpg",
+    "width": 800,
+    "height": 1200
+  },
+  "scanlator": "",
+  "upload_date": 1700000000,
+  "tags": [
+    {"id": 1, "type": "artist", "name": "Example Artist", "slug": "example-artist"},
+    {"id": 2, "type": "language", "name": "english", "slug": "english"},
+    {"id": 3, "type": "tag", "name": "sample", "slug": "sample"}
+  ],
+  "num_pages": 3,
+  "num_favorites": 7,
+  "pages": [
+    {"number": 1, "path": "galleries/900001/1.jpg", "width": 1000, "height": 1400},
+    {"number": 2, "path": "galleries/900001/2.webp", "width": 1000, "height": 1400},
+    {"number": 3, "path": "galleries/900001/3.png", "width": 1000, "height": 1400}
+  ]
+}

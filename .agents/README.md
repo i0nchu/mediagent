@@ -69,3 +69,7 @@ PYTHONPATH=src python3 -m unittest discover -s tests -v
 ## Important Direction
 
 Do not build Workflow V1, built-in scheduling, Reddit saved sync, or X live auth verification next unless the user explicitly changes direction. Agent Core V1 may be hardened, but it must remain SKILL-scoped and tool-registry based. The link-first baseline is now the primary product path: stable `link.queue.upsert`, stable `link.media.sync`, public `mediagent link sync <url>`, queue claim/retry scheduling, canonical/media identity dedupe, Reddit external-provider delegation, Redgifs downloads, Instagram whole-post downloads, and simple multi-candidate partial-success handling. Keep resolver behavior bounded by default; future platform work should extend explicit-link provider adapters before account/bookmark collectors.
+
+## Comic Sources
+
+nhentai and JMComic/18comic now have comic-only adapters and tools. Direct links always use `exact`: nhentai gallery means one gallery, JM photo means one chapter, and JM album/cover means every chapter currently in that album without follow state. Favorites are the account inbox: nhentai favorites remain exact galleries, while active JM favorite albums use `series_and_follow`. Complete chapters are stored as ordered `comic-pages` and atomically packaged as Kavita-oriented CBZ files with `ComicInfo.xml`; unsupported video/audio/text is rejected.

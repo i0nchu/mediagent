@@ -18,6 +18,7 @@ pnpm-debug.log*
 .config/
 .local/
 .tmp/
+tmp/
 dist/
 
 *.sqlite

@@ -4,6 +4,21 @@ This file tracks known caveats that matter for the next handoff. Resolved histor
 
 ## Open
 
+### nhentai browser-cookie renewal still requires live re-verification
+
+- **Status:** JMComic live verification complete; nhentai cookie renewal remains external.
+- **Observed in:** `src/mediagent/platforms/nhentai/`, `src/mediagent/platforms/jmcomic/`, `src/mediagent/tools/comic_tools.py`.
+- **Current behavior:** JM credential login/session reuse, three-page collection of 42 favorite albums, a full 1,081-chapter/49,137-page dry-run, and a bounded 108-page real sync with valid CBZ plus zero-download rerun are live verified. The user previously verified nhentai cookie auth/favorites/direct download, but that imported cookie now returns HTTP 401; password/CAPTCHA automation remains intentionally unsupported.
+- **Expected next step:** Re-export a fresh nhentai browser cookie and repeat `nhentai.favorites.collect` plus a bounded sync using repository-local paths before enabling its timer.
+
+### Provider contracts are undocumented and may change
+
+- **Status:** Open external dependency risk.
+- **Current behavior:** nhentai authentication requires a browser-provided cookie session because interactive CAPTCHA/proof-of-work login is intentionally not automated. JMComic uses an undocumented encrypted mobile API and CDN scrambling rules.
+- **Current behavior:** The JMComic API currently gzip-encodes JSON envelopes when the adapter advertises gzip support. Transport now performs bounded gzip/deflate decoding; malformed, incomplete, oversized, or unsupported encodings return sanitized structured errors without response bodies.
+- **Current behavior:** JMComic segment-count hashing must exclude the image filename extension. Including `.jpg`/`.webp` selects the wrong number of horizontal bands while still producing a structurally valid image, so filesystem health checks cannot detect it. Old affected files require explicit `--overwrite`; missing-file repair alone intentionally does not replace present files.
+- **Expected next step:** Return structured auth/rate-limit/response errors, preserve the last complete favorite snapshot on any collection failure, and update fixtures before changing parser behavior.
+
 ### 0. Pixiv CBZ packaging is implemented but not live-migrated
 
 - **Status:** Open external verification.
@@ -125,4 +140,4 @@ This file tracks known caveats that matter for the next handoff. Resolved histor
 - Localized issue handoffs have been synced with the current English issue state.
 - Localized TODO handoffs now include the Pixiv `pixiv.auth.login` / OAuth PKCE planning update, including authorization-code exchange, credential-file writing, redaction tests, and skipped-by-default live browser tests.
 - English, Traditional Chinese, and Japanese handoff docs have been synced to the Pixiv first-slice status.
-- The default test suite is green: `uv run --locked python -m unittest discover -s tests` runs 271 tests successfully.
+- The default test suite is green: `uv run --locked python -m unittest discover -s tests` runs 323 tests successfully.

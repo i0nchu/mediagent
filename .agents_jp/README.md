@@ -1,5 +1,9 @@
 # Mediagent Agent 引き継ぎガイド
 
+## コミックソース更新（2026-08-13）
+
+nhentai と JMComic/18comic にコミック専用 adapter／tool を追加した。直接リンクは常に `exact` であり、nhentai gallery は一冊、JM photo は一章、JM album／信頼済み cover は現在の全章を取得するが追跡しない。アカウントの favorites が inbox となり、nhentai は gallery exact、JM の favorite album だけが `series_and_follow` となる。完全なページ集合は `comic-pages` に保存し、`ComicInfo.xml` を含む Kavita 向け CBZ として atomic に package する。video/audio/text はコミック候補にしない。
+
 このディレクトリは日本語の引き継ぎ資料です。英語の既定資料は `.agents/`、繁体字中国語版は `.agents_zh_tw/` にあります。
 
 ## 推奨読書順

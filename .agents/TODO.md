@@ -9,6 +9,13 @@ When updating this TODO, update the Traditional Chinese and Japanese copies in t
 
 ## Current Focus: systemd Timer Hardening
 
+## Comic Source Follow-up
+
+- [ ] Re-export a fresh nhentai browser cookie and repeat the complete favorites collect/sync live test; the previous user-verified cookie now returns HTTP 401.
+- [ ] Live-test expired-cookie recovery and browser re-import; the provider rejected refresh with HTTP 403, so do not add password/CAPTCHA automation or assume automatic renewal.
+- [x] Verify JM credential login/session reuse, three-page favorite pagination, a 42-album/1,081-chapter full dry-run, and one 108-page bounded real favorite sync with CBZ/dedupe checks.
+- [x] Add system-level comic favorite timer examples with a shared run lock and summary-only journal output.
+
 Goal: harden the existing Agent-mode timer deployment before adding another long-running source or scheduler layer.
 
 - [ ] Add a deployment-oriented environment-check profile for the enabled Telegram inbox, Pixiv bookmark, and optional Instagram saved-media sources.

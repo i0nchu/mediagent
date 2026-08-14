@@ -4,6 +4,8 @@ version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
     "instagrapi>=2.18,<3",
+    "pillow>=11,<13",
+    "pycryptodome>=3.20,<4",
     "telethon>=1.36,<2",
 ]
 

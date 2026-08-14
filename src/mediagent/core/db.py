@@ -10,7 +10,8 @@ from pathlib import Path
 from typing import Any
 
 
-SCHEMA_VERSION = "7"
+SCHEMA_VERSION = "8"
+SQLITE_BUSY_TIMEOUT_MILLISECONDS = 30_000
 
 
 def initialize_database(db_path: Path) -> None:
@@ -31,8 +32,15 @@ def initialize_database(db_path: Path) -> None:
 
 
 def connect(db_path: Path) -> sqlite3.Connection:
-    connection = sqlite3.connect(db_path)
+    # Recurring source timers share one SQLite database.  A short writer must
+    # be allowed to finish instead of making another otherwise healthy run
+    # fail immediately with ``database is locked``.
+    connection = sqlite3.connect(
+        db_path,
+        timeout=SQLITE_BUSY_TIMEOUT_MILLISECONDS / 1_000,
+    )
     connection.row_factory = sqlite3.Row
+    connection.execute(f"PRAGMA busy_timeout = {SQLITE_BUSY_TIMEOUT_MILLISECONDS}")
     return connection
 
 
@@ -271,6 +279,155 @@ def set_sync_cursor(
     }
 
 
+def commit_collection_snapshot(
+    db_path: Path,
+    *,
+    provider: str,
+    collection_key: str,
+    targets: list[dict[str, Any]],
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Atomically replace one collector membership snapshot.
+
+    Callers must only invoke this after every remote page was fetched successfully.
+    An incomplete collection must leave the previous active memberships untouched.
+    """
+    normalized: dict[tuple[str, str], dict[str, Any]] = {}
+    for target in targets:
+        target_type = str(target.get("target_type") or "").strip()
+        target_id = str(target.get("target_id") or "").strip()
+        if not target_type or not target_id:
+            raise ValueError("Collection targets require target_type and target_id.")
+        normalized[(target_type, target_id)] = {
+            "target_type": target_type,
+            "target_id": target_id,
+            "metadata": target.get("metadata") if isinstance(target.get("metadata"), dict) else {},
+        }
+
+    now = datetime.now(UTC).isoformat()
+    generation = str(uuid.uuid4())
+    with connect(db_path) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        previous_rows = connection.execute(
+            """
+            SELECT target_type, target_id, active
+            FROM source_collection_memberships
+            WHERE provider = ? AND collection_key = ?
+            """,
+            (provider, collection_key),
+        ).fetchall()
+        previous_active = {
+            (str(row["target_type"]), str(row["target_id"]))
+            for row in previous_rows
+            if row["active"]
+        }
+        current = set(normalized)
+        connection.execute(
+            """
+            INSERT INTO source_collections (
+                provider, collection_key, status, item_count, snapshot_generation,
+                metadata_json, last_success_at, updated_at
+            )
+            VALUES (?, ?, 'ready', ?, ?, ?, ?, ?)
+            ON CONFLICT(provider, collection_key) DO UPDATE SET
+                status = excluded.status,
+                item_count = excluded.item_count,
+                snapshot_generation = excluded.snapshot_generation,
+                metadata_json = excluded.metadata_json,
+                last_success_at = excluded.last_success_at,
+                updated_at = excluded.updated_at
+            """,
+            (
+                provider,
+                collection_key,
+                len(normalized),
+                generation,
+                json.dumps(metadata or {}, sort_keys=True),
+                now,
+                now,
+            ),
+        )
+        for target in normalized.values():
+            connection.execute(
+                """
+                INSERT INTO source_collection_memberships (
+                    provider, collection_key, target_type, target_id, active,
+                    first_seen_at, last_seen_at, removed_at, metadata_json
+                )
+                VALUES (?, ?, ?, ?, 1, ?, ?, NULL, ?)
+                ON CONFLICT(provider, collection_key, target_type, target_id) DO UPDATE SET
+                    active = 1,
+                    last_seen_at = excluded.last_seen_at,
+                    removed_at = NULL,
+                    metadata_json = excluded.metadata_json
+                """,
+                (
+                    provider,
+                    collection_key,
+                    target["target_type"],
+                    target["target_id"],
+                    now,
+                    now,
+                    json.dumps(target["metadata"], sort_keys=True),
+                ),
+            )
+        removed = previous_active - current
+        for target_type, target_id in removed:
+            connection.execute(
+                """
+                UPDATE source_collection_memberships
+                SET active = 0, removed_at = ?, last_seen_at = ?
+                WHERE provider = ? AND collection_key = ?
+                  AND target_type = ? AND target_id = ?
+                """,
+                (now, now, provider, collection_key, target_type, target_id),
+            )
+    return {
+        "provider": provider,
+        "collection_key": collection_key,
+        "generation": generation,
+        "total": len(normalized),
+        "added": len(current - previous_active),
+        "retained": len(current & previous_active),
+        "removed": len(removed),
+        "updated_at": now,
+    }
+
+
+def list_collection_memberships(
+    db_path: Path,
+    *,
+    provider: str,
+    collection_key: str,
+    active: bool | None = True,
+) -> list[dict[str, Any]]:
+    if not db_path.exists():
+        return []
+    where_active = "" if active is None else " AND active = ?"
+    params: list[Any] = [provider, collection_key]
+    if active is not None:
+        params.append(1 if active else 0)
+    with connect(db_path) as connection:
+        rows = connection.execute(
+            f"""
+            SELECT provider, collection_key, target_type, target_id, active,
+                   first_seen_at, last_seen_at, removed_at, metadata_json
+            FROM source_collection_memberships
+            WHERE provider = ? AND collection_key = ?{where_active}
+            ORDER BY target_type, target_id
+            """,
+            params,
+        ).fetchall()
+    return [
+        {
+            **{key: row[key] for key in row.keys() if key != "metadata_json"},
+            "active": bool(row["active"]),
+            "metadata": json.loads(row["metadata_json"]),
+        }
+        for row in rows
+    ]
+
+
 def upsert_media_file(
     db_path: Path,
     *,
@@ -287,9 +444,15 @@ def upsert_media_file(
     file_health: str | None = None,
     source_timestamp: str | None = None,
     verified_at: str | None = None,
+    file_key: str | None = None,
 ) -> dict[str, Any]:
     now = datetime.now(UTC).isoformat()
-    file_key = _media_file_key(remote_url=remote_url, local_path=local_path)
+    file_key = str(file_key).strip() if file_key is not None else _media_file_key(
+        remote_url=remote_url,
+        local_path=local_path,
+    )
+    if not file_key:
+        raise ValueError("media file key must not be empty")
     with connect(db_path) as connection:
         media_item = connection.execute(
             "SELECT id FROM media_items WHERE platform = ? AND remote_id = ?",
@@ -1314,6 +1477,33 @@ CREATE TABLE IF NOT EXISTS sync_cursors (
     metadata_json TEXT NOT NULL DEFAULT '{}',
     updated_at TEXT NOT NULL,
     PRIMARY KEY(platform, cursor_name)
+);
+
+CREATE TABLE IF NOT EXISTS source_collections (
+    provider TEXT NOT NULL,
+    collection_key TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'ready',
+    item_count INTEGER NOT NULL DEFAULT 0,
+    snapshot_generation TEXT NOT NULL,
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    last_success_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY(provider, collection_key)
+);
+
+CREATE TABLE IF NOT EXISTS source_collection_memberships (
+    provider TEXT NOT NULL,
+    collection_key TEXT NOT NULL,
+    target_type TEXT NOT NULL,
+    target_id TEXT NOT NULL,
+    active INTEGER NOT NULL DEFAULT 1,
+    first_seen_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL,
+    removed_at TEXT,
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    PRIMARY KEY(provider, collection_key, target_type, target_id),
+    FOREIGN KEY(provider, collection_key)
+        REFERENCES source_collections(provider, collection_key)
 );
 
 CREATE TABLE IF NOT EXISTS auth_sessions (

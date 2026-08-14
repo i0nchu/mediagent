@@ -39,11 +39,13 @@ class ComicDescriptor:
 def comic_descriptor(item: dict[str, Any]) -> ComicDescriptor:
     metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
     provider_metadata = metadata.get("pixiv") if isinstance(metadata.get("pixiv"), dict) else metadata
-    comic = provider_metadata.get("comic") if isinstance(provider_metadata.get("comic"), dict) else {}
+    comic = metadata.get("comic") if isinstance(metadata.get("comic"), dict) else {}
+    if not comic and isinstance(provider_metadata.get("comic"), dict):
+        comic = provider_metadata["comic"]
     series_data = provider_metadata.get("series") if isinstance(provider_metadata.get("series"), dict) else {}
     provider = str(item.get("platform") or comic.get("provider") or "unknown")
     provider_label = provider.replace("_", " ").replace("-", " ").title()
-    work_id = str(item.get("remote_id") or comic.get("provider_work_id") or "unknown")
+    work_id = str(comic.get("provider_work_id") or item.get("remote_id") or "unknown")
     title = str(comic.get("title") or provider_metadata.get("title") or metadata.get("title") or work_id).strip()
     series_title = str(
         comic.get("series_title")
@@ -52,7 +54,8 @@ def comic_descriptor(item: dict[str, Any]) -> ComicDescriptor:
         or ""
     ).strip()
     series_id = str(comic.get("series_id") or series_data.get("id") or "").strip()
-    is_one_shot = not series_title
+    explicit_one_shot = comic.get("is_one_shot")
+    is_one_shot = bool(explicit_one_shot) if explicit_one_shot is not None else not series_title
     if is_one_shot:
         series = f"{title} [{provider_label} {work_id}]"
         number = "1"
@@ -73,11 +76,11 @@ def comic_descriptor(item: dict[str, Any]) -> ComicDescriptor:
         count = str(count_value) if count_value not in (None, "") else None
         comic_format = str(comic.get("format")) if comic.get("format") else None
         identity = f"{provider}-series-{series_identity}"
-        archive_title = f"{series_title} - c{number}"
+        archive_title = str(comic.get("archive_title") or f"{series_title} - c{number}")
     volume_value = comic.get("volume_number") or comic.get("volume") or series_data.get("volume")
     volume = str(volume_value) if volume_value not in (None, "") else None
     unique_suffix = safe_storage_segment(identity, max_length=64)
-    directory_title = title if is_one_shot else series_title
+    directory_title = str(comic.get("directory_title") or (title if is_one_shot else series_title))
     series_directory = _safe_comic_name_with_identity(directory_title, unique_suffix, max_bytes=180)
     archive_identity = safe_storage_segment(f"{provider}-{work_id}", max_length=64)
     archive_filename = f"{_safe_comic_name_with_identity(archive_title, archive_identity, max_bytes=220)}.cbz"
@@ -155,7 +158,9 @@ def build_cbz_atomic(
 def comic_info_xml(*, item: dict[str, Any], page_count: int) -> bytes:
     metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
     pixiv_metadata = metadata.get("pixiv") if isinstance(metadata.get("pixiv"), dict) else metadata
-    comic = pixiv_metadata.get("comic") if isinstance(pixiv_metadata.get("comic"), dict) else {}
+    comic = metadata.get("comic") if isinstance(metadata.get("comic"), dict) else {}
+    if not comic and isinstance(pixiv_metadata.get("comic"), dict):
+        comic = pixiv_metadata["comic"]
     descriptor = comic_descriptor(item)
     root = ElementTree.Element("ComicInfo")
     _xml_text(root, "Title", descriptor.title)
@@ -176,8 +181,12 @@ def comic_info_xml(*, item: dict[str, Any], page_count: int) -> bytes:
     if not age_rating and _positive_int(pixiv_metadata.get("x_restrict")):
         age_rating = "Adults Only 18+"
     _xml_text(root, "AgeRating", age_rating)
-    tags = pixiv_metadata.get("tags") or metadata.get("tags") or []
-    tag_names = [str(tag.get("name")) for tag in tags if isinstance(tag, dict) and tag.get("name")]
+    tags = comic.get("tags") or pixiv_metadata.get("tags") or metadata.get("tags") or []
+    tag_names = [
+        str(tag.get("name")) if isinstance(tag, dict) else str(tag)
+        for tag in tags
+        if (isinstance(tag, dict) and tag.get("name")) or (isinstance(tag, str) and tag.strip())
+    ]
     if tag_names:
         _xml_text(root, "Tags", ", ".join(tag_names))
     source_dt, date_source = source_datetime(item, {})

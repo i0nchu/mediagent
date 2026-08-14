@@ -61,6 +61,7 @@ def build_parser() -> argparse.ArgumentParser:
     link_sync.add_argument("--write-sidecar-metadata", action="store_true", help="Write JSON sidecar metadata files.")
     link_sync.add_argument("--overwrite", action="store_true", help="Overwrite existing known target files.")
     link_sync.add_argument("--retry-failed", action="store_true", help="Retry media items currently marked failed.")
+    link_sync.add_argument("--repair-missing-files", action="store_true", help="Redownload tracked files that are missing or unhealthy.")
     link_sync.add_argument("--max-html-bytes", type=int, default=None, help=argparse.SUPPRESS)
     link_sync.add_argument("--max-media-bytes", type=int, default=None, help=argparse.SUPPRESS)
     link_sync.add_argument("--timeout-seconds", type=float, default=None, help=argparse.SUPPRESS)
@@ -93,7 +94,13 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Path to JSON input. Use '-' to read stdin. Defaults to an empty object.",
     )
-    tools_run.add_argument("--json", action="store_true", help="Emit machine-readable JSON.")
+    tool_output = tools_run.add_mutually_exclusive_group()
+    tool_output.add_argument("--json", action="store_true", help="Emit complete machine-readable JSON.")
+    tool_output.add_argument(
+        "--summary-json",
+        action="store_true",
+        help="Emit a compact machine-readable summary suitable for recurring service logs.",
+    )
     tools_run.add_argument("--dry-run", action="store_true", help="Run without tool side effects.")
     tools_run.add_argument("--allow-experimental", action="store_true", help=argparse.SUPPRESS)
     tools_run.set_defaults(handler=handle_tools_run)
@@ -167,33 +174,46 @@ def handle_tools_run(args: argparse.Namespace) -> int:
         tool=args.tool,
         input_data=input_data,
         json_output=args.json,
+        summary_json=args.summary_json,
         dry_run=args.dry_run,
         allow_experimental=args.allow_experimental,
     )
 
 
 def handle_link_sync(args: argparse.Namespace) -> int:
+    comic_link = _is_comic_link(args.url)
     input_data: dict[str, Any] = {
         "url": args.url,
-        "write_sidecar_metadata": args.write_sidecar_metadata,
         "overwrite": args.overwrite,
-        "retry_failed": args.retry_failed,
     }
+    if not comic_link or args.retry_failed:
+        input_data["retry_failed"] = args.retry_failed
+    if not comic_link or args.repair_missing_files:
+        input_data["repair_missing_files"] = args.repair_missing_files
+    if not comic_link:
+        input_data["write_sidecar_metadata"] = args.write_sidecar_metadata
     optional_fields = {
         "db_path": args.db_path,
         "library_root": args.library_root,
-        "target_dir": args.target_dir,
-        "max_html_bytes": args.max_html_bytes,
+        "target_dir": None if comic_link else args.target_dir,
+        "max_html_bytes": None if comic_link else args.max_html_bytes,
         "max_media_bytes": args.max_media_bytes,
         "timeout_seconds": args.timeout_seconds,
     }
     input_data.update({key: value for key, value in optional_fields.items() if value is not None})
     return run_tool_command(
-        tool="link.media.sync",
+        tool="comic.link.sync" if comic_link else "link.media.sync",
         input_data=input_data,
         json_output=args.json,
+        summary_json=False,
         dry_run=args.dry_run,
     )
+
+
+def _is_comic_link(url: str) -> bool:
+    from mediagent.tools.comic_tools import comic_link_provider
+
+    return comic_link_provider(url) is not None
 
 
 def handle_agent_skills_list(args: argparse.Namespace) -> int:
@@ -287,6 +307,7 @@ def run_tool_command(
     tool: str,
     input_data: dict[str, Any],
     json_output: bool,
+    summary_json: bool,
     dry_run: bool,
     allow_experimental: bool = False,
 ) -> int:
@@ -308,7 +329,9 @@ def run_tool_command(
         "run_id": context.run_id,
         **result.to_dict(),
     }
-    if json_output:
+    if summary_json:
+        print_json(_summary_tool_payload(payload))
+    elif json_output:
         print_json(payload)
     else:
         print_human_result(payload)
@@ -317,6 +340,38 @@ def run_tool_command(
     if result.error and result.error.category.value in VALIDATION_ERROR_CATEGORIES:
         return EXIT_VALIDATION_ERROR
     return EXIT_RUNTIME_FAILURE
+
+
+def _summary_tool_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+    compact_data = {
+        key: data[key]
+        for key in (
+            "provider",
+            "collection",
+            "policy",
+            "target_policy",
+            "complete",
+            "pages_fetched",
+            "expected_total",
+            "favorites_seen",
+            "following",
+            "dry_run",
+            "snapshot",
+            "summary",
+        )
+        if key in data
+    }
+    return {
+        "tool": payload.get("tool"),
+        "run_id": payload.get("run_id"),
+        "status": payload.get("status"),
+        "data": compact_data,
+        "artifact_count": len(payload.get("artifacts") or []),
+        "warnings": payload.get("warnings") or [],
+        "rate_limit": payload.get("rate_limit"),
+        "error": payload.get("error"),
+    }
 
 
 def build_llm_client() -> OllamaClient:

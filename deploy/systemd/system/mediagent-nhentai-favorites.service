@@ -1,0 +1,20 @@
+[Unit]
+Description=Mediagent nhentai favorites inbox sync
+Documentation=file:/data/services/mediagent/deploy/systemd/system/README.md
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=/data/services/mediagent/.env
+
+[Service]
+Type=oneshot
+User=ion
+Group=ion
+WorkingDirectory=/data/services/mediagent
+EnvironmentFile=/data/services/mediagent/.env
+ExecStart=/usr/bin/flock --nonblock --conflict-exit-code 75 /run/lock/mediagent-sync.lock /home/ion/.local/bin/uv run --locked mediagent tools run nhentai.favorites.sync --input /data/services/mediagent/deploy/systemd/system/nhentai.favorites.sync.json --summary-json
+SuccessExitStatus=75
+TimeoutStartSec=12h
+UMask=0077
+Nice=10
+NoNewPrivileges=yes
+PrivateTmp=yes

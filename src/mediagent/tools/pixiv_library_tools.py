@@ -539,6 +539,7 @@ def _comic_package_plan(
     include_platform_layer: bool,
     overwrite: bool,
     migrate_legacy: bool,
+    refresh_tracked: bool = False,
 ) -> dict[str, Any]:
     relative_path = comic_archive_relative_path(item=item, include_platform_layer=include_platform_layer)
     target_path = (library_root / relative_path).resolve()
@@ -614,12 +615,15 @@ def _comic_package_plan(
         return plan
     if target_path.exists() and not overwrite:
         if existing_cbz and existing_cbz.get("status") == "downloaded" and existing_cbz.get("file_health") in {"valid", "unknown"}:
-            plan["status"] = "cleanup" if legacy_cbz else "existing"
-            plan["page_count"] = _metadata_page_count(item)
+            if not refresh_tracked:
+                plan["status"] = "cleanup" if legacy_cbz else "existing"
+                plan["page_count"] = _metadata_page_count(item)
+                return plan
+            plan["status"] = "ready"
+        else:
+            plan["status"] = "blocked"
+            plan["reason"] = "target file already exists but is not a healthy tracked CBZ"
             return plan
-        plan["status"] = "blocked"
-        plan["reason"] = "target file already exists but is not a healthy tracked CBZ"
-        return plan
 
     page_records, reason = _ordered_comic_page_records(item)
     if reason:
@@ -732,7 +736,7 @@ def _apply_comic_package(
         source_dt, _ = source_datetime(item, {})
         db.upsert_media_file(
             db_path,
-            platform="pixiv",
+            platform=item["platform"],
             remote_id=item["remote_id"],
             remote_url=None,
             local_path=package["target_path"],
@@ -745,6 +749,7 @@ def _apply_comic_package(
             file_health="valid",
             source_timestamp=source_dt.isoformat(),
             verified_at=datetime.now(UTC).isoformat(),
+            file_key="archive:cbz" if item["platform"] != "pixiv" else None,
         )
     quarantined = _quarantine_legacy_cbz(db_path=db_path, entries=plan.get("legacy_cbz", []))
     package["legacy_cbz_retired"] = len(plan.get("legacy_cbz", []))
