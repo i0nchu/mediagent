@@ -14,6 +14,8 @@ JMComic API は adapter が gzip support を宣言すると JSON envelope を gz
 
 JMComic segment-count hash は image filename extension を除外する必要がある。`.jpg`／`.webp` を hash に含めると wrong horizontal band count でも structurally valid な image が生成され、filesystem health check では検出できない。Old affected files は explicit `--overwrite` が必要で、missing-file repair は存在する file を意図的に置き換えない。
 
+JMComic `/favorite` は通常 `folder_list` を返し、FID `0` は aggregate All である。ただし old usable session は一時的に empty folder index と 42 items を返した。Fresh credential session は `all(0)`、custom folder、49 aggregate items を返し、custom folder の 7 items はすべて All subset だった。Name は remote-first で解決し、stale provider view 用に numeric FID と account-scoped local alias を fallback として保持する。
+
 このファイルは次回引き継ぎでまだ重要な caveats だけを記録します。解決済みの履歴は、実装判断に影響しない限り Open に残しません。
 
 ## Open

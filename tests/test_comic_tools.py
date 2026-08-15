@@ -61,6 +61,9 @@ class ComicToolTests(unittest.TestCase):
                 "nhentai.favorites.sync",
                 "jmcomic.auth.status",
                 "jmcomic.auth.login",
+                "jmcomic.favorites.folders.register",
+                "jmcomic.favorites.folders.list",
+                "jmcomic.favorites.folders.collect",
                 "jmcomic.favorites.collect",
                 "jmcomic.favorites.sync",
             }.issubset(names)
@@ -396,9 +399,9 @@ class ComicToolTests(unittest.TestCase):
         collection = SimpleNamespace(
             pages_fetched=3,
             total=2,
-            items=(SimpleNamespace(album_id="1"), SimpleNamespace(album_id="2")),
+            items=(_jm_favorite("1"), _jm_favorite("2")),
         )
-        client = SimpleNamespace(collect_favorites=lambda: collection)
+        client = SimpleNamespace(collect_favorites=lambda **_: collection)
         with patch.object(comic_tools, "_jm_client", return_value=client):
             result = asyncio.run(comic_tools.jmcomic_favorites_collect(context, {}))
 
@@ -406,6 +409,253 @@ class ComicToolTests(unittest.TestCase):
         self.assertEqual(result.data["favorites_seen"], 2)
         self.assertEqual(result.data["following"], 2)
         self.assertNotIn("targets", result.data)
+
+    def test_jmcomic_folder_alias_registers_and_lists_without_network(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            database = root / "state.sqlite3"
+            context = ToolContext.from_env(
+                cwd=root,
+                env={
+                    "MEDIAGENT_DATA_DIR": str(root),
+                    "MEDIAGENT_DB_PATH": str(database),
+                    "JMCOMIC_USERNAME": "configured-user",
+                },
+            )
+            registered = asyncio.run(
+                comic_tools.jmcomic_favorite_folder_register(
+                    context,
+                    {
+                        "name": "稍後閱讀",
+                        "url": "https://18comic.vip/user/example/favorite/albums?folder=1234567",
+                    },
+                )
+            )
+            listed = asyncio.run(comic_tools.jmcomic_favorite_folders_list(context, {}))
+
+        self.assertTrue(registered.is_success, registered.to_dict())
+        self.assertTrue(listed.is_success, listed.to_dict())
+        self.assertEqual(registered.data["folder"]["folder_id"], "1234567")
+        self.assertEqual(
+            [(folder["name"], folder["folder_id"]) for folder in listed.data["folders"]],
+            [("all", "0"), ("稍後閱讀", "1234567")],
+        )
+
+    def test_jmcomic_folder_selection_accepts_env_ids_and_urls_and_deduplicates(self) -> None:
+        context = ToolContext.from_env(
+            dry_run=True,
+            cwd=Path.cwd(),
+            env={
+                "MEDIAGENT_JMCOMIC_FAVORITE_FOLDERS": json.dumps(
+                    [
+                        "1234567",
+                        "https://18comic.vip/user/example/favorite/albums?folder=1234567",
+                    ]
+                )
+            },
+        )
+        collection = SimpleNamespace(items=(_jm_favorite("1"),), pages_fetched=1)
+        client = SimpleNamespace(collect_favorites=MagicMock(return_value=collection))
+        with patch.object(comic_tools, "_jm_client", return_value=client):
+            result = asyncio.run(comic_tools.jmcomic_favorites_collect(context, {}))
+
+        self.assertTrue(result.is_success, result.to_dict())
+        self.assertEqual(result.data["favorites_seen"], 1)
+        self.assertEqual([folder["folder_id"] for folder in result.data["folders"]], ["1234567"])
+        client.collect_favorites.assert_called_once_with(folder_id="1234567")
+
+    def test_jmcomic_folder_name_is_discovered_from_remote_folder_list(self) -> None:
+        context = ToolContext.from_env(dry_run=True, cwd=Path.cwd(), env={})
+        page = SimpleNamespace(folders=({"FID": "1234567", "UID": "private", "name": "稍後閱讀"},))
+        collection = SimpleNamespace(items=(_jm_favorite("1"),), pages_fetched=1)
+        client = SimpleNamespace(
+            get_favorites_page=MagicMock(return_value=page),
+            collect_favorites=MagicMock(return_value=collection),
+        )
+        with patch.object(comic_tools, "_jm_client", return_value=client):
+            result = asyncio.run(
+                comic_tools.jmcomic_favorites_collect(context, {"folders": ["稍後閱讀"]})
+            )
+            discovered = asyncio.run(comic_tools.jmcomic_favorite_folders_collect(context, {}))
+
+        self.assertTrue(result.is_success, result.to_dict())
+        self.assertEqual(result.data["folders"][0]["folder_id"], "1234567")
+        client.collect_favorites.assert_called_once_with(folder_id="1234567")
+        self.assertTrue(discovered.is_success, discovered.to_dict())
+        self.assertEqual(
+            [(folder["name"], folder["folder_id"]) for folder in discovered.data["folders"]],
+            [("all", "0"), ("稍後閱讀", "1234567")],
+        )
+
+    def test_jmcomic_folder_selection_rejects_empty_or_unknown_names(self) -> None:
+        context = ToolContext.from_env(dry_run=True, cwd=Path.cwd(), env={})
+        client = SimpleNamespace(
+            collect_favorites=MagicMock(),
+            get_favorites_page=MagicMock(return_value=SimpleNamespace(folders=())),
+        )
+        with patch.object(comic_tools, "_jm_client", return_value=client):
+            empty = asyncio.run(comic_tools.jmcomic_favorites_collect(context, {"folders": []}))
+            unknown = asyncio.run(
+                comic_tools.jmcomic_favorites_collect(context, {"folders": ["not-registered"]})
+            )
+
+        self.assertFalse(empty.is_success)
+        self.assertEqual(empty.error.code, "jmcomic_folders_empty")
+        self.assertFalse(unknown.is_success)
+        self.assertEqual(unknown.error.code, "jmcomic_folder_unknown")
+        client.collect_favorites.assert_not_called()
+
+    def test_jmcomic_multi_folder_sync_commits_union_and_selection_change_stops_unique_follow(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            database = root / "state.sqlite3"
+            context = ToolContext.from_env(
+                cwd=root,
+                env={
+                    "MEDIAGENT_DATA_DIR": str(root),
+                    "MEDIAGENT_DB_PATH": str(database),
+                    "MEDIAGENT_LIBRARY_DIR": str(root / "library"),
+                    "JMCOMIC_USERNAME": "configured-user",
+                },
+            )
+            db.initialize_database(database)
+            account_key = comic_tools._jm_account_collection_key(context)
+            for name, folder_id in (("Folder A", "101"), ("Folder B", "202")):
+                db.register_collection_scope_alias(
+                    database,
+                    provider="jmcomic",
+                    account_key=account_key,
+                    scope_kind="favorite_folder",
+                    scope_name=name,
+                    scope_name_key=name.casefold(),
+                    remote_id=folder_id,
+                )
+
+            def favorite(album_id: str):
+                return SimpleNamespace(
+                    album_id=album_id,
+                    provider_work_id=f"album:{album_id}",
+                    title=f"Album {album_id}",
+                    latest_photo_id=None,
+                )
+
+            folder_items = {
+                "101": (favorite("1"), favorite("2")),
+                "202": (favorite("2"), favorite("3")),
+            }
+            client = SimpleNamespace(
+                session=JMComicSession({"AVS": "saved"}, username="configured-user"),
+                collect_favorites=MagicMock(
+                    side_effect=lambda *, folder_id="0": SimpleNamespace(
+                        items=folder_items[folder_id],
+                        pages_fetched=1,
+                    )
+                ),
+            )
+            with patch.object(comic_tools, "_jm_client", return_value=client), patch.object(
+                comic_tools,
+                "_sync_favorite_targets",
+                new=AsyncMock(
+                    side_effect=lambda *_: ToolResult.success({"summary": {}, "items": [], "packages": []})
+                ),
+            ):
+                first = asyncio.run(
+                    comic_tools.jmcomic_favorites_sync(context, {"folders": ["Folder A", "Folder B"]})
+                )
+                second = asyncio.run(
+                    comic_tools.jmcomic_favorites_sync(context, {"folders": ["Folder A"]})
+                )
+
+            collection_key = comic_tools._jm_account_collection_key(context)
+            active = db.list_collection_memberships(
+                database,
+                provider="jmcomic",
+                collection_key=collection_key,
+            )
+            inactive = db.list_collection_memberships(
+                database,
+                provider="jmcomic",
+                collection_key=collection_key,
+                active=False,
+            )
+
+        self.assertTrue(first.is_success, first.to_dict())
+        self.assertEqual(first.data["favorites_seen"], 3)
+        self.assertEqual(first.data["folder_memberships_seen"], 4)
+        self.assertEqual(first.data["snapshot"]["added"], 3)
+        self.assertTrue(second.is_success, second.to_dict())
+        self.assertEqual(second.data["snapshot"]["removed"], 1)
+        self.assertEqual([row["target_id"] for row in active], ["1", "2"])
+        self.assertEqual([row["target_id"] for row in inactive], ["3"])
+        album_two = next(row for row in active if row["target_id"] == "2")
+        self.assertEqual([folder["name"] for folder in album_two["metadata"]["favorite_folders"]], ["Folder A"])
+        self.assertEqual(
+            [call.kwargs["folder_id"] for call in client.collect_favorites.call_args_list],
+            ["101", "202", "101"],
+        )
+
+    def test_jmcomic_multi_folder_failure_preserves_previous_snapshot(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            database = root / "state.sqlite3"
+            context = ToolContext.from_env(
+                cwd=root,
+                env={
+                    "MEDIAGENT_DATA_DIR": str(root),
+                    "MEDIAGENT_DB_PATH": str(database),
+                    "MEDIAGENT_LIBRARY_DIR": str(root / "library"),
+                    "JMCOMIC_USERNAME": "configured-user",
+                },
+            )
+            db.initialize_database(database)
+            collection_key = comic_tools._jm_account_collection_key(context)
+            db.commit_collection_snapshot(
+                database,
+                provider="jmcomic",
+                collection_key=collection_key,
+                targets=[{"target_type": "album", "target_id": "old"}],
+            )
+            for name, folder_id in (("Folder A", "101"), ("Folder B", "202")):
+                db.register_collection_scope_alias(
+                    database,
+                    provider="jmcomic",
+                    account_key=collection_key,
+                    scope_kind="favorite_folder",
+                    scope_name=name,
+                    scope_name_key=name.casefold(),
+                    remote_id=folder_id,
+                )
+            favorite = SimpleNamespace(
+                album_id="new",
+                provider_work_id="album:new",
+                title="New",
+                latest_photo_id=None,
+            )
+
+            def collect(*, folder_id="0"):
+                if folder_id == "202":
+                    raise JMComicClientError("jmcomic_collection_incomplete", "incomplete")
+                return SimpleNamespace(items=(favorite,), pages_fetched=1)
+
+            client = SimpleNamespace(
+                session=JMComicSession({"AVS": "saved"}, username="configured-user"),
+                collect_favorites=MagicMock(side_effect=collect),
+                login=MagicMock(),
+            )
+            with patch.object(comic_tools, "_jm_client", return_value=client):
+                result = asyncio.run(
+                    comic_tools.jmcomic_favorites_sync(context, {"folders": ["Folder A", "Folder B"]})
+                )
+            active = db.list_collection_memberships(
+                database,
+                provider="jmcomic",
+                collection_key=collection_key,
+            )
+
+        self.assertFalse(result.is_success)
+        self.assertEqual(result.error.code, "jmcomic_collection_incomplete")
+        self.assertEqual([row["target_id"] for row in active], ["old"])
+        client.login.assert_not_called()
 
     def test_jmcomic_favorites_collect_recovers_expired_session_once(self) -> None:
         with TemporaryDirectory() as temp_dir:
@@ -420,7 +670,7 @@ class ComicToolTests(unittest.TestCase):
                     "JMCOMIC_SESSION_FILE": str(session_path),
                 },
             )
-            collection = SimpleNamespace(pages_fetched=1, total=1, items=(SimpleNamespace(album_id="1"),))
+            collection = SimpleNamespace(pages_fetched=1, total=1, items=(_jm_favorite("1"),))
             client = SimpleNamespace(
                 session=JMComicSession({"AVS": "expired"}, username="configured-user")
             )
@@ -533,7 +783,7 @@ class ComicToolTests(unittest.TestCase):
                 title="test album",
                 latest_photo_id="10",
             )
-            collection = SimpleNamespace(items=(favorite,))
+            collection = SimpleNamespace(items=(favorite,), pages_fetched=1)
             resolution = SimpleNamespace(normalized_items=lambda: [_comic_item()])
             client = SimpleNamespace(
                 session=JMComicSession({"AVS": "before-resolve"}, username="configured-user"),
@@ -745,6 +995,15 @@ def _comic_item() -> dict:
             ],
         },
     }
+
+
+def _jm_favorite(album_id: str) -> SimpleNamespace:
+    return SimpleNamespace(
+        album_id=album_id,
+        provider_work_id=f"album:{album_id}",
+        title=f"Album {album_id}",
+        latest_photo_id=None,
+    )
 
 
 def _jmcomic_item_with_spacer() -> dict:

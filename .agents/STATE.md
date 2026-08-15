@@ -2,7 +2,7 @@
 
 ## 2026-08-14 Comic Source Update
 
-- SQLite schema is version 8 with atomic source collection snapshots and active/inactive memberships.
+- SQLite schema is version 9 with atomic source collection snapshots, active/inactive memberships, and account-scoped collection-scope aliases.
 - `platforms/nhentai/` supports exact gallery resolution, ordered image manifests, complete favorite pagination, reusable browser-cookie sessions, and session refresh/persistence with mode `0600`.
 - `platforms/jmcomic/` supports strict album/photo/trusted-cover links, encrypted mobile API envelopes, reusable login sessions, complete album/favorite manifests, and deterministic vertical-slice image restoration.
 - JMComic sessions can be created from configured username/password or loaded from an optional Netscape `cookies.txt`. Cookie-file paths preserve their format and mode `0600`; explicit `jmcomic.auth.login` ignores an invalid old session and replaces it after successful credential login.
@@ -10,8 +10,10 @@
 - JMComic transport decodes bounded gzip/deflate API responses before JSON/AES envelope parsing. A sanitized live public-album probe verified the current endpoint returns gzip and now decodes album `349717` successfully.
 - JMComic segment-count hashing now uses the filename stem, matching the maintained upstream decoder. Album `349717` page `00001.webp` previously produced 18 segments but correctly produces 10. Explicit comic `overwrite` now requeues terminal downloaded items so affected pages and CBZ packages can be rebuilt atomically.
 - Valid JMComic image responses whose height is smaller than their declared scramble segment count are treated as non-content spacer strips. They are recorded as `media_files.status=skipped` with `file_health=ignored_spacer`, are not written to the library or CBZ, count as terminal for repair/dedupe, and reduce the packaged `ComicInfo.xml` page count. Malformed images still fail decoding.
-- `comic.link.sync` always applies exact direct-link scope. `nhentai.favorites.sync` uses exact gallery targets; `jmcomic.favorites.sync` follows only active favorite albums.
-- `nhentai.favorites.collect` and `jmcomic.favorites.collect` provide summary-only complete-snapshot diagnostics without downloads or membership changes. JM credential login/session reuse and a live three-page collection of 42 favorite albums are verified. The current nhentai browser cookie returns HTTP 401 and must be re-exported before its live collection can be repeated.
+- `comic.link.sync` always applies exact direct-link scope. `nhentai.favorites.sync` uses exact gallery targets; `jmcomic.favorites.sync` follows the album-ID union of the selected favorite folders.
+- JMComic folder selectors accept remote names, locally registered fallback names, numeric IDs, and trusted folder URLs. `jmcomic.favorites.folders.collect` reads the authenticated remote name/FID index; `.folders.register` and `.folders.list` manage the account-scoped local fallback without changing the remote account. `all`, `default`, `全部`, and `所有` map to aggregate folder ID `0`.
+- Multi-folder collection completes every selected folder before committing one union snapshot. Duplicate albums are followed once; removing a selected folder stops only albums absent from the retained union; one incomplete folder preserves the previous membership; stopping follow never deletes files.
+- `nhentai.favorites.collect` and `jmcomic.favorites.collect` provide summary-only complete-snapshot diagnostics without downloads or membership changes. A fresh JM credential session live-verified remote discovery `all(0)` plus `待看清單(4657493)`, name-only selection of 7 albums, and a 49-album aggregate All view where those 7 are a subset. An older session had temporarily returned 42 items and an empty `folder_list`, so numeric selectors and local aliases remain supported fallbacks. The current nhentai browser cookie returns HTTP 401 and must be re-exported before its live collection can be repeated.
 - A full JM favorites dry-run expanded those 42 albums into 1,081 chapters and 49,137 planned page downloads. A bounded real favorites sync committed all 42 active memberships, downloaded and verified 108/108 pages for one selected album, packaged one valid CBZ with `ComicInfo.xml`, and reran with zero downloads plus one existing CBZ. Large identity lookups are chunked below SQLite limits, and favorites sync processes one target at a time so earlier albums remain durable if a later target fails.
 - The first production JM bootstrap attempted all 49,137 pages: 49,080 became valid, 57 remained failed across 20 partial chapters, and 1,061 complete chapters received CBZ archives. A forced credential login confirmed the next run could commit the 42-item snapshot and resume. This exposed the expired-session persistence gap fixed above.
 - The post-recovery production rerun completed all 42 album targets and improved the library to 49,125 downloaded pages plus 1,072 CBZ archives, but 12 valid 1-12-pixel spacer WebPs kept 9 chapters partial. A read-only local probe against those exact 12 CDN objects confirmed the spacer classifier accepts 12/12 without writing files; the server has not yet received this spacer fix.
@@ -19,7 +21,7 @@
 - Shared link intake now dispatches recognized nhentai/JMComic links to the exact comic adapter before generic HTML resolution. This covers direct `link.media.sync`, queued links, Telegram inbox input, and future inboxes built on the same queue/tool boundary; Telegram provenance is retained without creating follow state.
 - Comic pages use stable identities and `comic-pages`; complete chapters are atomically packaged as Kavita-oriented CBZ files with `ComicInfo.xml`. One-chapter JM albums retain a series layout so a later new chapter does not move the original archive.
 - Favorite removal stops follow state but does not delete media. Incomplete collection snapshots are never committed.
-- The locked offline suite passes 351 tests after this update.
+- The folder-selection feature is implemented and live-verified locally but is not yet deployed to the server.
 
 ## Implemented
 
@@ -33,7 +35,7 @@
 - Built-in English agent SKILL files exist under `src/mediagent/agent/skills/builtin/`.
 - Agent CLI commands exist: `mediagent agent run`, `mediagent agent skills list`, and `mediagent agent skills inspect`.
 - SQLite schema initialization exists in `src/mediagent/core/db.py`.
-- Current SQLite schema version is `8`, with idempotent migration support for old media item/file tables, stable `link_queue` lifecycle/retry/provenance fields, and comic source collection memberships.
+- Current SQLite schema version is `9`, with idempotent migration support for old media item/file tables, stable `link_queue` lifecycle/retry/provenance fields, comic source collection memberships, and collection-scope aliases.
 - Filesystem safety helpers exist in `src/mediagent/core/filesystem.py`.
 - Secret redaction helpers exist in `src/mediagent/core/redaction.py`.
 - HTTP abstraction exists in `src/mediagent/core/http.py`.

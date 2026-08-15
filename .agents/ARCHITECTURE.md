@@ -199,9 +199,9 @@ The descriptor and CBZ writer in `core/comics.py` are platform-neutral. Pixiv, n
 
 Comic source pages remain `media_type: photo`; `metadata.work_type: comic` and `storage_category: comic-pages` select the comic pipeline. `metadata.comic` is provider-neutral and carries stable work/series/chapter identity. A complete healthy page set is atomically packaged under `comic/` as a CBZ with `ComicInfo.xml`.
 
-Direct URL scope is deterministic and never creates follow state. Account favorites commit a complete collection snapshot in one SQLite transaction. An incomplete or failed pagination must not deactivate old memberships. Removing a favorite deactivates only that provenance and never deletes downloaded pages or CBZ files. Active JM album memberships are re-resolved on later favorite syncs to discover new chapters; nhentai favorite galleries are exact.
+Direct URL scope is deterministic and never creates follow state. Account favorites commit a complete collection snapshot in one SQLite transaction. An incomplete or failed pagination must not deactivate old memberships. JMComic first completes every selected folder, unions memberships by album ID, and commits that effective inbox; changing the folder set deactivates only albums absent from the new union and never deletes downloaded pages or CBZ files. Active JM album memberships are re-resolved on later favorite syncs to discover new chapters; nhentai favorite galleries are exact.
 
-Schema v8 adds `source_collections` and `source_collection_memberships`. Stable per-page file keys prevent rotating CDN URLs from creating duplicate media-file rows. Credential-bearing headers, cookies, API tokens, and JM decode runtime metadata remain outside persisted media metadata.
+Schema v8 adds `source_collections` and `source_collection_memberships`; schema v9 adds `source_collection_scope_aliases` for account-scoped human names mapped to remote collection scopes. Stable per-page file keys prevent rotating CDN URLs from creating duplicate media-file rows. Credential-bearing headers, cookies, API tokens, and JM decode runtime metadata remain outside persisted media metadata.
 
 RuleSpec is a planned policy layer, not an implemented runtime feature.
 

@@ -8,6 +8,8 @@
 - [x] Shared run lock と summary-only journal output を使う system-level comic favorite timer example を追加した。
 - [x] Remote で expired になった JMComic session を run ごとに最大 1 回 credential login で recovery し、collection／album resolve 後に rotated cookie を checkpoint、initial full sync timeout を 18 時間にした。
 - [x] Valid JMComic 1-12 px spacer strips を ignored non-content に分類し、CBZ／page count から除外して repair の再試行対象外にした。
+- [x] JMComic remote name/FID/URL multi-folder selection、local alias fallback、atomic union membership、selection-change follow semantics を追加し、named folder 7 items と aggregate All 49 items を live verify した。
+- [ ] JMComic folder-selection を server に deploy し、最初は numeric FID で target folder を選択、service snapshot を確認してから timer に戻す。
 
 このファイルは、今後の実装・検証作業だけを追跡します。完了済みの状態、live-test 履歴、解決済み issue は `STATE.md`、`ISSUES.md`、`RUNBOOK.md` に置きます。
 

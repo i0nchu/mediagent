@@ -7,8 +7,10 @@
 - `nhentai.favorites.collect`: download や membership 変更をせず complete remote favorites/auth を診断。
 - `nhentai.favorites.sync`: 完全 favorites inbox snapshot。各 gallery は exact。
 - `jmcomic.auth.status`、`jmcomic.auth.login`: 安全な設定状態と mobile API session login／保存。
-- `jmcomic.favorites.collect`: download や membership 変更をせず complete remote favorites/auth を診断。
-- `jmcomic.favorites.sync`: 完全 favorites inbox snapshot。active album の新章を追跡。
+- `jmcomic.favorites.folders.collect`: authenticated favorites page から safe な folder name/FID 一覧を取得し、local registry や membership は変更しない。
+- `jmcomic.favorites.folders.register`、`jmcomic.favorites.folders.list`: remote discovery を利用できない場合の account-scoped local name-to-FID fallback を登録／確認する。remote folders は変更しない。
+- `jmcomic.favorites.collect`: download や membership 変更をせず、選択した一つ以上の folder の complete remote favorites/auth を診断する。`folders` は remote name、registered name、numeric FID、trusted folder URL を受け付ける。
+- `jmcomic.favorites.sync`: 選択した folders の union を一つの atomic favorites inbox snapshot として同期し、active album の新章を追跡する。
 
 現在登録されている tools を理解するためのカタログです。正確な schema は次で確認します。
 

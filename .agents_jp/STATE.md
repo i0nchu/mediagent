@@ -2,7 +2,7 @@
 
 ## 2026-08-14 コミックソース更新
 
-- SQLite schema は v8。atomic collection snapshot と active/inactive membership を実装済み。
+- SQLite schema は v9。atomic collection snapshot、active/inactive membership、account-scoped collection-scope alias を実装済み。
 - nhentai は exact gallery、完全 favorite pagination、再利用／refresh 可能な browser-cookie session（0600）を実装済み。
 - JMComic は album/photo/trusted-cover、暗号化 mobile API、再利用 login session、完全 album/favorite manifest、vertical-slice 復元を実装済み。
 - JMComic session は configured username/password から作成でき、optional な Netscape `cookies.txt` からも load できる。Cookie-file path は format と mode `0600` を維持し、明示的な `jmcomic.auth.login` は invalid な旧 session を無視して login 成功後に置き換える。
@@ -10,8 +10,10 @@
 - JMComic transport は JSON／AES envelope parsing 前に gzip／deflate API response を bounded decode する。Credential/body を出力しない public album probe で current endpoint の gzip response と album `349717` の正常 decode を確認済み。
 - JMComic segment-count hash は maintained upstream decoder と同じく filename stem を使用する。Album `349717` の `00001.webp` は誤って 18 segments になっていたが、正しくは 10。Explicit comic `overwrite` は terminal downloaded items を再 queue し、affected pages と CBZ を atomic rebuild できる。
 - JMComic response が valid image でも height が declared scramble segment count より小さい場合、non-content spacer strip として扱う。DB は `media_files.status=skipped`／`file_health=ignored_spacer` と記録し、library／CBZ には書かず、repair/dedupe では terminal とし、packaged `ComicInfo.xml` page count からも除外する。Malformed image は引き続き decode failure になる。
-- `comic.link.sync` は常に exact。`nhentai.favorites.sync` は gallery exact、`jmcomic.favorites.sync` は active favorite album のみ follow する。
-- `nhentai.favorites.collect` と `jmcomic.favorites.collect` は download や membership 変更なしで complete snapshot を summary 診断する。JM credential login/session reuse と 3 pages・42 favorite albums の live collection は検証済み。現在の nhentai browser cookie は HTTP 401 のため、live collect の再実行には再 export が必要。
+- `comic.link.sync` は常に exact。`nhentai.favorites.sync` は gallery exact、`jmcomic.favorites.sync` は selected favorite folders の album-ID union を follow する。
+- JMComic folder selector は remote name、local fallback alias、numeric FID、trusted folder URL を受け付ける。`.folders.collect` は remote name/FID index を取得し、`.folders.register`／`.list` は remote account を変更せず local fallback を管理する。`all`、`default`、`全部`、`所有` は aggregate FID `0`。
+- 全 selected folders が complete になってから union snapshot を atomic commit する。Duplicate album は一度だけ follow し、selection change は new union にない album だけを停止し、どれか一 folder が incomplete なら old membership を保持する。Follow stop は file を削除しない。
+- `nhentai.favorites.collect` と `jmcomic.favorites.collect` は download や membership 変更なしで complete snapshot を summary 診断する。Fresh JM session で remote `all(0)` と `待看清單(4657493)` の discovery、name-only 7 albums、7 albums を subset として含む aggregate All 49 albums を live verify した。Old session は一時的に 42 items と empty `folder_list` を返したため、ID/local alias fallback を維持する。現在の nhentai browser cookie は HTTP 401 のため再 export が必要。
 - JM full favorites dry-run は 42 albums を 1,081 chapters・49,137 planned page downloads に展開した。Bounded real favorites sync は 42 active memberships を全て commit し、選択した 1 album の 108/108 pages を download/verify、`ComicInfo.xml` 付き valid CBZ を 1 件 package した。二回目は 0 downloads・1 existing CBZ。Large identity lookup は SQLite limits 以下に chunk し、favorites sync は target 単位で処理するため、後続 target の failure で先行 album の処理を失わない。
 - 最初の production JM bootstrap は 49,137 pages を全て attempt し、49,080 pages が valid、57 pages が 20 partial chapters に残り、1,061 complete chapters に CBZ を作成した。Forced credential login 後の次 run は 42-item snapshot を commit して再開でき、上記 expired-session persistence gap を確認・修正した。
 - Session recovery 後の production rerun は 42 album targets を全て処理し、49,125 downloaded pages／1,072 CBZ まで改善したが、valid かつ height 1-12 px の spacer WebPs 12 件により 9 chapters が partial のままだった。この 12 CDN objects を使う read-only local probe は classifier が 12/12 accept、0 file writes であることを確認済み。Server にはまだ spacer fix を deploy していない。
@@ -19,7 +21,7 @@
 - Shared link intake は generic HTML resolution の前に recognized nhentai/JMComic links を exact comic adapter へ dispatch する。direct `link.media.sync`、queued links、Telegram inbox、同じ queue/tool boundary を使う future inbox に適用され、Telegram provenance は保持するが follow state は作らない。
 - 完全な chapter は `ComicInfo.xml` 付き Kavita CBZ に atomic package する。一章だけの JM album も安定した series layout を維持し、将来の新章で既存 CBZ を移動させない。
 - favorite 解除で media は削除せず、不完全 snapshot は commit しない。
-- この更新後の locked offline suite は 351 tests pass。
+- Folder-selection feature は local implementation/live verification 完了、server 未 deploy。
 
 ## 実装済み
 
@@ -32,7 +34,7 @@
 - Agent Core V1 は `src/mediagent/agent/` にあり、SKILL loading、strict JSON action parsing、Ollama integration、tool allowlist enforcement、dry-run/execute boundaries、compact/redacted tool-result feedback を含みます。
 - Built-in English agent SKILL files は `src/mediagent/agent/skills/builtin/` にあります。
 - Agent CLI commands は `mediagent agent run`、`mediagent agent skills list`、`mediagent agent skills inspect` です。
-- SQLite 初期化は `src/mediagent/core/db.py` にあり、現在の schema version は `8` です。old media item/file tables、stable `link_queue` lifecycle/retry/provenance fields、comic source collection memberships の idempotent migration に対応しています。
+- SQLite 初期化は `src/mediagent/core/db.py` にあり、現在の schema version は `9` です。old media item/file tables、stable `link_queue` lifecycle/retry/provenance fields、comic source collection memberships、collection-scope aliases の idempotent migration に対応しています。
 - ファイル安全 helper は `src/mediagent/core/filesystem.py` にあります。
 - credential/auth primitives は `src/mediagent/core/auth.py` にあります。
 - rate-limit metadata parsing は `src/mediagent/core/rate_limit.py` にあります。

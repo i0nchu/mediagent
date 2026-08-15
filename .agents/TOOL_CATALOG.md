@@ -9,8 +9,11 @@
 - `nhentai.favorites.sync`: complete favorites-as-inbox snapshot; each gallery is exact.
 - `jmcomic.auth.status`: safe configured credential/session status.
 - `jmcomic.auth.login`: mobile API login and private reusable-session persistence.
-- `jmcomic.favorites.collect`: complete remote favorites/auth diagnostic without downloads or membership changes.
-- `jmcomic.favorites.sync`: complete favorites-as-inbox snapshot; active albums are followed for new chapters.
+- `jmcomic.favorites.folders.collect`: authenticated remote favorite-folder name/FID discovery.
+- `jmcomic.favorites.folders.register`: local account-scoped name-to-FID/URL fallback registration.
+- `jmcomic.favorites.folders.list`: local fallback alias inspection without network access.
+- `jmcomic.favorites.collect`: complete selected-folder union/auth diagnostic without downloads or membership changes.
+- `jmcomic.favorites.sync`: complete selected-folder union snapshot; active albums are followed for new chapters.
 
 Use this catalog to understand the currently registered tools. Inspect exact schemas with:
 

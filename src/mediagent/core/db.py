@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 
-SCHEMA_VERSION = "8"
+SCHEMA_VERSION = "9"
 SQLITE_BUSY_TIMEOUT_MILLISECONDS = 30_000
 
 
@@ -423,6 +423,194 @@ def list_collection_memberships(
             **{key: row[key] for key in row.keys() if key != "metadata_json"},
             "active": bool(row["active"]),
             "metadata": json.loads(row["metadata_json"]),
+        }
+        for row in rows
+    ]
+
+
+def register_collection_scope_alias(
+    db_path: Path,
+    *,
+    provider: str,
+    account_key: str,
+    scope_kind: str,
+    scope_name: str,
+    scope_name_key: str,
+    remote_id: str,
+    canonical_url: str | None = None,
+    replace: bool = False,
+) -> dict[str, Any]:
+    """Persist one stable human-readable alias for a remote collection scope."""
+
+    values = {
+        "provider": str(provider or "").strip(),
+        "account_key": str(account_key or "").strip(),
+        "scope_kind": str(scope_kind or "").strip(),
+        "scope_name": str(scope_name or "").strip(),
+        "scope_name_key": str(scope_name_key or "").strip(),
+        "remote_id": str(remote_id or "").strip(),
+    }
+    if not all(values.values()):
+        raise ValueError("Collection scope aliases require provider, account, kind, name, and remote ID.")
+    now = datetime.now(UTC).isoformat()
+    with connect(db_path) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        by_name = connection.execute(
+            """
+            SELECT remote_id FROM source_collection_scope_aliases
+            WHERE provider = ? AND account_key = ? AND scope_kind = ? AND scope_name_key = ?
+            """,
+            (
+                values["provider"],
+                values["account_key"],
+                values["scope_kind"],
+                values["scope_name_key"],
+            ),
+        ).fetchone()
+        if by_name and str(by_name["remote_id"]) != values["remote_id"] and not replace:
+            raise ValueError("Collection scope name is already registered to another remote ID.")
+        by_remote = connection.execute(
+            """
+            SELECT scope_name_key FROM source_collection_scope_aliases
+            WHERE provider = ? AND account_key = ? AND scope_kind = ? AND remote_id = ?
+            """,
+            (
+                values["provider"],
+                values["account_key"],
+                values["scope_kind"],
+                values["remote_id"],
+            ),
+        ).fetchone()
+        if by_name and str(by_name["remote_id"]) != values["remote_id"]:
+            connection.execute(
+                """
+                DELETE FROM source_collection_scope_aliases
+                WHERE provider = ? AND account_key = ? AND scope_kind = ? AND scope_name_key = ?
+                """,
+                (
+                    values["provider"],
+                    values["account_key"],
+                    values["scope_kind"],
+                    values["scope_name_key"],
+                ),
+            )
+        if by_remote:
+            connection.execute(
+                """
+                UPDATE source_collection_scope_aliases
+                SET scope_name = ?, scope_name_key = ?, canonical_url = ?, updated_at = ?
+                WHERE provider = ? AND account_key = ? AND scope_kind = ? AND remote_id = ?
+                """,
+                (
+                    values["scope_name"],
+                    values["scope_name_key"],
+                    canonical_url,
+                    now,
+                    values["provider"],
+                    values["account_key"],
+                    values["scope_kind"],
+                    values["remote_id"],
+                ),
+            )
+        else:
+            connection.execute(
+                """
+                INSERT INTO source_collection_scope_aliases (
+                    provider, account_key, scope_kind, scope_name, scope_name_key,
+                    remote_id, canonical_url, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    values["provider"],
+                    values["account_key"],
+                    values["scope_kind"],
+                    values["scope_name"],
+                    values["scope_name_key"],
+                    values["remote_id"],
+                    canonical_url,
+                    now,
+                    now,
+                ),
+            )
+    return {
+        "provider": values["provider"],
+        "scope_kind": values["scope_kind"],
+        "name": values["scope_name"],
+        "remote_id": values["remote_id"],
+        "url": canonical_url,
+        "updated_at": now,
+    }
+
+
+def get_collection_scope_alias(
+    db_path: Path,
+    *,
+    provider: str,
+    account_key: str,
+    scope_kind: str,
+    scope_name_key: str,
+) -> dict[str, Any] | None:
+    if not db_path.exists():
+        return None
+    try:
+        with connect(db_path) as connection:
+            row = connection.execute(
+                """
+                SELECT provider, scope_kind, scope_name, remote_id, canonical_url, updated_at
+                FROM source_collection_scope_aliases
+                WHERE provider = ? AND account_key = ? AND scope_kind = ? AND scope_name_key = ?
+                """,
+                (provider, account_key, scope_kind, scope_name_key),
+            ).fetchone()
+    except sqlite3.OperationalError as exc:
+        if "no such table" in str(exc).lower():
+            return None
+        raise
+    if not row:
+        return None
+    return {
+        "provider": row["provider"],
+        "scope_kind": row["scope_kind"],
+        "name": row["scope_name"],
+        "remote_id": row["remote_id"],
+        "url": row["canonical_url"],
+        "updated_at": row["updated_at"],
+    }
+
+
+def list_collection_scope_aliases(
+    db_path: Path,
+    *,
+    provider: str,
+    account_key: str,
+    scope_kind: str,
+) -> list[dict[str, Any]]:
+    if not db_path.exists():
+        return []
+    try:
+        with connect(db_path) as connection:
+            rows = connection.execute(
+                """
+                SELECT provider, scope_kind, scope_name, remote_id, canonical_url, updated_at
+                FROM source_collection_scope_aliases
+                WHERE provider = ? AND account_key = ? AND scope_kind = ?
+                ORDER BY scope_name_key, remote_id
+                """,
+                (provider, account_key, scope_kind),
+            ).fetchall()
+    except sqlite3.OperationalError as exc:
+        if "no such table" in str(exc).lower():
+            return []
+        raise
+    return [
+        {
+            "provider": row["provider"],
+            "scope_kind": row["scope_kind"],
+            "name": row["scope_name"],
+            "remote_id": row["remote_id"],
+            "url": row["canonical_url"],
+            "updated_at": row["updated_at"],
         }
         for row in rows
     ]
@@ -1504,6 +1692,20 @@ CREATE TABLE IF NOT EXISTS source_collection_memberships (
     PRIMARY KEY(provider, collection_key, target_type, target_id),
     FOREIGN KEY(provider, collection_key)
         REFERENCES source_collections(provider, collection_key)
+);
+
+CREATE TABLE IF NOT EXISTS source_collection_scope_aliases (
+    provider TEXT NOT NULL,
+    account_key TEXT NOT NULL,
+    scope_kind TEXT NOT NULL,
+    scope_name TEXT NOT NULL,
+    scope_name_key TEXT NOT NULL,
+    remote_id TEXT NOT NULL,
+    canonical_url TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY(provider, account_key, scope_kind, remote_id),
+    UNIQUE(provider, account_key, scope_kind, scope_name_key)
 );
 
 CREATE TABLE IF NOT EXISTS auth_sessions (

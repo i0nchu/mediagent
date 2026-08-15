@@ -53,6 +53,19 @@ JMComic can create and reuse a session directly from configured credentials; bro
 
 `jmcomic.favorites.collect` and `.sync` recover `jmcomic_auth_required` with at most one configured credential login per run. The recovered session is saved immediately, and rotated cookies are checkpointed after collection and every album resolution. Check summary fields `auth_recovery_attempted`, `auth_recovered`, and `session_checkpointed`; no session contents are returned. The system JMComic service allows 18 hours for an initial full sync.
 
+JMComic favorite folder ID `0` is the aggregate All view. Folder names are resolved from the authenticated API `folder_list`; a stale session may temporarily return an empty index, so numeric IDs, trusted folder URLs, and account-scoped local aliases are supported fallbacks. Inspect remote folders or register/list a fallback without changing the remote account:
+
+```bash
+uv run --locked mediagent tools run jmcomic.favorites.folders.collect \
+  --input examples/tools/jmcomic.favorites.folders.collect.json --json
+uv run --locked mediagent tools run jmcomic.favorites.folders.register \
+  --input examples/tools/jmcomic.favorites.folders.register.json --json
+uv run --locked mediagent tools run jmcomic.favorites.folders.list \
+  --input examples/tools/jmcomic.favorites.folders.list.json --json
+```
+
+Pass `folders:["all"]` for the aggregate view or multiple names/IDs/URLs for a union. `MEDIAGENT_JMCOMIC_FAVORITE_FOLDERS` supplies a JSON-array default when tool input omits `folders`, for example `'["read-later","long-series"]'`. Every selected folder must complete before one union snapshot commits. Changing the selection on a later successful run stops follow only for albums absent from the new union and never deletes downloaded media. An empty selection is rejected.
+
 ```bash
 uv run --locked mediagent tools run jmcomic.auth.status --input examples/tools/jmcomic.auth.status.json --json
 uv run --locked mediagent tools run jmcomic.auth.login --input examples/tools/jmcomic.auth.login.json --json
@@ -70,7 +83,7 @@ As an optional alternative, a Netscape-format browser export may be configured t
 
 Inspect only summaries and files under the local root. A second identical run should download zero healthy pages and report existing CBZ files. Direct JM album runs never create follow memberships; only `jmcomic.favorites.sync` does. Do not delete SQLite `-wal` or `-shm` files during a run.
 
-Follow is implemented by periodically rerunning `jmcomic.favorites.sync`; it is not a resident daemon. The complete favorite snapshot updates active membership, and each active album is resolved again so new chapters are discovered. System-level examples live under `deploy/systemd/system/`; the `/data/services/mediagent` deployment units run as account `server`, set its `HOME`/`PATH`, use one shared non-blocking run lock, and emit compact `--summary-json` journal output. `nhentai.favorites.sync` may use the same timer pattern to discover newly favorited exact galleries, but it does not infer or follow a series.
+Follow is implemented by periodically rerunning `jmcomic.favorites.sync`; it is not a resident daemon. The complete selected-folder union updates active membership, and each active album is resolved again so new chapters are discovered. System-level examples live under `deploy/systemd/system/`; the `/data/services/mediagent` deployment units run as account `server`, set its `HOME`/`PATH`, use one shared non-blocking run lock, and emit compact `--summary-json` journal output. `nhentai.favorites.sync` may use the same timer pattern to discover newly favorited exact galleries, but it does not infer or follow a series.
 
 If JMComic pages downloaded before the filename-hash descramble fix show horizontally reordered bands, `repair_missing_files` is not sufficient because those files still exist and are recorded as healthy. Explicitly redownload and rebuild that exact album with `mediagent link sync '<album-url>' --overwrite --json`. The operation uses `.partial` and atomic replacement; verify the resulting images and CBZ locally before any server deployment.
 

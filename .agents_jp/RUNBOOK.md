@@ -35,9 +35,14 @@ JMComic は設定済み username/password から直接 reusable session を作�
 
 `jmcomic.favorites.collect` と `.sync` は `jmcomic_auth_required` に対し、run ごとに最大 1 回 configured credential login で recovery する。Recovered session は即時保存し、rotated cookie は collection と各 album resolve 後に checkpoint する。Summary の `auth_recovery_attempted`、`auth_recovered`、`session_checkpointed` で確認でき、session 内容は出力しない。System JMComic service は initial full sync に 18 時間を許可する。
 
+JMComic favorite folder selection は optional `folders` array を使う。各要素は remote folder name、local registered name、numeric FID、または trusted `18comic.vip/.../favorite/albums?folder=<id>` URL にできる。省略時は `MEDIAGENT_JMCOMIC_FAVORITE_FOLDERS`（JSON array または comma-separated list）を使い、それもない場合は aggregate `all`（FID `0`）になる。複数 folder は union/dedupe され、全 folder の complete collection が成功した時だけ一つの atomic snapshot を commit する。選択を変えると新 union にない旧 membership は inactive になるが、既存 files/CBZ は削除しない。`follow` の範囲は committed union 内の active albums だけである。
+
 ```bash
 uv run --locked mediagent tools run jmcomic.auth.status --input examples/tools/jmcomic.auth.status.json --json
 uv run --locked mediagent tools run jmcomic.auth.login --input examples/tools/jmcomic.auth.login.json --json
+uv run --locked mediagent tools run jmcomic.favorites.folders.collect --input examples/tools/jmcomic.favorites.folders.collect.json --json
+uv run --locked mediagent tools run jmcomic.favorites.folders.register --input examples/tools/jmcomic.favorites.folders.register.json --json
+uv run --locked mediagent tools run jmcomic.favorites.folders.list --input examples/tools/jmcomic.favorites.folders.list.json --json
 uv run --locked mediagent tools run comic.link.sync --input examples/tools/comic.link.sync.jmcomic-album.json --dry-run --json
 uv run --locked mediagent tools run comic.link.sync --input examples/tools/comic.link.sync.jmcomic-album.json --json
 uv run --locked mediagent tools run jmcomic.favorites.collect --input examples/tools/jmcomic.favorites.collect.json --dry-run --summary-json
@@ -48,7 +53,7 @@ Optional alternative として、Netscape browser export を `MEDIAGENT_JMCOMIC_
 
 同じ二回目の実行は healthy page を 0 件 download し、existing CBZ を報告すること。直接 JM album は follow を作らず、favorite sync のみが作る。実行中に SQLite `-wal`／`-shm` を削除しない。
 
-follow は常駐 daemon ではなく、timer が `jmcomic.favorites.sync` を定期的に再実行することで実現する。complete favorite snapshot で active membership を更新し、各 active album を再 resolve して新章を発見する。system-level example は `deploy/systemd/system/` にあり、`/data/services/mediagent` unit は `server` account と明示的な `HOME`／`PATH`、shared non-blocking run lock、compact `--summary-json` journal output を使う。`nhentai.favorites.sync` も同じ timer pattern で新しい exact favorite gallery を発見できるが、series を推測／follow しない。
+follow は常駐 daemon ではなく、timer が `jmcomic.favorites.sync` を定期的に再実行することで実現する。complete selected-folder union snapshot で active membership を更新し、その union 内の各 active album を再 resolve して新章を発見する。system-level example は `deploy/systemd/system/` にあり、`/data/services/mediagent` unit は `server` account と明示的な `HOME`／`PATH`、shared non-blocking run lock、compact `--summary-json` journal output を使う。`nhentai.favorites.sync` も同じ timer pattern で新しい exact favorite gallery を発見できるが、series を推測／follow しない。
 
 Filename-hash descramble fix 前に download した JMComic page が horizontal band reorder を示す場合、file は存在して DB で healthy のため `repair_missing_files` だけでは直らない。`mediagent link sync '<album-url>' --overwrite --json` でその exact album を明示的に再 download し、CBZ を rebuild する。`.partial` と atomic replacement を使うため、server deployment 前に local image/CBZ を確認する。
 

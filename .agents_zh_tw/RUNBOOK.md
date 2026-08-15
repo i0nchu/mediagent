@@ -35,6 +35,16 @@ JMComic 可以直接用設定好的帳號密碼建立並重用 session，不需�
 
 `jmcomic.favorites.collect` 與 `.sync` 遇到 `jmcomic_auth_required` 時，每輪最多用設定好的帳密恢復一次。Recovered session 會立即保存，輪替 cookie 會在 collection 與每個 album resolve 後 checkpoint。可從 summary 欄位 `auth_recovery_attempted`、`auth_recovered`、`session_checkpointed` 判斷，輸出不含 session 內容。system JMComic service 為初次完整同步保留 18 小時。
 
+JMComic FID `0` 是 aggregate All。資料夾名稱會從 authenticated API `folder_list` 解析；stale session 可能暫時回空 index，因此也支援數字 FID、可信 folder URL 與帳號 scoped 本機 alias fallback：
+
+```bash
+uv run --locked mediagent tools run jmcomic.favorites.folders.collect --input examples/tools/jmcomic.favorites.folders.collect.json --json
+uv run --locked mediagent tools run jmcomic.favorites.folders.register --input examples/tools/jmcomic.favorites.folders.register.json --json
+uv run --locked mediagent tools run jmcomic.favorites.folders.list --input examples/tools/jmcomic.favorites.folders.list.json --json
+```
+
+`folders:["all"]` 表示 aggregate view；多個名稱／FID／URL 會做 album-ID union。若 input 未帶 `folders`，可由 `MEDIAGENT_JMCOMIC_FAVORITE_FOLDERS` 提供 JSON array，例如 `'["read-later","long-series"]'`。所有指定資料夾都完整後才提交 snapshot；改變選擇只停止新 union 不再包含的 album，且不刪除已下載媒體。空選擇會拒絕執行。
+
 ```bash
 uv run --locked mediagent tools run jmcomic.auth.status --input examples/tools/jmcomic.auth.status.json --json
 uv run --locked mediagent tools run jmcomic.auth.login --input examples/tools/jmcomic.auth.login.json --json
@@ -48,7 +58,7 @@ uv run --locked mediagent tools run jmcomic.favorites.sync --input examples/tool
 
 第二次相同執行應下載 0 個健康頁面並回報 existing CBZ。直接 JM album 不建立 follow，只有收藏同步會。執行期間不要刪 SQLite `-wal`／`-shm`。
 
-follow 的實作是由 timer 定期重跑 `jmcomic.favorites.sync`，不是常駐 daemon。完整收藏 snapshot 更新 active membership，之後重新解析每個 active album 以發現新章。system-level 範例位於 `deploy/systemd/system/`；`/data/services/mediagent` unit 會以 `server` 帳號執行、明確設定其 `HOME`／`PATH`，並使用共用 non-blocking run lock 與精簡的 `--summary-json` journal。`nhentai.favorites.sync` 也可用相同 timer 發現新收藏的 exact gallery，但不會推測或追蹤系列。
+follow 的實作是由 timer 定期重跑 `jmcomic.favorites.sync`，不是常駐 daemon。完整的指定資料夾 union snapshot 更新 active membership，之後重新解析每個 active album 以發現新章。system-level 範例位於 `deploy/systemd/system/`；`/data/services/mediagent` unit 會以 `server` 帳號執行、明確設定其 `HOME`／`PATH`，並使用共用 non-blocking run lock 與精簡的 `--summary-json` journal。`nhentai.favorites.sync` 也可用相同 timer 發現新收藏的 exact gallery，但不會推測或追蹤系列。
 
 若在 filename-hash descramble 修正前下載的 JMComic 頁面呈現水平帶狀錯位，`repair_missing_files` 不足以修正，因為檔案仍存在且 DB 視為健康。請用 `mediagent link sync '<album-url>' --overwrite --json` 明確重新下載該 exact album 並重建 CBZ。流程會用 `.partial` 與 atomic replacement；先在本機確認圖片／CBZ 正常，再部署至 server。
 

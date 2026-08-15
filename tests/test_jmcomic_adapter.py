@@ -4,6 +4,12 @@ import unittest
 
 from mediagent.platforms.jmcomic.auth import JMComicSession
 from mediagent.platforms.jmcomic.client import JMComicClient, JMComicTransportResult
+from mediagent.platforms.jmcomic.favorite_folders import (
+    JMComicFavoriteFolderError,
+    normalize_folder_name,
+    parse_folder_locator,
+    parse_remote_folder_list,
+)
 from mediagent.platforms.jmcomic.parser import parse_album, parse_favorite_page, parse_photo
 from mediagent.core.comics import comic_archive_relative_path
 
@@ -90,6 +96,38 @@ class PagedFavoriteTransport(FakeTransport):
 
 
 class JMComicParserTests(unittest.TestCase):
+    def test_favorite_folder_locator_accepts_id_and_trusted_folder_url(self) -> None:
+        self.assertEqual(parse_folder_locator("1234567"), ("1234567", None))
+        self.assertEqual(
+            parse_folder_locator("https://18comic.vip/user/example/favorite/albums?folder=1234567"),
+            (
+                "1234567",
+                "https://18comic.vip/user/example/favorite/albums?folder=1234567",
+            ),
+        )
+        self.assertEqual(normalize_folder_name("  稍後  閱讀  "), ("稍後 閱讀", "稍後 閱讀"))
+
+    def test_favorite_folder_locator_rejects_untrusted_or_ambiguous_urls(self) -> None:
+        for value in (
+            "https://example.test/user/a/favorite/albums?folder=1",
+            "https://18comic.vip/album/1/?folder=2",
+            "https://user:secret@18comic.vip/user/a/favorite/albums?folder=1",
+            "https://18comic.vip/user/a/favorite/albums?folder=1&folder=2",
+        ):
+            with self.subTest(value=value), self.assertRaises(JMComicFavoriteFolderError):
+                parse_folder_locator(value)
+
+    def test_remote_favorite_folder_list_normalizes_and_deduplicates(self) -> None:
+        folders = parse_remote_folder_list(
+            [
+                {"FID": "1234567", "UID": "private", "name": "稍後閱讀"},
+                {"FID": "1234567", "name": "duplicate"},
+                {"FID": "0", "name": "all"},
+                {"FID": "bad", "name": "ignored"},
+            ]
+        )
+        self.assertEqual([(folder.name, folder.folder_id) for folder in folders], [("稍後閱讀", "1234567")])
+
     def test_album_manifest_and_one_shot_fallback(self) -> None:
         album = parse_album(ALBUM)
         self.assertEqual([episode.photo_id for episode in album.episodes], ["624076", "1459311"])

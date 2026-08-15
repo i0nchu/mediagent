@@ -1,4 +1,5 @@
 {
+  "folders": ["all"],
   "retry_failed": true,
   "repair_missing_files": true
 }

@@ -17,6 +17,8 @@ When updating this TODO, update the Traditional Chinese and Japanese copies in t
 - [x] Add system-level comic favorite timer examples with a shared run lock and summary-only journal output.
 - [x] Recover a remotely expired JMComic session with one bounded credential login, checkpoint rotated cookies after collection/album resolution, and give initial full sync an 18-hour timeout.
 - [x] Classify valid JMComic 1-12-pixel spacer strips as ignored non-content, exclude them from CBZ/page counts, and keep repair from retrying them.
+- [x] Add remote-name/FID/URL multi-folder JMComic selection, local alias fallback, atomic union membership, selection-change follow semantics, and live verification of the 7-item named folder plus 49-item aggregate All view.
+- [ ] Deploy the JMComic folder-selection feature with the server initially selecting the intended folder by numeric ID, then verify the service snapshot before relying on the recurring timer.
 
 Goal: harden the existing Agent-mode timer deployment before adding another long-running source or scheduler layer.
 

@@ -20,6 +20,17 @@ from mediagent.core.tooling import (
 )
 from mediagent.platforms.jmcomic import auth as jm_auth
 from mediagent.platforms.jmcomic.client import JMComicApiTransport, JMComicClient, JMComicClientError
+from mediagent.platforms.jmcomic.favorite_folders import (
+    ALL_FOLDER_ALIASES,
+    ALL_FOLDER_NAME,
+    FOLDERS_ENV,
+    JMComicFavoriteFolder,
+    JMComicFavoriteFolderError,
+    all_folder,
+    normalize_folder_name,
+    parse_folder_locator,
+    parse_remote_folder_list,
+)
 from mediagent.platforms.jmcomic.links import JMComicLinkError, parse_jmcomic_link
 from mediagent.platforms.nhentai import auth as nh_auth
 from mediagent.platforms.nhentai import client as nh_client
@@ -60,6 +71,10 @@ def definitions() -> list[ToolDefinition]:
         Permission.WRITE_CREDENTIALS,
         Permission.NETWORK,
     )
+    folder_selector_schema = {
+        "type": "array",
+        "items": {"type": "string"},
+    }
     return [
         ToolDefinition(
             spec=ToolSpec(
@@ -151,8 +166,42 @@ def definitions() -> list[ToolDefinition]:
         ),
         ToolDefinition(
             spec=ToolSpec(
-                name="jmcomic.favorites.collect",
-                description="Validate JMComic authentication and collect one complete favorites snapshot without downloading.",
+                name="jmcomic.favorites.folders.register",
+                description="Register or rename one local JMComic favorite-folder alias from a trusted folder URL or numeric ID.",
+                input_schema={
+                    "type": "object",
+                    "required": ["name"],
+                    "required_any": [["folder", "folder_id", "url"]],
+                    "properties": {
+                        "name": {"type": "string"},
+                        "folder": {"type": "string"},
+                        "folder_id": {"type": "string"},
+                        "url": {"type": "string"},
+                        "replace": {"type": "boolean"},
+                        "db_path": {"type": "string"},
+                    },
+                },
+                output_schema={"type": "object"},
+                permissions=(Permission.READ_ENV, Permission.READ_CREDENTIALS, Permission.READ_DB, Permission.WRITE_DB),
+                dry_run_supported=True,
+            ),
+            handler=jmcomic_favorite_folder_register,
+        ),
+        ToolDefinition(
+            spec=ToolSpec(
+                name="jmcomic.favorites.folders.list",
+                description="List locally registered JMComic favorite-folder aliases without contacting JMComic.",
+                input_schema={"type": "object", "properties": {"db_path": {"type": "string"}}},
+                output_schema={"type": "object"},
+                permissions=(Permission.READ_ENV, Permission.READ_CREDENTIALS, Permission.READ_DB),
+                dry_run_supported=True,
+            ),
+            handler=jmcomic_favorite_folders_list,
+        ),
+        ToolDefinition(
+            spec=ToolSpec(
+                name="jmcomic.favorites.folders.collect",
+                description="Fetch the current JMComic favorite-folder name and ID index without downloading comics.",
                 input_schema={
                     "type": "object",
                     "properties": {"session_file": {"type": "string"}, "timeout_seconds": {"type": "number"}},
@@ -161,13 +210,39 @@ def definitions() -> list[ToolDefinition]:
                 permissions=collect_permissions,
                 dry_run_supported=True,
             ),
+            handler=jmcomic_favorite_folders_collect,
+        ),
+        ToolDefinition(
+            spec=ToolSpec(
+                name="jmcomic.favorites.collect",
+                description="Validate JMComic authentication and collect one complete favorites snapshot without downloading.",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "session_file": {"type": "string"},
+                        "timeout_seconds": {"type": "number"},
+                        "db_path": {"type": "string"},
+                        "folders": folder_selector_schema,
+                    },
+                },
+                output_schema={"type": "object"},
+                permissions=(*collect_permissions, Permission.READ_DB),
+                dry_run_supported=True,
+            ),
             handler=jmcomic_favorites_collect,
         ),
         ToolDefinition(
             spec=ToolSpec(
                 name="jmcomic.favorites.sync",
                 description="Treat the complete JMComic album favorites list as an inbox and follow active albums for new chapters.",
-                input_schema={"type": "object", "properties": {**common_sync_properties, "session_file": {"type": "string"}}},
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        **common_sync_properties,
+                        "session_file": {"type": "string"},
+                        "folders": folder_selector_schema,
+                    },
+                },
                 output_schema={"type": "object"},
                 permissions=sync_permissions,
                 dry_run_supported=True,
@@ -489,6 +564,116 @@ async def jmcomic_auth_login(context: ToolContext, input_data: dict[str, Any]) -
     return ToolResult.success({"provider": "jmcomic", "status": "authenticated", "session_file": str(path), "credentials_written": True})
 
 
+async def jmcomic_favorite_folder_register(context: ToolContext, input_data: dict[str, Any]) -> ToolResult:
+    try:
+        name, name_key = normalize_folder_name(input_data.get("name"))
+        locator_values = [
+            str(input_data[key]).strip()
+            for key in ("folder", "folder_id", "url")
+            if input_data.get(key) not in (None, "")
+        ]
+        if len(locator_values) != 1:
+            raise JMComicFavoriteFolderError(
+                "jmcomic_folder_locator_invalid",
+                "Provide exactly one of folder, folder_id, or url.",
+            )
+        folder_id, canonical_url = parse_folder_locator(locator_values[0])
+        if name_key in ALL_FOLDER_ALIASES and folder_id != "0":
+            raise JMComicFavoriteFolderError(
+                "jmcomic_folder_name_reserved",
+                "The All folder name is reserved for folder ID 0.",
+            )
+        if folder_id == "0" and name_key not in ALL_FOLDER_ALIASES:
+            raise JMComicFavoriteFolderError(
+                "jmcomic_folder_id_reserved",
+                "Folder ID 0 must use a reserved All folder name.",
+            )
+        db_path = _required_db_path(context, input_data)
+        if isinstance(db_path, ToolResult):
+            return db_path
+        ensure_inside(db_path, context.allowed_write_roots())
+        folder = JMComicFavoriteFolder(name, folder_id, canonical_url)
+        if context.dry_run:
+            return ToolResult.success({"provider": "jmcomic", "registered": False, "dry_run": True, "folder": folder.public_dict()})
+        db.initialize_database(db_path)
+        registered = db.register_collection_scope_alias(
+            db_path,
+            provider="jmcomic",
+            account_key=_jm_account_collection_key(context),
+            scope_kind="favorite_folder",
+            scope_name=name,
+            scope_name_key=name_key,
+            remote_id=folder_id,
+            canonical_url=canonical_url,
+            replace=bool(input_data.get("replace")),
+        )
+        return ToolResult.success(
+            {
+                "provider": "jmcomic",
+                "registered": True,
+                "folder": {
+                    "name": registered["name"],
+                    "folder_id": registered["remote_id"],
+                    "url": registered["url"],
+                },
+            }
+        )
+    except Exception as exc:
+        return _provider_failure(exc)
+
+
+async def jmcomic_favorite_folders_list(context: ToolContext, input_data: dict[str, Any]) -> ToolResult:
+    try:
+        db_path = _required_db_path(context, input_data)
+        if isinstance(db_path, ToolResult):
+            return db_path
+        ensure_inside(db_path, context.allowed_write_roots())
+        aliases = db.list_collection_scope_aliases(
+            db_path,
+            provider="jmcomic",
+            account_key=_jm_account_collection_key(context),
+            scope_kind="favorite_folder",
+        )
+        folders = [
+            all_folder().public_dict(),
+            *(
+                {
+                    "name": alias["name"],
+                    "folder_id": alias["remote_id"],
+                    "url": alias["url"],
+                    "updated_at": alias["updated_at"],
+                }
+                for alias in aliases
+            ),
+        ]
+        return ToolResult.success({"provider": "jmcomic", "folders": folders, "folder_count": len(folders)})
+    except Exception as exc:
+        return _provider_failure(exc)
+
+
+async def jmcomic_favorite_folders_collect(context: ToolContext, input_data: dict[str, Any]) -> ToolResult:
+    recovery: _JMAuthRecovery | None = None
+    try:
+        client = _jm_client(context, input_data, login_if_needed=not context.dry_run)
+        recovery = _JMAuthRecovery(context, input_data, client, allow_reauth=not context.dry_run)
+        recovery.checkpoint()
+        folders = recovery.run(lambda: _remote_jm_favorite_folders(client))
+        return ToolResult.success(
+            {
+                "provider": "jmcomic",
+                "complete": True,
+                "folders": [folder.public_dict() for folder in folders],
+                "folder_count": len(folders),
+                **recovery.safe_metadata(),
+            }
+        )
+    except Exception as exc:
+        result = _provider_failure(exc)
+        if recovery is not None:
+            result.data.update(recovery.safe_metadata())
+        return result
+
+
 async def jmcomic_favorites_sync(context: ToolContext, input_data: dict[str, Any]) -> ToolResult:
     path_error = _validate_sync_paths(context, input_data)
     if path_error is not None:
@@ -498,26 +683,19 @@ async def jmcomic_favorites_sync(context: ToolContext, input_data: dict[str, Any
         client = _jm_client(context, input_data, login_if_needed=not context.dry_run)
         recovery = _JMAuthRecovery(context, input_data, client, allow_reauth=not context.dry_run)
         recovery.checkpoint()
-        collection = recovery.run(client.collect_favorites)
-        targets = [
-            {
-                "target_type": "album",
-                "target_id": favorite.album_id,
-                "metadata": {
-                    "provider_work_id": favorite.provider_work_id,
-                    "title": favorite.title,
-                    "latest_photo_id": favorite.latest_photo_id,
-                },
-            }
-            for favorite in collection.items
-        ]
+        folders = _resolve_jm_favorite_folders_with_discovery(context, input_data, client, recovery)
+        targets, folder_snapshots = _collect_jm_favorite_folder_targets(client, recovery, folders)
         snapshot = _commit_or_preview_snapshot(
             context,
             input_data,
             "jmcomic",
-            _favorites_collection_key(client.session.username),
+            _jm_account_collection_key(context, client),
             targets,
             "series_and_follow",
+            metadata={
+                "selected_folders": [folder.public_dict() for folder in folders],
+                "folder_snapshots": folder_snapshots,
+            },
         )
         selected = _limit(targets, input_data.get("download_limit"))
         result = await _sync_favorite_targets(
@@ -538,6 +716,8 @@ async def jmcomic_favorites_sync(context: ToolContext, input_data: dict[str, Any
                 "snapshot": snapshot,
                 "favorites_seen": len(targets),
                 "following": len(targets),
+                "folder_memberships_seen": sum(folder["favorites_seen"] for folder in folder_snapshots),
+                "folders": folder_snapshots,
                 **recovery.safe_metadata(),
             }
         )
@@ -638,17 +818,20 @@ async def jmcomic_favorites_collect(context: ToolContext, input_data: dict[str, 
         client = _jm_client(context, input_data, login_if_needed=not context.dry_run)
         recovery = _JMAuthRecovery(context, input_data, client, allow_reauth=not context.dry_run)
         recovery.checkpoint()
-        collection = recovery.run(client.collect_favorites)
+        folders = _resolve_jm_favorite_folders_with_discovery(context, input_data, client, recovery)
+        targets, folder_snapshots = _collect_jm_favorite_folder_targets(client, recovery, folders)
         return ToolResult.success(
             {
                 "provider": "jmcomic",
                 "collection": "favorites",
                 "complete": True,
-                "pages_fetched": collection.pages_fetched,
-                "expected_total": collection.total,
-                "favorites_seen": len(collection.items),
+                "pages_fetched": sum(folder["pages_fetched"] for folder in folder_snapshots),
+                "expected_total": len(targets),
+                "favorites_seen": len(targets),
+                "folder_memberships_seen": sum(folder["favorites_seen"] for folder in folder_snapshots),
+                "folders": folder_snapshots,
                 "target_policy": "series_and_follow",
-                "following": len(collection.items),
+                "following": len(targets),
                 **recovery.safe_metadata(),
             }
         )
@@ -848,6 +1031,177 @@ def _favorites_collection_key(account_id: Any) -> str:
     return f"favorites:{digest}"
 
 
+def _jm_account_collection_key(context: ToolContext, client: JMComicClient | None = None) -> str:
+    config = jm_auth.load_config(env=context.env, cwd=context.cwd)
+    account_id = config.username or (client.session.username if client is not None else None)
+    if not account_id:
+        try:
+            account_id = jm_auth.load_session(env=context.env, cwd=context.cwd).username
+        except jm_auth.JMComicAuthError:
+            account_id = None
+    return _favorites_collection_key(account_id)
+
+
+def _resolve_jm_favorite_folders(
+    context: ToolContext,
+    input_data: dict[str, Any],
+    *,
+    remote_folders: list[JMComicFavoriteFolder] | None = None,
+) -> list[JMComicFavoriteFolder]:
+    selectors = input_data.get("folders")
+    if selectors is None:
+        configured = str(context.env.get(FOLDERS_ENV) or "").strip()
+        if configured:
+            try:
+                decoded = json.loads(configured)
+            except json.JSONDecodeError:
+                selectors = [part.strip() for part in configured.split(",") if part.strip()]
+            else:
+                selectors = decoded
+        else:
+            selectors = [ALL_FOLDER_NAME]
+    if not isinstance(selectors, list) or not selectors:
+        raise JMComicFavoriteFolderError(
+            "jmcomic_folders_empty",
+            "Provide at least one JMComic favorite folder; an empty selection is rejected to avoid stopping all follow accidentally.",
+        )
+    if any(not isinstance(selector, str) for selector in selectors):
+        raise JMComicFavoriteFolderError(
+            "jmcomic_folder_selector_invalid",
+            "JMComic favorite folder selectors must be names, numeric IDs, or trusted folder URLs.",
+        )
+
+    account_key = _jm_account_collection_key(context)
+    db_path = _required_db_path(context, input_data)
+    if isinstance(db_path, ToolResult):
+        db_path = None
+    aliases = (
+        db.list_collection_scope_aliases(
+            db_path,
+            provider="jmcomic",
+            account_key=account_key,
+            scope_kind="favorite_folder",
+        )
+        if db_path is not None
+        else []
+    )
+    aliases_by_name = {str(alias["name"]).casefold(): alias for alias in aliases}
+    aliases_by_id = {str(alias["remote_id"]): alias for alias in aliases}
+    remote_by_name: dict[str, JMComicFavoriteFolder] = {}
+    ambiguous_remote_names: set[str] = set()
+    for remote_folder in remote_folders or []:
+        name_key = remote_folder.name.casefold()
+        existing = remote_by_name.get(name_key)
+        if existing is not None and existing.folder_id != remote_folder.folder_id:
+            ambiguous_remote_names.add(name_key)
+            continue
+        remote_by_name[name_key] = remote_folder
+    resolved: list[JMComicFavoriteFolder] = []
+    seen_ids: set[str] = set()
+    for selector in selectors:
+        text = selector.strip()
+        if not text:
+            raise JMComicFavoriteFolderError(
+                "jmcomic_folder_selector_invalid",
+                "JMComic favorite folder selectors must not be empty.",
+            )
+        if text.casefold() in ALL_FOLDER_ALIASES:
+            folder = all_folder()
+        elif text.isdigit() or "://" in text:
+            folder_id, canonical_url = parse_folder_locator(text)
+            alias = aliases_by_id.get(folder_id)
+            folder = JMComicFavoriteFolder(
+                str(alias["name"]) if alias else (ALL_FOLDER_NAME if folder_id == "0" else f"folder:{folder_id}"),
+                folder_id,
+                canonical_url or (str(alias["url"]) if alias and alias.get("url") else None),
+            )
+        else:
+            name_key = text.casefold()
+            if name_key in ambiguous_remote_names:
+                raise JMComicFavoriteFolderError(
+                    "jmcomic_folder_name_ambiguous",
+                    f"JMComic returned more than one favorite folder named: {text}",
+                )
+            remote_folder = remote_by_name.get(name_key)
+            alias = aliases_by_name.get(name_key)
+            if remote_folder is not None:
+                folder = remote_folder
+            elif alias is None:
+                raise JMComicFavoriteFolderError(
+                    "jmcomic_folder_unknown",
+                    f"JMComic favorite folder name is not registered: {text}",
+                ) from None
+            else:
+                folder = JMComicFavoriteFolder(
+                    str(alias["name"]),
+                    str(alias["remote_id"]),
+                    str(alias["url"]) if alias.get("url") else None,
+                )
+        if folder.folder_id in seen_ids:
+            continue
+        seen_ids.add(folder.folder_id)
+        resolved.append(folder)
+    return resolved
+
+
+def _resolve_jm_favorite_folders_with_discovery(
+    context: ToolContext,
+    input_data: dict[str, Any],
+    client: JMComicClient,
+    recovery: "_JMAuthRecovery",
+) -> list[JMComicFavoriteFolder]:
+    try:
+        return _resolve_jm_favorite_folders(context, input_data)
+    except JMComicFavoriteFolderError as exc:
+        if exc.code != "jmcomic_folder_unknown":
+            raise
+    remote_folders = recovery.run(lambda: _remote_jm_favorite_folders(client))
+    return _resolve_jm_favorite_folders(context, input_data, remote_folders=remote_folders)
+
+
+def _remote_jm_favorite_folders(client: JMComicClient) -> list[JMComicFavoriteFolder]:
+    page = client.get_favorites_page(page=1, folder_id="0")
+    return [all_folder(), *parse_remote_folder_list(list(page.folders))]
+
+
+def _collect_jm_favorite_folder_targets(
+    client: JMComicClient,
+    recovery: "_JMAuthRecovery",
+    folders: list[JMComicFavoriteFolder],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    favorites_by_id: dict[str, Any] = {}
+    membership_by_id: dict[str, list[dict[str, str | None]]] = {}
+    folder_snapshots: list[dict[str, Any]] = []
+    for folder in folders:
+        collection = recovery.run(lambda folder_id=folder.folder_id: client.collect_favorites(folder_id=folder_id))
+        folder_snapshots.append(
+            {
+                **folder.public_dict(),
+                "complete": True,
+                "pages_fetched": collection.pages_fetched,
+                "favorites_seen": len(collection.items),
+            }
+        )
+        for favorite in collection.items:
+            favorites_by_id.setdefault(favorite.album_id, favorite)
+            membership_by_id.setdefault(favorite.album_id, []).append(folder.public_dict())
+    targets = []
+    for album_id, favorite in favorites_by_id.items():
+        targets.append(
+            {
+                "target_type": "album",
+                "target_id": album_id,
+                "metadata": {
+                    "provider_work_id": favorite.provider_work_id,
+                    "title": favorite.title,
+                    "latest_photo_id": favorite.latest_photo_id,
+                    "favorite_folders": membership_by_id[album_id],
+                },
+            }
+        )
+    return targets, folder_snapshots
+
+
 def _commit_or_preview_snapshot(
     context: ToolContext,
     input_data: dict[str, Any],
@@ -855,6 +1209,7 @@ def _commit_or_preview_snapshot(
     collection_key: str,
     targets: list[dict[str, Any]],
     policy: str,
+    metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if context.dry_run:
         return {"committed": False, "dry_run": True, "total": len(targets)}
@@ -868,7 +1223,7 @@ def _commit_or_preview_snapshot(
         provider=provider,
         collection_key=collection_key,
         targets=targets,
-        metadata={"policy": policy},
+        metadata={"policy": policy, **(metadata or {})},
     )
     return {"committed": True, **result}
 

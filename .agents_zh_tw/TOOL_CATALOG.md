@@ -7,8 +7,11 @@
 - `nhentai.favorites.collect`：完整遠端收藏/auth 診斷，不下載，也不變更 membership。
 - `nhentai.favorites.sync`：完整收藏 inbox snapshot；每個 gallery 為 exact。
 - `jmcomic.auth.status`、`jmcomic.auth.login`：安全狀態與 mobile API session 登入保存。
-- `jmcomic.favorites.collect`：完整遠端收藏/auth 診斷，不下載，也不變更 membership。
-- `jmcomic.favorites.sync`：完整收藏 inbox snapshot；active album 持續發現新章。
+- `jmcomic.favorites.folders.collect`：authenticated 遠端收藏資料夾名稱/FID discovery。
+- `jmcomic.favorites.folders.register`：本機帳號 scoped 名稱-to-FID/URL fallback registration。
+- `jmcomic.favorites.folders.list`：不連網列出本機 fallback alias。
+- `jmcomic.favorites.collect`：完整指定資料夾 union/auth 診斷，不下載，也不變更 membership。
+- `jmcomic.favorites.sync`：完整指定資料夾 union snapshot；active album 持續發現新章。
 
 用這份文件快速理解目前已註冊的工具。精確 schema 請用：
 

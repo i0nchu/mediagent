@@ -6,7 +6,7 @@
 
 直接 URL は follow state を作らない。favorites は全ページを完全に収集してから一つの SQLite transaction で snapshot を commit し、途中失敗時には旧 membership を無効化しない。favorite 解除は provenance のみ停止し、既存 page／CBZ は削除しない。active な JM favorite album は次回同期で再解決して新章を検出し、nhentai favorite は exact のままとする。
 
-Schema v8 は `source_collections` と `source_collection_memberships` を追加する。安定した page file key により CDN URL のローテーションで重複 row を作らない。cookie、token、機密 header、JM runtime decode は永続 metadata に保存しない。
+Schema v8 は `source_collections` と `source_collection_memberships`、v9 は account-scoped human name と remote collection scope を結ぶ `source_collection_scope_aliases` を追加する。安定した page file key により CDN URL のローテーションで重複 row を作らない。cookie、token、機密 header、JM runtime decode は永続 metadata に保存しない。
 
 ## Product Boundary
 

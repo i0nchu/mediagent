@@ -8,6 +8,9 @@ allowed_tools:
   - nhentai.favorites.sync
   - jmcomic.auth.status
   - jmcomic.auth.login
+  - jmcomic.favorites.folders.register
+  - jmcomic.favorites.folders.list
+  - jmcomic.favorites.folders.collect
   - jmcomic.favorites.collect
   - jmcomic.favorites.sync
 default_dry_run: false
@@ -19,6 +22,7 @@ supported_intents:
   - sync JMComic or 18comic favorites
   - retry failed or repair missing favorite comic files
   - validate or count configured comic favorites without downloading
+  - register, list, or select JMComic favorite folders by name
 unsupported_intents:
   - download a directly provided comic URL
   - search either provider
@@ -31,6 +35,10 @@ Use this skill only when the user asks to synchronize the configured account fav
 
 - `nhentai.favorites.sync` treats each favorite gallery as exact.
 - `jmcomic.favorites.sync` treats each favorite album as `series_and_follow`, downloading its current chapters and discovering new chapters on later runs while it remains favorited.
+
+JMComic folder selection is an inbox boundary. Pass `folders` only when the user names one or more folders. Registered names, numeric folder IDs, and trusted `favorite/albums?folder=...` URLs are accepted; unknown names must fail rather than silently falling back to `default`. Multiple folders are collected completely and unioned by album ID before one atomic membership snapshot is committed. If any selected folder is incomplete, preserve the previous snapshot. Removing a selected folder stops follow only for albums no longer present in any retained selected folder, without deleting downloaded files.
+
+Resolve unregistered names from the authenticated remote `folder_list`; use `jmcomic.favorites.folders.collect` when the user only wants to inspect that remote index. Use `jmcomic.favorites.folders.register` when the user provides a folder name plus its numeric ID or trusted URL, or when a stale provider session does not return its folder index. Registration is local and does not modify the remote account. Use `jmcomic.favorites.folders.list` to inspect the local fallback registry. The reserved `all` name maps to folder ID `0`, which is the provider's aggregate All view; `default`, `全部`, and `所有` are accepted aliases.
 
 Direct links belong to `explicit_link_download` and never enable follow behavior.
 

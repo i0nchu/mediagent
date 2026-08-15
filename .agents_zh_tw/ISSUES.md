@@ -14,6 +14,8 @@ JMComic API 目前會在 adapter 宣告支援 gzip 時壓縮 JSON envelope。Tra
 
 JMComic segment-count hash 必須排除圖片副檔名。若把 `.jpg`／`.webp` 算進 hash，會選到錯誤的水平分段數，但輸出仍是結構有效圖片，因此 filesystem health check 無法發現。舊受影響檔案需明確使用 `--overwrite`；missing-file repair 刻意不會取代仍存在的檔案。
 
+JMComic `/favorite` 正常會回 `folder_list`，FID `0` 是 aggregate All；但舊的可用 session 曾暫時回空 folder index 與 42 本。Fresh credential session 回傳 `all(0)`、自訂資料夾、49 本 aggregate items，且自訂資料夾 7 本全是 All subset。因此名稱可優先從遠端解析，同時保留數字 FID 與帳號 scoped 本機 alias 供 stale provider view fallback。
+
 本檔記錄下一次接手仍需要注意的 caveats。已解決的歷史問題不應長期保留在 Open，除非仍影響實作判斷。
 
 ## Open
