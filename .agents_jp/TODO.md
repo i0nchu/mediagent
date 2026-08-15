@@ -7,6 +7,7 @@
 - [x] JM credential login/session reuse、3-page favorite pagination、42 albums／1,081 chapters full dry-run、108-page bounded real favorite sync と CBZ/dedupe を live 検証した。
 - [x] Shared run lock と summary-only journal output を使う system-level comic favorite timer example を追加した。
 - [x] Remote で expired になった JMComic session を run ごとに最大 1 回 credential login で recovery し、collection／album resolve 後に rotated cookie を checkpoint、initial full sync timeout を 18 時間にした。
+- [x] Valid JMComic 1-12 px spacer strips を ignored non-content に分類し、CBZ／page count から除外して repair の再試行対象外にした。
 
 このファイルは、今後の実装・検証作業だけを追跡します。完了済みの状態、live-test 履歴、解決済み issue は `STATE.md`、`ISSUES.md`、`RUNBOOK.md` に置きます。
 

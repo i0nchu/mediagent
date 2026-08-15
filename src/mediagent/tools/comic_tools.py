@@ -735,6 +735,7 @@ async def _sync_items(context: ToolContext, input_data: dict[str, Any], items: l
     downloaded = sum(result["status"] == "downloaded" for result in item_results)
     failed = sum(result["status"] == "failed" for result in item_results)
     partial = sum(result["status"] == "partial" for result in item_results)
+    files_skipped = sum(int(result.get("files_skipped", 0)) for result in item_results)
     package_failed = sum(package["status"] in {"failed", "blocked", "incomplete"} for package in packages)
     summary = {
         "resolved_items": len(items),
@@ -742,6 +743,7 @@ async def _sync_items(context: ToolContext, input_data: dict[str, Any], items: l
         "downloaded": downloaded,
         "partial": partial,
         "failed": failed,
+        "files_skipped": files_skipped,
         "cbz_packaged": sum(package["status"] == "packaged" for package in packages),
         "cbz_existing": sum(package["status"] == "existing" for package in packages),
         "cbz_failed_or_incomplete": package_failed,

@@ -52,6 +52,8 @@ follow は常駐 daemon ではなく、timer が `jmcomic.favorites.sync` を定
 
 Filename-hash descramble fix 前に download した JMComic page が horizontal band reorder を示す場合、file は存在して DB で healthy のため `repair_missing_files` だけでは直らない。`mediagent link sync '<album-url>' --overwrite --json` でその exact album を明示的に再 download し、CBZ を rebuild する。`.partial` と atomic replacement を使うため、server deployment 前に local image/CBZ を確認する。
 
+JMComic chapter manifest には、valid だがほぼ空で height が calculated scramble segment count より小さい WebP が含まれる場合がある。Mediagent はこの non-content strip を `media_files.status=skipped`／`file_health=ignored_spacer` として記録し、source file を書かず、CBZ／`ComicInfo.xml` page count に含めず、missing-file repair でも再試行しない。`summary.files_skipped` が件数を返す。Malformed image または normal-sized decode failure は引き続き error になる。
+
 Telegram inbox と future custom inbox は provider-specific comic command を個別に呼ぶ必要がない。対応 nhentai/JMComic links は shared `link.media.sync` intake を通り、generic HTML resolution より前に exact comic adapter へ自動 dispatch される。そのため inbox の direct comic link は linked work だけを download/package し、series follow は有効にしない。`summary.comic_links_considered` と CBZ counters で dispatch を確認できる。
 
 ## 環境

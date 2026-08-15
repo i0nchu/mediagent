@@ -20,6 +20,7 @@ from mediagent.platforms.jmcomic.auth import JMComicSession, load_config, load_s
 from mediagent.platforms.jmcomic.client import JMComicApiTransport, JMComicClientError
 from mediagent.platforms.jmcomic.codec import api_headers, decode_api_envelope
 from mediagent.platforms.jmcomic.images import (
+    is_non_content_spacer,
     materialize_page_content,
     restore_vertical_slices,
     scramble_segment_count,
@@ -205,6 +206,20 @@ class JMComicImageTests(unittest.TestCase):
             {"provider": "jmcomic", "vertical_segments": 2},
         )
         self.assertEqual(Image.open(BytesIO(materialized)).getpixel((0, 0)), (255, 0, 0))
+
+    def test_valid_tiny_image_is_classified_as_non_content_spacer(self) -> None:
+        encoded = BytesIO()
+        Image.new("RGB", (720, 3), "white").save(encoded, format="WEBP")
+
+        self.assertTrue(is_non_content_spacer(encoded.getvalue(), segment_count=14))
+        self.assertFalse(is_non_content_spacer(encoded.getvalue(), segment_count=0))
+
+    def test_normal_and_malformed_images_are_not_classified_as_spacers(self) -> None:
+        encoded = BytesIO()
+        Image.new("RGB", (8, 16), "red").save(encoded, format="PNG")
+
+        self.assertFalse(is_non_content_spacer(encoded.getvalue(), segment_count=8))
+        self.assertFalse(is_non_content_spacer(b"not-an-image", segment_count=8))
 
 
 class _EncodedJMComicHttpClient:

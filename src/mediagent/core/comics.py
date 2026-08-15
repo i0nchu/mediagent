@@ -18,6 +18,7 @@ from mediagent.core.storage import safe_storage_segment, source_datetime
 
 CBZ_MIME_TYPE = "application/vnd.comicbook+zip"
 CBZ_STORAGE_LAYOUT = "comic-kavita-v2"
+IGNORED_COMIC_SPACER_HEALTH = "ignored_spacer"
 
 
 @dataclass(frozen=True)

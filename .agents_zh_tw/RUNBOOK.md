@@ -52,6 +52,8 @@ follow 的實作是由 timer 定期重跑 `jmcomic.favorites.sync`，不是常�
 
 若在 filename-hash descramble 修正前下載的 JMComic 頁面呈現水平帶狀錯位，`repair_missing_files` 不足以修正，因為檔案仍存在且 DB 視為健康。請用 `mediagent link sync '<album-url>' --overwrite --json` 明確重新下載該 exact album 並重建 CBZ。流程會用 `.partial` 與 atomic replacement；先在本機確認圖片／CBZ 正常，再部署至 server。
 
+JMComic chapter manifest 可能包含有效但近乎空白、且高度小於計算後 scramble 分段數的 WebP。Mediagent 會將這類 non-content strip 記為 `media_files.status=skipped`／`file_health=ignored_spacer`，不寫 source file、不放入 CBZ／`ComicInfo.xml` page count，也不會被 missing-file repair 重試。`summary.files_skipped` 會回報數量；malformed image 或正常尺寸解碼失敗仍是錯誤。
+
 Telegram inbox 與未來自製 inbox 不需要各自呼叫平台漫畫工具。支援的 nhentai／JMComic links 會經過共用 `link.media.sync` intake，在 generic HTML resolution 前自動分派至 exact comic adapter。因此從 inbox 傳入 direct comic link，只會下載／封裝該連結的作品，不會啟用 series follow。可查看 `summary.comic_links_considered` 與 CBZ counters 確認分派結果。
 
 ## 環境

@@ -24,8 +24,8 @@ TERMINAL_ITEM_STATUSES = {"downloaded", "failed", "skipped"}
 def item_status_from_file_counts(*, total: int, downloaded: int, failed: int, skipped: int = 0) -> str:
     if total <= 0:
         return "failed"
-    if downloaded == total:
-        return "downloaded"
+    if downloaded + skipped == total:
+        return "downloaded" if downloaded else "skipped"
     if downloaded > 0:
         return "partial"
     if failed > 0:

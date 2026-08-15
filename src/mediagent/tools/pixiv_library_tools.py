@@ -13,6 +13,7 @@ from mediagent.core import db
 from mediagent.core.comics import (
     CBZ_MIME_TYPE,
     CBZ_STORAGE_LAYOUT,
+    IGNORED_COMIC_SPACER_HEALTH,
     build_cbz_atomic,
     comic_archive_relative_path,
 )
@@ -517,6 +518,13 @@ def _is_cbz_file(file_row: dict[str, Any]) -> bool:
     return file_row.get("mime_type") == CBZ_MIME_TYPE or str(file_row.get("local_path") or "").lower().endswith(".cbz")
 
 
+def _is_ignored_comic_spacer(file_row: dict[str, Any]) -> bool:
+    return (
+        file_row.get("status") == "skipped"
+        and file_row.get("file_health") == IGNORED_COMIC_SPACER_HEALTH
+    )
+
+
 def _selected_remote_ids(input_data: dict[str, Any]) -> set[str]:
     selected = {str(value) for value in input_data.get("remote_ids", []) if value is not None}
     if input_data.get("remote_id") is not None:
@@ -559,6 +567,10 @@ def _comic_package_plan(
     except PathSafetyError as exc:
         plan["status"] = "blocked"
         plan["reason"] = str(exc)
+        return plan
+    if item.get("status") == "skipped":
+        plan["status"] = "skipped"
+        plan["reason"] = "all comic source pages were ignored as non-content"
         return plan
     if item.get("status") != "downloaded":
         plan["status"] = "incomplete"
@@ -617,7 +629,7 @@ def _comic_package_plan(
         if existing_cbz and existing_cbz.get("status") == "downloaded" and existing_cbz.get("file_health") in {"valid", "unknown"}:
             if not refresh_tracked:
                 plan["status"] = "cleanup" if legacy_cbz else "existing"
-                plan["page_count"] = _metadata_page_count(item)
+                plan["page_count"] = _effective_metadata_page_count(item)
                 return plan
             plan["status"] = "ready"
         else:
@@ -654,11 +666,13 @@ def _comic_package_plan(
 
 
 def _ordered_comic_page_records(item: dict[str, Any]) -> tuple[list[dict[str, Any]], str | None]:
-    source_records = [record for record in item["files"] if not _is_cbz_file(record) and not _is_placeholder_file(record)]
-    records_by_remote = {str(record.get("remote_url") or ""): record for record in source_records if record.get("remote_url")}
+    page_records = [record for record in item["files"] if not _is_cbz_file(record) and not _is_placeholder_file(record)]
+    source_records = [record for record in page_records if not _is_ignored_comic_spacer(record)]
+    records_by_remote = {str(record.get("remote_url") or ""): record for record in page_records if record.get("remote_url")}
     metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
     metadata_files = metadata.get("files") if isinstance(metadata.get("files"), list) else []
     ordered: list[dict[str, Any]] = []
+    ignored = 0
     if metadata_files:
         for file_info in metadata_files:
             if not isinstance(file_info, dict):
@@ -669,14 +683,17 @@ def _ordered_comic_page_records(item: dict[str, Any]) -> tuple[list[dict[str, An
             record = records_by_remote.get(remote_url)
             if record is None:
                 return [], "comic source page has no media_files record"
+            if _is_ignored_comic_spacer(record):
+                ignored += 1
+                continue
             ordered.append(record)
     if not ordered:
         ordered = sorted(source_records, key=_comic_page_sort_key)
     if not ordered:
         return [], "comic has no downloaded source pages"
     expected_count = _metadata_page_count(item)
-    if expected_count and len(ordered) != expected_count:
-        return [], f"comic page count mismatch: expected {expected_count}, found {len(ordered)}"
+    if expected_count and len(ordered) + ignored != expected_count:
+        return [], f"comic page count mismatch: expected {expected_count}, found {len(ordered) + ignored}"
     return ordered, None
 
 
@@ -695,8 +712,24 @@ def _metadata_page_count(item: dict[str, Any]) -> int:
         return 0
 
 
+def _effective_metadata_page_count(item: dict[str, Any]) -> int:
+    return max(
+        0,
+        _metadata_page_count(item)
+        - sum(_is_ignored_comic_spacer(record) for record in item.get("files", [])),
+    )
+
+
 def _comic_plan_summary(plans: list[dict[str, Any]]) -> dict[str, int]:
-    summary = {"selected": len(plans), "ready": 0, "cleanup": 0, "existing": 0, "incomplete": 0, "blocked": 0}
+    summary = {
+        "selected": len(plans),
+        "ready": 0,
+        "cleanup": 0,
+        "existing": 0,
+        "skipped": 0,
+        "incomplete": 0,
+        "blocked": 0,
+    }
     for plan in plans:
         summary[plan["status"]] += 1
     return summary

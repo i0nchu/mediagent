@@ -27,6 +27,23 @@ def scramble_segment_count(*, scramble_id: int | str, photo_id: int | str, filen
     return (ord(digest[-1]) % divisor) * 2 + 2
 
 
+def is_non_content_spacer(content: bytes, *, segment_count: int) -> bool:
+    """Identify valid JMComic spacer strips that cannot contain a scrambled page."""
+    if segment_count < 2:
+        return False
+    try:
+        from PIL import Image
+
+        with Image.open(BytesIO(content)) as source:
+            width, height = source.size
+            if width <= 0 or height <= 0 or height >= segment_count:
+                return False
+            source.load()
+            return True
+    except Exception:
+        return False
+
+
 def restore_vertical_slices(content: bytes, *, segment_count: int) -> bytes:
     if segment_count == 0:
         return content

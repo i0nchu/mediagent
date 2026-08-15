@@ -7,6 +7,7 @@
 - [x] 已 live 驗證 JM 帳密登入/session 重用、三頁收藏分頁、42 albums／1,081 chapters 完整 dry-run，以及一個 108 頁的 bounded 真實收藏同步與 CBZ/dedupe。
 - [x] 已新增 system-level 漫畫收藏 timer 範例，具備共用 run lock 與 summary-only journal。
 - [x] JMComic 遠端 session 過期時每輪最多以帳密恢復一次，在 collection／album resolve 後 checkpoint 輪替 cookie，並將初次完整同步 timeout 調整為 18 小時。
+- [x] 將有效的 JMComic 1-12 px spacer strip 分類為 ignored non-content，從 CBZ／page count 排除，並避免 repair 重複嘗試。
 
 本檔只追蹤接下來要做的實作與驗證工作。已完成狀態、live-test 歷史與已解決問題請放在 `STATE.md`、`ISSUES.md` 與 `RUNBOOK.md`。
 

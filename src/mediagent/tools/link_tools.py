@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from collections.abc import Callable
@@ -10,6 +11,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from mediagent.core import db
+from mediagent.core.comics import IGNORED_COMIC_SPACER_HEALTH
 from mediagent.core.filesystem import PathSafetyError, ensure_inside, normalize_path, resolve_placeholders
 from mediagent.core.links import (
     ALLOWED_MEDIA_MIME_TYPES,
@@ -29,6 +31,12 @@ from mediagent.core.storage import default_library_root, plan_storage_path, plat
 from mediagent.core.sync import TERMINAL_ITEM_STATUSES, item_status_from_file_counts
 from mediagent.core.tooling import ErrorCategory, Permission, ToolContext, ToolDefinition, ToolResult, ToolSpec
 from mediagent.tools.metadata_tools import metadata_write
+
+
+@dataclass(frozen=True)
+class _ContentTransformOutcome:
+    content: bytes | None
+    skip_reason: str | None = None
 
 
 def definitions() -> list[ToolDefinition]:
@@ -789,7 +797,9 @@ def _repair_assessment(db_path: Path, item: dict[str, Any]) -> dict[str, Any]:
             health = str(record.get("file_health") or "unknown")
             status = str(record.get("status") or "")
             local_path = record.get("local_path")
-            if health == "corrupt":
+            if status == "skipped" and health == IGNORED_COMIC_SPACER_HEALTH:
+                pass
+            elif health == "corrupt":
                 reason = "corrupt_file"
                 corrupt += 1
             elif health == "missing":
@@ -859,6 +869,7 @@ async def _sync_one_link_item(
         "status": "queued",
         "files_total": len(files),
         "files_downloaded": 0,
+        "files_skipped": 0,
         "files_failed": 0,
         "bytes_written": 0,
         "artifacts": [],
@@ -922,6 +933,29 @@ async def _sync_one_link_item(
             content_transform=_file_content_transform(file_info),
         )
         if download_result.is_success:
+            if download_result.data.get("skipped"):
+                db.upsert_media_file(
+                    db_path,
+                    platform=platform,
+                    remote_id=remote_id,
+                    remote_url=_file_remote_url(file_info),
+                    local_path=None,
+                    mime_type=download_result.data.get("mime_type") or file_info.get("mime_type"),
+                    size_bytes=download_result.data.get("size_bytes"),
+                    checksum=download_result.data.get("checksum"),
+                    status="skipped",
+                    library_relative_path=None,
+                    storage_layout=plan.layout,
+                    file_health=IGNORED_COMIC_SPACER_HEALTH,
+                    source_timestamp=plan.source_timestamp,
+                    verified_at=datetime.now(UTC).isoformat(),
+                    file_key=_stable_file_key(file_info),
+                )
+                result["files_skipped"] += 1
+                result["warnings"].append(
+                    f"Ignored non-content JMComic spacer at page {int(file_info.get('page', 0)) + 1}."
+                )
+                continue
             db.upsert_media_file(
                 db_path,
                 platform=platform,
@@ -974,6 +1008,7 @@ async def _sync_one_link_item(
         total=result["files_total"],
         downloaded=result["files_downloaded"],
         failed=result["files_failed"],
+        skipped=result["files_skipped"],
     )
     db.update_media_item_status(db_path, platform=platform, remote_id=remote_id, status=result["status"])
     return result
@@ -988,7 +1023,7 @@ def _download_file_safely(
     target_path: Path,
     overwrite: bool,
     expected_mime_prefix: str | None,
-    content_transform: Callable[[bytes], bytes] | None = None,
+    content_transform: Callable[[bytes], bytes | _ContentTransformOutcome] | None = None,
 ) -> ToolResult:
     partial_path = target_path.with_name(target_path.name + ".partial")
     try:
@@ -1083,7 +1118,7 @@ def _download_file_safely(
     content = response.content
     if content_transform is not None:
         try:
-            content = content_transform(content)
+            transformed = content_transform(content)
         except Exception as exc:
             return ToolResult.failure(
                 "download_transform_failed",
@@ -1091,6 +1126,29 @@ def _download_file_safely(
                 details={"exception_type": type(exc).__name__},
                 category=ErrorCategory.NETWORK,
             )
+        if isinstance(transformed, _ContentTransformOutcome):
+            if transformed.skip_reason:
+                checksum = hashlib.sha256(content).hexdigest()
+                return ToolResult.success(
+                    {
+                        "url": url,
+                        "final_url": final_url,
+                        "skipped": True,
+                        "skip_reason": transformed.skip_reason,
+                        "size_bytes": len(content),
+                        "checksum": f"sha256:{checksum}",
+                        "mime_type": mime_type,
+                    }
+                )
+            if transformed.content is None:
+                return ToolResult.failure(
+                    "download_transform_failed",
+                    "Downloaded media transform returned no content.",
+                    category=ErrorCategory.NETWORK,
+                )
+            content = transformed.content
+        else:
+            content = transformed
     try:
         target_path.parent.mkdir(parents=True, exist_ok=True)
         if partial_path.exists():
@@ -1226,7 +1284,9 @@ def _stable_file_key(file_info: dict[str, Any]) -> str | None:
     return None
 
 
-def _file_content_transform(file_info: dict[str, Any]) -> Callable[[bytes], bytes] | None:
+def _file_content_transform(
+    file_info: dict[str, Any],
+) -> Callable[[bytes], bytes | _ContentTransformOutcome] | None:
     runtime = file_info.get("runtime_decode")
     if not isinstance(runtime, dict) or runtime.get("provider") != "jmcomic":
         return None
@@ -1236,9 +1296,14 @@ def _file_content_transform(file_info: dict[str, Any]) -> Callable[[bytes], byte
         segments = 0
     if segments <= 0:
         return None
-    from mediagent.platforms.jmcomic.images import restore_vertical_slices
+    from mediagent.platforms.jmcomic.images import is_non_content_spacer, restore_vertical_slices
 
-    return lambda content: restore_vertical_slices(content, segment_count=segments)
+    def transform(content: bytes) -> bytes | _ContentTransformOutcome:
+        if is_non_content_spacer(content, segment_count=segments):
+            return _ContentTransformOutcome(content=None, skip_reason="jmcomic_non_content_spacer")
+        return restore_vertical_slices(content, segment_count=segments)
+
+    return transform
 
 
 def _existing_file_record(

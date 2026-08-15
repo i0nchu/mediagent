@@ -16,6 +16,7 @@ When updating this TODO, update the Traditional Chinese and Japanese copies in t
 - [x] Verify JM credential login/session reuse, three-page favorite pagination, a 42-album/1,081-chapter full dry-run, and one 108-page bounded real favorite sync with CBZ/dedupe checks.
 - [x] Add system-level comic favorite timer examples with a shared run lock and summary-only journal output.
 - [x] Recover a remotely expired JMComic session with one bounded credential login, checkpoint rotated cookies after collection/album resolution, and give initial full sync an 18-hour timeout.
+- [x] Classify valid JMComic 1-12-pixel spacer strips as ignored non-content, exclude them from CBZ/page counts, and keep repair from retrying them.
 
 Goal: harden the existing Agent-mode timer deployment before adding another long-running source or scheduler layer.
 

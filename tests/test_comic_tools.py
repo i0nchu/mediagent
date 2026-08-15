@@ -31,6 +31,23 @@ class ImageHttpClient:
         return HttpResponse(200, {"Content-Type": self.mime_type, "Content-Length": str(len(self.content))}, self.content[:max_bytes], url)
 
 
+class MappingImageHttpClient:
+    def __init__(self, content_by_url: dict[str, bytes], mime_type: str = "image/webp") -> None:
+        self.content_by_url = content_by_url
+        self.mime_type = mime_type
+        self.calls: list[str] = []
+
+    def get_limited(self, url, *, headers=None, timeout=30.0, max_bytes=1024 * 1024):
+        self.calls.append(url)
+        content = self.content_by_url[url]
+        return HttpResponse(
+            200,
+            {"Content-Type": self.mime_type, "Content-Length": str(len(content))},
+            content[:max_bytes],
+            url,
+        )
+
+
 class ComicToolTests(unittest.TestCase):
     def test_default_registry_exposes_simple_comic_surface(self) -> None:
         registry = create_default_registry()
@@ -173,6 +190,109 @@ class ComicToolTests(unittest.TestCase):
         self.assertFalse(result.is_success)
         self.assertEqual(result.data["summary"]["failed"], 1)
         self.assertEqual(result.data["items"][0]["errors"][0]["code"], "download_validation_failed")
+
+    def test_jmcomic_spacer_is_ignored_and_excluded_from_cbz_and_repair(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            library = root / "library"
+            database = root / "state.sqlite3"
+            item = _jmcomic_item_with_spacer()
+            urls = [file_info["url"] for file_info in item["metadata"]["files"]]
+            client = MappingImageHttpClient(
+                {
+                    urls[0]: _webp_bytes(8, 16, "red"),
+                    urls[1]: _webp_bytes(720, 3, "white"),
+                }
+            )
+            context = ToolContext.from_env(
+                cwd=root,
+                env={
+                    "MEDIAGENT_DATA_DIR": str(root),
+                    "MEDIAGENT_LIBRARY_DIR": str(library),
+                    "MEDIAGENT_DB_PATH": str(database),
+                },
+                http_client=client,
+            )
+
+            first = asyncio.run(comic_tools._sync_items(context, {}, [item]))
+            records = db.list_media_files(database, platform="jmcomic", remote_id="photo:1234567")
+            second = asyncio.run(comic_tools._sync_items(context, {}, [item]))
+
+            cbz = Path(first.data["packages"][0]["target_path"])
+            with zipfile.ZipFile(cbz) as archive:
+                archive_names = archive.namelist()
+                comic_info = archive.read("ComicInfo.xml").decode()
+            page_files = list(library.rglob("*.webp"))
+
+        self.assertTrue(first.is_success, first.to_dict())
+        self.assertEqual(first.data["items"][0]["status"], "downloaded")
+        self.assertEqual(first.data["items"][0]["files_downloaded"], 1)
+        self.assertEqual(first.data["items"][0]["files_skipped"], 1)
+        self.assertEqual(first.data["summary"]["files_skipped"], 1)
+        self.assertEqual(first.data["summary"]["cbz_packaged"], 1)
+        self.assertEqual(archive_names, ["001.webp", "ComicInfo.xml"])
+        self.assertIn("<PageCount>1</PageCount>", comic_info)
+        self.assertEqual(len(page_files), 1)
+        spacer = next(record for record in records if record["file_key"] == "page:000002")
+        self.assertEqual(spacer["status"], "skipped")
+        self.assertEqual(spacer["file_health"], "ignored_spacer")
+        self.assertIsNone(spacer["local_path"])
+        self.assertTrue(second.is_success, second.to_dict())
+        self.assertEqual(second.data["summary"]["queued"], 0)
+        self.assertEqual(second.data["summary"]["skipped_healthy"], 1)
+        self.assertEqual(len(client.calls), 2)
+
+    def test_malformed_tiny_jmcomic_response_still_fails(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            item = _jmcomic_item_with_spacer()
+            item["metadata"]["files"] = [item["metadata"]["files"][1]]
+            item["metadata"]["page_count"] = 1
+            url = item["metadata"]["files"][0]["url"]
+            context = ToolContext.from_env(
+                cwd=root,
+                env={
+                    "MEDIAGENT_DATA_DIR": str(root),
+                    "MEDIAGENT_LIBRARY_DIR": str(root / "library"),
+                    "MEDIAGENT_DB_PATH": str(root / "state.sqlite3"),
+                },
+                http_client=MappingImageHttpClient({url: b"not-an-image"}),
+            )
+
+            result = asyncio.run(comic_tools._sync_items(context, {}, [item]))
+
+        self.assertFalse(result.is_success)
+        self.assertEqual(result.data["items"][0]["status"], "failed")
+        self.assertEqual(result.data["items"][0]["errors"][0]["code"], "download_transform_failed")
+
+    def test_all_spacer_jmcomic_chapter_is_terminal_without_empty_cbz(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            item = _jmcomic_item_with_spacer()
+            item["metadata"]["files"] = [item["metadata"]["files"][1]]
+            item["metadata"]["page_count"] = 1
+            url = item["metadata"]["files"][0]["url"]
+            client = MappingImageHttpClient({url: _webp_bytes(720, 3, "white")})
+            context = ToolContext.from_env(
+                cwd=root,
+                env={
+                    "MEDIAGENT_DATA_DIR": str(root),
+                    "MEDIAGENT_LIBRARY_DIR": str(root / "library"),
+                    "MEDIAGENT_DB_PATH": str(root / "state.sqlite3"),
+                },
+                http_client=client,
+            )
+
+            first = asyncio.run(comic_tools._sync_items(context, {}, [item]))
+            second = asyncio.run(comic_tools._sync_items(context, {}, [item]))
+
+        self.assertTrue(first.is_success, first.to_dict())
+        self.assertEqual(first.data["items"][0]["status"], "skipped")
+        self.assertEqual(first.data["packages"][0]["status"], "skipped")
+        self.assertEqual(first.data["summary"]["cbz_failed_or_incomplete"], 0)
+        self.assertTrue(second.is_success, second.to_dict())
+        self.assertEqual(second.data["summary"]["queued"], 0)
+        self.assertEqual(len(client.calls), 1)
 
     def test_nhentai_favorites_refreshes_and_persists_expired_session_once(self) -> None:
         with TemporaryDirectory() as temp_dir:
@@ -627,9 +747,62 @@ def _comic_item() -> dict:
     }
 
 
+def _jmcomic_item_with_spacer() -> dict:
+    return {
+        "platform": "jmcomic",
+        "remote_id": "photo:1234567",
+        "source_url": "https://18comic.vip/photo/1234567/",
+        "media_type": "photo",
+        "status": "discovered",
+        "source_availability": "available",
+        "source_timestamp": "2026-01-02T00:00:00+00:00",
+        "metadata": {
+            "title": "JMComic Spacer Example",
+            "work_type": "comic",
+            "storage_category": "comic-pages",
+            "page_count": 2,
+            "comic": {
+                "provider": "jmcomic",
+                "provider_work_id": "photo:1234567",
+                "title": "JMComic Spacer Example",
+                "is_one_shot": True,
+                "total_count": 1,
+            },
+            "files": [
+                {
+                    "url": "https://1.1.1.1/00001.webp",
+                    "kind": "image",
+                    "page": 0,
+                    "storage_category": "comic-pages",
+                    "runtime_decode": {
+                        "provider": "jmcomic",
+                        "vertical_segments": 8,
+                    },
+                },
+                {
+                    "url": "https://1.1.1.1/00002.webp",
+                    "kind": "image",
+                    "page": 1,
+                    "storage_category": "comic-pages",
+                    "runtime_decode": {
+                        "provider": "jmcomic",
+                        "vertical_segments": 8,
+                    },
+                },
+            ],
+        },
+    }
+
+
 def _png_bytes() -> bytes:
     output = io.BytesIO()
     Image.new("RGB", (8, 8), "red").save(output, format="PNG")
+    return output.getvalue()
+
+
+def _webp_bytes(width: int, height: int, color: str) -> bytes:
+    output = io.BytesIO()
+    Image.new("RGB", (width, height), color).save(output, format="WEBP")
     return output.getvalue()
 
 
