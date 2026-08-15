@@ -6,16 +6,18 @@
 - nhentai は exact gallery、完全 favorite pagination、再利用／refresh 可能な browser-cookie session（0600）を実装済み。
 - JMComic は album/photo/trusted-cover、暗号化 mobile API、再利用 login session、完全 album/favorite manifest、vertical-slice 復元を実装済み。
 - JMComic session は configured username/password から作成でき、optional な Netscape `cookies.txt` からも load できる。Cookie-file path は format と mode `0600` を維持し、明示的な `jmcomic.auth.login` は invalid な旧 session を無視して login 成功後に置き換える。
+- JMComic favorites collect/sync は remote で expired になった session に対し、run ごとに最大 1 回だけ credential login で recovery する。Recovered／rotated session は collection と各 album resolve 後に atomic checkpoint し、長い run 全体の終了を待たない。Summary は session 内容を出さず safe recovery/checkpoint fields だけを返す。
 - JMComic transport は JSON／AES envelope parsing 前に gzip／deflate API response を bounded decode する。Credential/body を出力しない public album probe で current endpoint の gzip response と album `349717` の正常 decode を確認済み。
 - JMComic segment-count hash は maintained upstream decoder と同じく filename stem を使用する。Album `349717` の `00001.webp` は誤って 18 segments になっていたが、正しくは 10。Explicit comic `overwrite` は terminal downloaded items を再 queue し、affected pages と CBZ を atomic rebuild できる。
 - `comic.link.sync` は常に exact。`nhentai.favorites.sync` は gallery exact、`jmcomic.favorites.sync` は active favorite album のみ follow する。
 - `nhentai.favorites.collect` と `jmcomic.favorites.collect` は download や membership 変更なしで complete snapshot を summary 診断する。JM credential login/session reuse と 3 pages・42 favorite albums の live collection は検証済み。現在の nhentai browser cookie は HTTP 401 のため、live collect の再実行には再 export が必要。
 - JM full favorites dry-run は 42 albums を 1,081 chapters・49,137 planned page downloads に展開した。Bounded real favorites sync は 42 active memberships を全て commit し、選択した 1 album の 108/108 pages を download/verify、`ComicInfo.xml` 付き valid CBZ を 1 件 package した。二回目は 0 downloads・1 existing CBZ。Large identity lookup は SQLite limits 以下に chunk し、favorites sync は target 単位で処理するため、後続 target の failure で先行 album の処理を失わない。
-- SQLite connection は 30 秒 busy timeout を使う。System-level comic favorite timer example は shared non-blocking run lock と compact `--summary-json` を使う。follow は resident daemon ではなく、`jmcomic.favorites.sync` の定期再実行である。
+- 最初の production JM bootstrap は 49,137 pages を全て attempt し、49,080 pages が valid、57 pages が 20 partial chapters に残り、1,061 complete chapters に CBZ を作成した。Forced credential login 後の次 run は 42-item snapshot を commit して再開でき、上記 expired-session persistence gap を確認・修正した。
+- SQLite connection は 30 秒 busy timeout を使う。System-level comic favorite timer example は shared non-blocking run lock と compact `--summary-json` を使い、JMComic initial full sync timeout は 18 時間。follow は resident daemon ではなく、`jmcomic.favorites.sync` の定期再実行である。
 - Shared link intake は generic HTML resolution の前に recognized nhentai/JMComic links を exact comic adapter へ dispatch する。direct `link.media.sync`、queued links、Telegram inbox、同じ queue/tool boundary を使う future inbox に適用され、Telegram provenance は保持するが follow state は作らない。
 - 完全な chapter は `ComicInfo.xml` 付き Kavita CBZ に atomic package する。一章だけの JM album も安定した series layout を維持し、将来の新章で既存 CBZ を移動させない。
 - favorite 解除で media は削除せず、不完全 snapshot は commit しない。
-- この更新後の locked offline suite は 341 tests pass。
+- この更新後の locked offline suite は 346 tests pass。
 
 ## 実装済み
 

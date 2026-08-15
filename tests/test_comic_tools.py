@@ -8,7 +8,7 @@ import zipfile
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from PIL import Image
 
@@ -18,6 +18,8 @@ from mediagent.core.tooling import ToolContext, ToolResult
 from mediagent.tools import comic_tools
 from mediagent.tools.defaults import create_default_registry
 from mediagent.platforms.nhentai.client import NhentaiApiError
+from mediagent.platforms.jmcomic.auth import JMComicSession
+from mediagent.platforms.jmcomic.client import JMComicClientError
 
 
 class ImageHttpClient:
@@ -284,6 +286,165 @@ class ComicToolTests(unittest.TestCase):
         self.assertEqual(result.data["favorites_seen"], 2)
         self.assertEqual(result.data["following"], 2)
         self.assertNotIn("targets", result.data)
+
+    def test_jmcomic_favorites_collect_recovers_expired_session_once(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            session_path = root / "jmcomic-session.json"
+            context = ToolContext.from_env(
+                cwd=root,
+                env={
+                    "MEDIAGENT_DATA_DIR": str(root),
+                    "JMCOMIC_USERNAME": "configured-user",
+                    "JMCOMIC_PASSWORD": "configured-password",
+                    "JMCOMIC_SESSION_FILE": str(session_path),
+                },
+            )
+            collection = SimpleNamespace(pages_fetched=1, total=1, items=(SimpleNamespace(album_id="1"),))
+            client = SimpleNamespace(
+                session=JMComicSession({"AVS": "expired"}, username="configured-user")
+            )
+
+            def login(*, username: str, password: str) -> JMComicSession:
+                self.assertEqual((username, password), ("configured-user", "configured-password"))
+                client.session = JMComicSession({"AVS": "fresh"}, username=username)
+                return client.session
+
+            client.login = MagicMock(side_effect=login)
+            client.collect_favorites = MagicMock(
+                side_effect=[
+                    JMComicClientError("jmcomic_auth_required", "expired"),
+                    collection,
+                ]
+            )
+            with patch.object(comic_tools, "_jm_client", return_value=client):
+                result = asyncio.run(comic_tools.jmcomic_favorites_collect(context, {}))
+
+            saved = comic_tools.jm_auth.load_session(
+                env=context.env,
+                cwd=root,
+                session_file=str(session_path),
+            )
+
+        self.assertTrue(result.is_success, result.to_dict())
+        self.assertTrue(result.data["auth_recovery_attempted"])
+        self.assertTrue(result.data["auth_recovered"])
+        self.assertTrue(result.data["session_checkpointed"])
+        self.assertEqual(result.data["session_checkpoints"], 2)
+        self.assertEqual(saved.cookies, {"AVS": "fresh"})
+        client.login.assert_called_once()
+        self.assertEqual(client.collect_favorites.call_count, 2)
+
+    def test_jmcomic_auth_recovery_does_not_loop_after_retry_is_rejected(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            context = ToolContext.from_env(
+                cwd=root,
+                env={
+                    "MEDIAGENT_DATA_DIR": str(root),
+                    "JMCOMIC_USERNAME": "configured-user",
+                    "JMCOMIC_PASSWORD": "configured-password",
+                },
+            )
+            client = SimpleNamespace(session=JMComicSession({"AVS": "expired"}))
+
+            def login(*, username: str, password: str) -> JMComicSession:
+                client.session = JMComicSession({"AVS": "fresh"}, username=username)
+                return client.session
+
+            client.login = MagicMock(side_effect=login)
+            client.collect_favorites = MagicMock(
+                side_effect=JMComicClientError("jmcomic_auth_required", "still expired")
+            )
+            with patch.object(comic_tools, "_jm_client", return_value=client):
+                result = asyncio.run(comic_tools.jmcomic_favorites_collect(context, {}))
+
+        self.assertFalse(result.is_success)
+        self.assertEqual(result.error.code, "jmcomic_auth_required")
+        self.assertTrue(result.data["auth_recovery_attempted"])
+        self.assertTrue(result.data["auth_recovered"])
+        client.login.assert_called_once()
+        self.assertEqual(client.collect_favorites.call_count, 2)
+
+    def test_jmcomic_auth_recovery_does_not_retry_non_auth_error(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            context = ToolContext.from_env(
+                cwd=root,
+                env={
+                    "MEDIAGENT_DATA_DIR": str(root),
+                    "JMCOMIC_USERNAME": "configured-user",
+                    "JMCOMIC_PASSWORD": "configured-password",
+                },
+            )
+            client = SimpleNamespace(
+                session=JMComicSession({"AVS": "current"}),
+                login=MagicMock(),
+                collect_favorites=MagicMock(
+                    side_effect=JMComicClientError("jmcomic_response_invalid", "bad response")
+                ),
+            )
+            with patch.object(comic_tools, "_jm_client", return_value=client):
+                result = asyncio.run(comic_tools.jmcomic_favorites_collect(context, {}))
+
+        self.assertFalse(result.is_success)
+        self.assertEqual(result.error.code, "jmcomic_response_invalid")
+        self.assertFalse(result.data["auth_recovery_attempted"])
+        client.login.assert_not_called()
+
+    def test_jmcomic_favorites_sync_checkpoints_session_after_target_resolution(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            session_path = root / "jmcomic-session.json"
+            context = ToolContext.from_env(
+                cwd=root,
+                env={
+                    "MEDIAGENT_DATA_DIR": str(root),
+                    "MEDIAGENT_DB_PATH": str(root / "state.sqlite3"),
+                    "MEDIAGENT_LIBRARY_DIR": str(root / "library"),
+                    "JMCOMIC_USERNAME": "configured-user",
+                    "JMCOMIC_PASSWORD": "configured-password",
+                    "JMCOMIC_SESSION_FILE": str(session_path),
+                },
+            )
+            favorite = SimpleNamespace(
+                album_id="1",
+                provider_work_id="album:1",
+                title="test album",
+                latest_photo_id="10",
+            )
+            collection = SimpleNamespace(items=(favorite,))
+            resolution = SimpleNamespace(normalized_items=lambda: [_comic_item()])
+            client = SimpleNamespace(
+                session=JMComicSession({"AVS": "before-resolve"}, username="configured-user"),
+                login=MagicMock(),
+                collect_favorites=MagicMock(return_value=collection),
+            )
+
+            def resolve_exact(url: str):
+                self.assertEqual(url, "https://18comic.vip/album/1/")
+                client.session = JMComicSession({"AVS": "after-resolve"}, username="configured-user")
+                return resolution
+
+            client.resolve_exact = MagicMock(side_effect=resolve_exact)
+            sync_result = ToolResult.success({"summary": {}, "items": [], "packages": []})
+            with patch.object(comic_tools, "_jm_client", return_value=client), patch.object(
+                comic_tools,
+                "_sync_items",
+                new=AsyncMock(return_value=sync_result),
+            ):
+                result = asyncio.run(comic_tools.jmcomic_favorites_sync(context, {}))
+
+            saved = comic_tools.jm_auth.load_session(
+                env=context.env,
+                cwd=root,
+                session_file=str(session_path),
+            )
+
+        self.assertTrue(result.is_success, result.to_dict())
+        self.assertEqual(saved.cookies, {"AVS": "after-resolve"})
+        self.assertEqual(result.data["session_checkpoints"], 2)
+        client.resolve_exact.assert_called_once()
 
     def test_changed_tracked_manifest_rebuilds_existing_cbz(self) -> None:
         with TemporaryDirectory() as temp_dir:

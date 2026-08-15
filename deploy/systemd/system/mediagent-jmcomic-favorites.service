@@ -15,7 +15,7 @@ Environment=HOME=/home/server
 Environment=PATH=/home/server/.local/bin:/usr/local/bin:/usr/bin:/bin
 ExecStart=/usr/bin/flock --nonblock --conflict-exit-code 75 /run/lock/mediagent-sync.lock /usr/bin/env uv run --locked mediagent tools run jmcomic.favorites.sync --input /data/services/mediagent/deploy/systemd/system/jmcomic.favorites.sync.json --summary-json
 SuccessExitStatus=75
-TimeoutStartSec=12h
+TimeoutStartSec=18h
 UMask=0077
 Nice=10
 NoNewPrivileges=yes

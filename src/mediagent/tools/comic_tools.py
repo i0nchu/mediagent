@@ -19,7 +19,7 @@ from mediagent.core.tooling import (
     ToolSpec,
 )
 from mediagent.platforms.jmcomic import auth as jm_auth
-from mediagent.platforms.jmcomic.client import JMComicApiTransport, JMComicClient
+from mediagent.platforms.jmcomic.client import JMComicApiTransport, JMComicClient, JMComicClientError
 from mediagent.platforms.jmcomic.links import JMComicLinkError, parse_jmcomic_link
 from mediagent.platforms.nhentai import auth as nh_auth
 from mediagent.platforms.nhentai import client as nh_client
@@ -493,11 +493,12 @@ async def jmcomic_favorites_sync(context: ToolContext, input_data: dict[str, Any
     path_error = _validate_sync_paths(context, input_data)
     if path_error is not None:
         return path_error
+    recovery: _JMAuthRecovery | None = None
     try:
         client = _jm_client(context, input_data, login_if_needed=not context.dry_run)
-        if not context.dry_run:
-            _persist_jm_session_if_configured(context, input_data, client)
-        collection = client.collect_favorites()
+        recovery = _JMAuthRecovery(context, input_data, client, allow_reauth=not context.dry_run)
+        recovery.checkpoint()
+        collection = recovery.run(client.collect_favorites)
         targets = [
             {
                 "target_type": "album",
@@ -523,10 +524,13 @@ async def jmcomic_favorites_sync(context: ToolContext, input_data: dict[str, Any
             context,
             input_data,
             selected,
-            lambda target: client.resolve_exact(
-                f"https://18comic.vip/album/{target['target_id']}/"
+            lambda target: recovery.run(
+                lambda: client.resolve_exact(
+                    f"https://18comic.vip/album/{target['target_id']}/"
+                )
             ).normalized_items(),
         )
+        recovery.checkpoint()
         result.data.update(
             {
                 "collection": "favorites",
@@ -534,13 +538,15 @@ async def jmcomic_favorites_sync(context: ToolContext, input_data: dict[str, Any
                 "snapshot": snapshot,
                 "favorites_seen": len(targets),
                 "following": len(targets),
+                **recovery.safe_metadata(),
             }
         )
-        if not context.dry_run:
-            _persist_jm_session_if_configured(context, input_data, client)
         return result
     except Exception as exc:
-        return _provider_failure(exc)
+        result = _provider_failure(exc)
+        if recovery is not None:
+            result.data.update(recovery.safe_metadata())
+        return result
 
 
 async def _sync_favorite_targets(
@@ -627,11 +633,12 @@ def _target_failure(target: dict[str, Any], result: ToolResult) -> dict[str, Any
 
 
 async def jmcomic_favorites_collect(context: ToolContext, input_data: dict[str, Any]) -> ToolResult:
+    recovery: _JMAuthRecovery | None = None
     try:
         client = _jm_client(context, input_data, login_if_needed=not context.dry_run)
-        collection = client.collect_favorites()
-        if not context.dry_run:
-            _persist_jm_session_if_configured(context, input_data, client)
+        recovery = _JMAuthRecovery(context, input_data, client, allow_reauth=not context.dry_run)
+        recovery.checkpoint()
+        collection = recovery.run(client.collect_favorites)
         return ToolResult.success(
             {
                 "provider": "jmcomic",
@@ -642,10 +649,14 @@ async def jmcomic_favorites_collect(context: ToolContext, input_data: dict[str, 
                 "favorites_seen": len(collection.items),
                 "target_policy": "series_and_follow",
                 "following": len(collection.items),
+                **recovery.safe_metadata(),
             }
         )
     except Exception as exc:
-        return _provider_failure(exc)
+        result = _provider_failure(exc)
+        if recovery is not None:
+            result.data.update(recovery.safe_metadata())
+        return result
 
 
 async def _sync_items(context: ToolContext, input_data: dict[str, Any], items: list[dict[str, Any]]) -> ToolResult:
@@ -885,12 +896,75 @@ def _jm_client(
     return client
 
 
-def _persist_jm_session_if_configured(context: ToolContext, input_data: dict[str, Any], client: JMComicClient) -> None:
+class _JMAuthRecovery:
+    """Bound one JMComic run to one credential recovery and durable cookie checkpoints."""
+
+    def __init__(
+        self,
+        context: ToolContext,
+        input_data: dict[str, Any],
+        client: JMComicClient,
+        *,
+        allow_reauth: bool,
+    ) -> None:
+        self.context = context
+        self.input_data = input_data
+        self.client = client
+        self.allow_reauth = allow_reauth
+        self.reauth_attempted = False
+        self.auth_recovered = False
+        self.session_checkpoints = 0
+        self._last_checkpointed_session: jm_auth.JMComicSession | None = None
+
+    def run(self, operation: Any) -> Any:
+        try:
+            result = operation()
+        except JMComicClientError as exc:
+            if exc.code != "jmcomic_auth_required" or not self.allow_reauth or self.reauth_attempted:
+                raise
+            self.reauth_attempted = True
+            config = jm_auth.load_config(env=self.context.env, cwd=self.context.cwd)
+            if not config.username or not config.password:
+                raise jm_auth.JMComicAuthError(
+                    "jmcomic_login_required",
+                    "JMComic credentials are required to recover an expired session.",
+                ) from exc
+            self.client.login(username=config.username, password=config.password)
+            self.auth_recovered = True
+            self.checkpoint()
+            result = operation()
+        self.checkpoint()
+        return result
+
+    def checkpoint(self) -> bool:
+        if self.context.dry_run or self.client.session == self._last_checkpointed_session:
+            return False
+        if not _persist_jm_session_if_configured(self.context, self.input_data, self.client):
+            return False
+        self._last_checkpointed_session = self.client.session
+        self.session_checkpoints += 1
+        return True
+
+    def safe_metadata(self) -> dict[str, Any]:
+        return {
+            "auth_recovery_attempted": self.reauth_attempted,
+            "auth_recovered": self.auth_recovered,
+            "session_checkpointed": self.session_checkpoints > 0,
+            "session_checkpoints": self.session_checkpoints,
+        }
+
+
+def _persist_jm_session_if_configured(
+    context: ToolContext,
+    input_data: dict[str, Any],
+    client: JMComicClient,
+) -> bool:
     if not client.session.usable:
-        return
+        return False
     if jm_auth.session_file_path(env=context.env, cwd=context.cwd, session_file=input_data.get("session_file")) is None:
-        return
+        return False
     jm_auth.save_session(client.session, env=context.env, cwd=context.cwd, session_file=input_data.get("session_file"))
+    return True
 
 
 def _optional_nh_session(context: ToolContext, input_data: dict[str, Any]) -> dict[str, Any] | None:

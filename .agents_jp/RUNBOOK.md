@@ -33,6 +33,8 @@ browser から import した session は authenticated favorites が利用可能
 
 JMComic は設定済み username/password から直接 reusable session を作成でき、browser cookie は必須ではない。`JMCOMIC_USERNAME`、`JMCOMIC_PASSWORD`、`JMCOMIC_SESSION_FILE` も受け付け、推奨の `MEDIAGENT_JMCOMIC_*` が同時に存在する場合はそちらを優先する。`jmcomic.auth.login` は invalid な旧 session を無視して置き換え、login request 前に失敗しない。
 
+`jmcomic.favorites.collect` と `.sync` は `jmcomic_auth_required` に対し、run ごとに最大 1 回 configured credential login で recovery する。Recovered session は即時保存し、rotated cookie は collection と各 album resolve 後に checkpoint する。Summary の `auth_recovery_attempted`、`auth_recovered`、`session_checkpointed` で確認でき、session 内容は出力しない。System JMComic service は initial full sync に 18 時間を許可する。
+
 ```bash
 uv run --locked mediagent tools run jmcomic.auth.status --input examples/tools/jmcomic.auth.status.json --json
 uv run --locked mediagent tools run jmcomic.auth.login --input examples/tools/jmcomic.auth.login.json --json

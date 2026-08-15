@@ -6,6 +6,7 @@
 - [ ] Expired cookie recovery と browser re-import を live test する。Provider は refresh を HTTP 403 で拒否したため、password／CAPTCHA automation を追加せず、自動 renewal も前提にしない。
 - [x] JM credential login/session reuse、3-page favorite pagination、42 albums／1,081 chapters full dry-run、108-page bounded real favorite sync と CBZ/dedupe を live 検証した。
 - [x] Shared run lock と summary-only journal output を使う system-level comic favorite timer example を追加した。
+- [x] Remote で expired になった JMComic session を run ごとに最大 1 回 credential login で recovery し、collection／album resolve 後に rotated cookie を checkpoint、initial full sync timeout を 18 時間にした。
 
 このファイルは、今後の実装・検証作業だけを追跡します。完了済みの状態、live-test 履歴、解決済み issue は `STATE.md`、`ISSUES.md`、`RUNBOOK.md` に置きます。
 

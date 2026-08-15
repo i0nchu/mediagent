@@ -6,16 +6,18 @@
 - nhentai 支援 exact gallery、完整收藏分頁、可重用及刷新之瀏覽器 cookie session（0600）。
 - JMComic 支援 album/photo/可信封面、加密 mobile API、可重用登入 session、完整 album／收藏 manifest 與垂直切片還原。
 - JMComic session 可由設定好的帳號密碼建立，也可選擇載入 Netscape `cookies.txt`。Cookie-file path 會保留原格式與 `0600`；明確執行 `jmcomic.auth.login` 時，無效舊 session 不會阻擋登入，成功後會被取代。
+- JMComic 收藏 collect/sync 現在遇到遠端已過期 session 時，每輪最多自動使用帳密重新登入一次。恢復或輪替後的 session 會在 collection 與每個 album resolve 後原子 checkpoint，不再等整個長任務結束；精簡輸出只回報安全的 recovery/checkpoint 狀態，不含 session 內容。
 - JMComic transport 會在 JSON／AES envelope parsing 前，以 bounded 方式解壓 gzip／deflate API response。已用不含憑證與內容的 public album probe 驗證目前 endpoint 回 gzip，修正後可成功 decode album `349717`。
 - JMComic segment-count hash 現在使用不含副檔名的 filename stem，與維護中的 upstream decoder 一致。Album `349717` 的 `00001.webp` 原本誤算 18 段，正確為 10 段。Explicit comic `overwrite` 也會重新 queue 已 downloaded 的 terminal items，以 atomic 方式重建受影響頁面與 CBZ。
 - `comic.link.sync` 永遠 exact；`nhentai.favorites.sync` 以 gallery exact 同步；`jmcomic.favorites.sync` 只追蹤 active favorite albums。
 - `nhentai.favorites.collect` 與 `jmcomic.favorites.collect` 提供不下載、不變更 membership 的完整 snapshot 精簡診斷。JM 帳密登入/session 重用及三頁共 42 個 favorite albums 已完成 live 驗證；目前 nhentai browser cookie 回 HTTP 401，重新匯出後才能重跑 live collect。
 - JM 完整收藏 dry-run 將 42 個 albums 展開為 1,081 個 chapters、49,137 個預計頁面下載。bounded 真實收藏同步已 commit 全部 42 個 active memberships，選定一個 album 完成並驗證 108/108 頁、封裝一個含 `ComicInfo.xml` 的有效 CBZ，第二輪為 0 下載與 1 existing CBZ。大量 identity 查詢會分批避開 SQLite limits，收藏同步也改為逐 target 執行，後段失敗不會讓前面 albums 白跑。
-- SQLite connection 使用 30 秒 busy timeout。system-level 漫畫收藏 timer 範例使用共用 non-blocking run lock 與精簡 `--summary-json`；follow 是定期重跑 `jmcomic.favorites.sync`，不是常駐 daemon。
+- 第一次 production JM bootstrap 已嘗試全部 49,137 頁：49,080 頁有效、57 頁失敗並分布於 20 個 partial chapters，另有 1,061 個完整 chapters 產生 CBZ。強制帳密登入後，下一輪已成功 commit 42 筆 snapshot 並續跑，因而確認並修正上述 expired-session persistence 缺口。
+- SQLite connection 使用 30 秒 busy timeout。system-level 漫畫收藏 timer 範例使用共用 non-blocking run lock 與精簡 `--summary-json`；JMComic 初次完整同步 timeout 為 18 小時。follow 是定期重跑 `jmcomic.favorites.sync`，不是常駐 daemon。
 - 共用 link intake 現在會在 generic HTML resolution 前，先把辨識到的 nhentai／JMComic links 分派給 exact comic adapter。direct `link.media.sync`、queued links、Telegram inbox，以及未來沿用相同 queue/tool boundary 的 inbox 都會生效；Telegram provenance 會保留，但不會建立 follow state。
 - 完整章節會原子封裝為含 `ComicInfo.xml` 的 Kavita CBZ；只有一章的 JM album 仍維持穩定 series layout，避免未來新增章節時搬動舊 CBZ。
 - 取消收藏不刪媒體，不完整 snapshot 不提交。
-- 本次 locked offline suite 為 341 tests 全數通過。
+- 本次 locked offline suite 為 346 tests 全數通過。
 
 ## 已完成
 

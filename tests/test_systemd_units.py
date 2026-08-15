@@ -37,6 +37,12 @@ class SystemComicTimerTests(unittest.TestCase):
                 {"retry_failed": True, "repair_missing_files": True},
             )
 
+    def test_jmcomic_service_allows_initial_full_sync_headroom(self) -> None:
+        service = (SYSTEMD_DIR / "mediagent-jmcomic-favorites.service").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("TimeoutStartSec=18h", service)
+
 
 if __name__ == "__main__":
     unittest.main()

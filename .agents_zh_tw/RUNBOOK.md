@@ -33,6 +33,8 @@ nhentai 收藏需先從已登入瀏覽器匯出一次 cookie jar；可使用 Med
 
 JMComic 可以直接用設定好的帳號密碼建立並重用 session，不需要瀏覽器 cookie。也接受 `JMCOMIC_USERNAME`、`JMCOMIC_PASSWORD`、`JMCOMIC_SESSION_FILE`；推薦的 `MEDIAGENT_JMCOMIC_*` 若同時存在會優先採用。`jmcomic.auth.login` 會忽略並取代無效的舊 session，不會在送出登入 request 前就失敗。
 
+`jmcomic.favorites.collect` 與 `.sync` 遇到 `jmcomic_auth_required` 時，每輪最多用設定好的帳密恢復一次。Recovered session 會立即保存，輪替 cookie 會在 collection 與每個 album resolve 後 checkpoint。可從 summary 欄位 `auth_recovery_attempted`、`auth_recovered`、`session_checkpointed` 判斷，輸出不含 session 內容。system JMComic service 為初次完整同步保留 18 小時。
+
 ```bash
 uv run --locked mediagent tools run jmcomic.auth.status --input examples/tools/jmcomic.auth.status.json --json
 uv run --locked mediagent tools run jmcomic.auth.login --input examples/tools/jmcomic.auth.login.json --json

@@ -51,6 +51,8 @@ uv run --locked mediagent tools run nhentai.favorites.sync --input examples/tool
 
 JMComic can create and reuse a session directly from configured credentials; browser cookies are not required. `JMCOMIC_USERNAME`, `JMCOMIC_PASSWORD`, and `JMCOMIC_SESSION_FILE` are accepted compatibility names; the `MEDIAGENT_JMCOMIC_*` names remain preferred and take precedence. `jmcomic.auth.login` deliberately replaces an invalid old session instead of failing before the login request. Test a small album before favorites:
 
+`jmcomic.favorites.collect` and `.sync` recover `jmcomic_auth_required` with at most one configured credential login per run. The recovered session is saved immediately, and rotated cookies are checkpointed after collection and every album resolution. Check summary fields `auth_recovery_attempted`, `auth_recovered`, and `session_checkpointed`; no session contents are returned. The system JMComic service allows 18 hours for an initial full sync.
+
 ```bash
 uv run --locked mediagent tools run jmcomic.auth.status --input examples/tools/jmcomic.auth.status.json --json
 uv run --locked mediagent tools run jmcomic.auth.login --input examples/tools/jmcomic.auth.login.json --json
