@@ -176,6 +176,79 @@ class JMComicClientTests(unittest.TestCase):
         self.assertIn("vertical_segments", items[1]["metadata"]["files"][0]["runtime_decode"])
         self.assertEqual([path for path, _ in transport.calls].count("/chapter_view_template"), 1)
 
+    def test_album_manifest_overrides_lagging_photo_chapter_number(self) -> None:
+        class LaggingTransport(FakeTransport):
+            def request(self, path: str, **kwargs):
+                if path == "/album":
+                    return JMComicTransportResult(
+                        {
+                            "id": "1215913",
+                            "name": "Growing Series",
+                            "series": [{"id": "1463677", "sort": "74", "name": "CH74"}],
+                        },
+                        {},
+                    )
+                if path == "/chapter":
+                    return JMComicTransportResult(
+                        {
+                            "id": "1463677",
+                            "series_id": "1215913",
+                            "name": "CH74",
+                            # The photo payload does not contain itself yet, so
+                            # the old resolver incorrectly fell back to CH1.
+                            "series": [{"id": "1215913", "sort": "1", "name": "CH1"}],
+                            "images": ["00001.webp"],
+                        },
+                        {},
+                    )
+                return super().request(path, **kwargs)
+
+        item = JMComicClient(LaggingTransport()).resolve_exact(
+            "https://18comic.vip/album/1215913/"
+        ).normalized_items()[0]
+        comic = item["metadata"]["comic"]
+        self.assertEqual(comic["chapter_number"], 74)
+        self.assertEqual(comic["provider_chapter_number"], 74)
+        self.assertEqual(comic["chapter_number_source"], "album_provider_sort")
+        self.assertEqual(comic["album_position"], 1)
+
+    def test_duplicate_provider_chapter_numbers_get_stable_unique_numbers(self) -> None:
+        class DuplicateTransport(FakeTransport):
+            album = {
+                "id": "777",
+                "name": "Duplicate Series",
+                "series": [
+                    {"id": "7001", "sort": "55", "name": "CH55 A"},
+                    {"id": "7002", "sort": "55", "name": "CH55 B"},
+                ],
+            }
+
+            def request(self, path: str, **kwargs):
+                if path == "/album":
+                    return JMComicTransportResult(self.album, {})
+                if path == "/chapter":
+                    photo_id = str(kwargs["params"]["id"])
+                    return JMComicTransportResult(
+                        {
+                            "id": photo_id,
+                            "series_id": "777",
+                            "name": f"Photo {photo_id}",
+                            "series": self.album["series"],
+                            "images": ["00001.webp"],
+                        },
+                        {},
+                    )
+                return super().request(path, **kwargs)
+
+        items = JMComicClient(DuplicateTransport()).resolve_exact(
+            "https://18comic.vip/album/777/"
+        ).normalized_items()
+        comics = [item["metadata"]["comic"] for item in items]
+        self.assertEqual([comic["chapter_number"] for comic in comics], [55, "55.001"])
+        self.assertEqual([comic["provider_chapter_number"] for comic in comics], [55, 55])
+        self.assertEqual([comic["chapter_collision_index"] for comic in comics], [0, 1])
+        self.assertEqual([comic["album_position"] for comic in comics], [1, 2])
+
     def test_one_chapter_album_keeps_stable_series_layout_for_future_follow(self) -> None:
         photo = parse_photo(
             {"id": "349717", "series_id": "349717", "name": "Only now", "images": ["1.jpg"]},

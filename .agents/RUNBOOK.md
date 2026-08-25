@@ -89,6 +89,22 @@ If JMComic pages downloaded before the filename-hash descramble fix show horizon
 
 JMComic chapter manifests may contain valid near-empty WebPs whose height is smaller than the computed scramble segment count. Mediagent records these non-content strips as `media_files.status=skipped` and `file_health=ignored_spacer`; it writes no source file, excludes them from CBZ/`ComicInfo.xml` page counts, and does not retry them during missing-file repair. `summary.files_skipped` reports the count. A malformed image or a normal-sized decode failure remains an error.
 
+JMComic album chapter numbers must come from the complete album episode manifest. Photo payloads may lag and incorrectly look like chapter 1; duplicate provider sort values receive stable suffixes such as `55.001` so Kavita does not merge distinct photo IDs. Audit the configured development DB/library without writes first:
+
+```bash
+uv run --locked mediagent tools run jmcomic.library.reconcile \
+  --input examples/tools/jmcomic.library.reconcile.plan.json --json
+```
+
+Review `summary.blocked`, `failed_albums`, `missing_from_manifest`, and item paths. Optionally copy the input and add `album_id` or `album_ids` for a bounded audit. Apply only after a clean plan:
+
+```bash
+uv run --locked mediagent tools run jmcomic.library.reconcile \
+  --input examples/tools/jmcomic.library.reconcile.apply.json --json
+```
+
+Apply never downloads media. It updates existing metadata, builds affected CBZ files atomically from complete healthy local source pages, and moves replaced archives under `library/.trash/mediagent-jmcomic-reconcile/<run-id>/`. Files already under `.trash` remain untouched and are never restored. A changing series `Count` alone updates DB metadata without rewriting every archive. This development workflow does not authorize Production changes. A later Production run requires separate approval, stopping overlapping JMComic sync/Kavita activity, reviewing the Production plan, applying once, and then rescanning Kavita.
+
 Telegram inbox and future custom inboxes do not need provider-specific comic commands. Supported nhentai/JMComic links pass through the shared `link.media.sync` intake and are automatically dispatched to the exact comic adapter before generic HTML resolution. Sending a direct comic link through an inbox therefore downloads/packages that linked work only; it never enables series follow. Inspect `summary.comic_links_considered` plus the CBZ counters to confirm dispatch.
 
 Fallback during local development:

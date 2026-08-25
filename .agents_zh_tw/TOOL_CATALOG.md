@@ -12,6 +12,7 @@
 - `jmcomic.favorites.folders.list`：不連網列出本機 fallback alias。
 - `jmcomic.favorites.collect`：完整指定資料夾 union/auth 診斷，不下載，也不變更 membership。
 - `jmcomic.favorites.sync`：完整指定資料夾 union snapshot；active album 持續發現新章。
+- `jmcomic.library.reconcile`：`plan` 對全 library 做唯讀章號盤點；`apply` 必須傳入 `confirm:true`，只從健康本機原始頁重封裝受影響 CBZ，並隔離被取代的 archive。
 
 用這份文件快速理解目前已註冊的工具。精確 schema 請用：
 

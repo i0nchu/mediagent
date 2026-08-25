@@ -15,6 +15,8 @@ class JMComicEpisode:
     photo_id: str
     number: int
     title: str
+    number_source: str = "provider_sort"
+    position: int = 1
 
 
 @dataclass(frozen=True)
@@ -63,6 +65,7 @@ class JMComicPhoto:
     title: str
     number: int
     pages: tuple[JMComicPage, ...]
+    number_source: str = "photo_series"
     tags: tuple[str, ...] = ()
 
     @property
@@ -75,22 +78,35 @@ class JMComicPhoto:
         album_title: str | None = None,
         total_count: int | None = None,
         album_scoped: bool = False,
+        chapter_number: int | str | None = None,
+        chapter_number_source: str | None = None,
+        provider_chapter_number: int | None = None,
+        album_position: int | None = None,
+        chapter_collision_index: int | None = None,
     ) -> dict[str, Any]:
         # JM albums may gain chapters later. A stable series identity prevents
         # the first chapter's archive from moving when favorites follow it.
         is_one_shot = False if album_scoped else self.album_id == self.photo_id
-        return {
+        effective_number = self.number if chapter_number is None else chapter_number
+        result = {
             "provider": "jmcomic",
             "provider_work_id": self.provider_work_id,
             "title": self.title,
             "series_id": self.album_id,
             "series_title": album_title or self.title,
             "directory_title": f"JM {self.album_id}",
-            "archive_title": f"Chapter {self.number}",
-            "chapter_number": self.number,
+            "archive_title": f"Chapter {effective_number}",
+            "chapter_number": effective_number,
+            "chapter_number_source": chapter_number_source or self.number_source,
+            "provider_chapter_number": provider_chapter_number or self.number,
             "total_count": total_count,
             "is_one_shot": is_one_shot,
         }
+        if album_position is not None:
+            result["album_position"] = album_position
+        if chapter_collision_index is not None:
+            result["chapter_collision_index"] = chapter_collision_index
+        return result
 
 
 @dataclass(frozen=True)
@@ -143,16 +159,27 @@ def parse_album(payload: dict[str, Any]) -> JMComicAlbum:
         photo_id = _optional_id(raw.get("id") or raw.get("photo_id"))
         if not photo_id:
             continue
+        number = _positive_int(raw.get("sort"), fallback=position)
         episodes.append(
             JMComicEpisode(
                 photo_id=photo_id,
-                number=_positive_int(raw.get("sort"), fallback=position),
+                number=number,
                 title=_title(raw.get("name") or raw.get("title"), fallback=f"Chapter {position}"),
+                number_source="provider_sort" if _is_positive_int(raw.get("sort")) else "album_position",
+                position=position,
             )
         )
     if not episodes:
-        episodes.append(JMComicEpisode(photo_id=album_id, number=1, title=title))
-    episodes.sort(key=lambda item: (item.number, int(item.photo_id)))
+        episodes.append(
+            JMComicEpisode(
+                photo_id=album_id,
+                number=1,
+                title=title,
+                number_source="album_fallback",
+                position=1,
+            )
+        )
+    episodes.sort(key=lambda item: (item.number, item.position, int(item.photo_id)))
     return JMComicAlbum(
         album_id=album_id,
         title=title,
@@ -175,9 +202,11 @@ def parse_photo(
     album_id = series_id if series_id and series_id != "0" else photo_id
     series = payload.get("series") if isinstance(payload.get("series"), list) else []
     number = 1
+    number_source = "photo_fallback"
     for position, raw in enumerate(series, start=1):
         if isinstance(raw, dict) and _optional_id(raw.get("id")) == photo_id:
             number = _positive_int(raw.get("sort"), fallback=position)
+            number_source = "photo_series" if _is_positive_int(raw.get("sort")) else "photo_series_position"
             break
     filenames = payload.get("images") or payload.get("page_arr") or []
     if isinstance(filenames, str):
@@ -206,6 +235,7 @@ def parse_photo(
         title=_title(payload.get("name") or payload.get("title"), fallback=f"JM{photo_id}"),
         number=number,
         pages=tuple(pages),
+        number_source=number_source,
         tags=_strings(payload.get("tags")),
     )
 
@@ -256,6 +286,13 @@ def _positive_int(value: Any, *, fallback: int) -> int:
     except (TypeError, ValueError):
         return fallback
     return result if result > 0 else fallback
+
+
+def _is_positive_int(value: Any) -> bool:
+    try:
+        return int(value) > 0
+    except (TypeError, ValueError):
+        return False
 
 
 def _nonnegative_int(value: Any, *, fallback: int) -> int:

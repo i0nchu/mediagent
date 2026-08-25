@@ -64,6 +64,22 @@ follow 的實作是由 timer 定期重跑 `jmcomic.favorites.sync`，不是常�
 
 JMComic chapter manifest 可能包含有效但近乎空白、且高度小於計算後 scramble 分段數的 WebP。Mediagent 會將這類 non-content strip 記為 `media_files.status=skipped`／`file_health=ignored_spacer`，不寫 source file、不放入 CBZ／`ComicInfo.xml` page count，也不會被 missing-file repair 重試。`summary.files_skipped` 會回報數量；malformed image 或正常尺寸解碼失敗仍是錯誤。
 
+JMComic album 章號必須以完整 album episode manifest 為準。Photo payload 可能落後而誤顯示第 1 章；provider sort 重號會使用 `55.001` 等穩定 suffix，避免 Kavita 合併不同 photo ID。先對目前設定的本機 development DB/library 做完全唯讀盤點：
+
+```bash
+uv run --locked mediagent tools run jmcomic.library.reconcile \
+  --input examples/tools/jmcomic.library.reconcile.plan.json --json
+```
+
+檢查 `summary.blocked`、`failed_albums`、`missing_from_manifest` 與每筆路徑。若只想限縮範圍，可複製 input 並加入 `album_id` 或 `album_ids`。Plan 乾淨後才 apply：
+
+```bash
+uv run --locked mediagent tools run jmcomic.library.reconcile \
+  --input examples/tools/jmcomic.library.reconcile.apply.json --json
+```
+
+Apply 不下載媒體；它更新既有 metadata，以完整且健康的本機原始頁原子建立受影響 CBZ，並把被取代的 archive 移至 `library/.trash/mediagent-jmcomic-reconcile/<run-id>/`。原本已在 `.trash` 的檔案保持不動、永不還原。只有系列 `Count` 改變時只更新 DB，不會重寫全部 archive。這是開發專案流程，不代表可以修改 Production。未來 Production 必須另行取得授權、停止重疊的 JMComic sync／Kavita activity、先審查 Production plan，確認後 apply 一次，再重掃 Kavita。
+
 Telegram inbox 與未來自製 inbox 不需要各自呼叫平台漫畫工具。支援的 nhentai／JMComic links 會經過共用 `link.media.sync` intake，在 generic HTML resolution 前自動分派至 exact comic adapter。因此從 inbox 傳入 direct comic link，只會下載／封裝該連結的作品，不會啟用 series follow。可查看 `summary.comic_links_considered` 與 CBZ counters 確認分派結果。
 
 ## 環境

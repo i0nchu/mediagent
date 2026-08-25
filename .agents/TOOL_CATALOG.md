@@ -14,6 +14,7 @@
 - `jmcomic.favorites.folders.list`: local fallback alias inspection without network access.
 - `jmcomic.favorites.collect`: complete selected-folder union/auth diagnostic without downloads or membership changes.
 - `jmcomic.favorites.sync`: complete selected-folder union snapshot; active albums are followed for new chapters.
+- `jmcomic.library.reconcile`: read-only full-library chapter audit in `plan` mode; `apply` requires `confirm:true` and rebuilds only affected CBZ archives from healthy local pages while quarantining replaced archives.
 
 Use this catalog to understand the currently registered tools. Inspect exact schemas with:
 

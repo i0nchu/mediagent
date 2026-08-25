@@ -51,6 +51,7 @@ uv run --locked mediagent tools inspect pixiv.bookmarks.collect --json
 uv run --locked mediagent tools inspect pixiv.bookmarks.sync --json
 uv run --locked mediagent tools inspect pixiv.library.reconcile --json
 uv run --locked mediagent tools inspect pixiv.comics.package --json
+uv run --locked mediagent tools inspect jmcomic.library.reconcile --json
 uv run --locked mediagent tools inspect core.cleanup.media_state --json
 uv run --locked mediagent tools inspect telegram.auth.login --json
 uv run --locked mediagent tools inspect telegram.messages.sync --json
@@ -73,3 +74,5 @@ Do not build Workflow V1, built-in scheduling, Reddit saved sync, or X live auth
 ## Comic Sources
 
 nhentai and JMComic/18comic now have comic-only adapters and tools. Direct links always use `exact`: nhentai gallery means one gallery, JM photo means one chapter, and JM album/cover means every chapter currently in that album without follow state. Favorites are the account inbox: nhentai favorites remain exact galleries, while the union of selected JM favorite folders uses `series_and_follow`; folder names resolve remotely with local name/FID fallback. Complete chapters are stored as ordered `comic-pages` and atomically packaged as Kavita-oriented CBZ files with `ComicInfo.xml`; unsupported video/audio/text is rejected.
+
+JMComic album manifests are authoritative for chapter numbering, including deterministic collision suffixes for duplicate provider numbers. `jmcomic.library.reconcile` provides a read-only full-library plan and an explicit confirmed apply that repairs existing DB/CBZ identities from healthy local pages without redownloading media or restoring `.trash`.

@@ -4,6 +4,8 @@
 
 nhentai 與 JMComic/18comic 已具備只處理漫畫的 adapter 與工具。直接連結一律為 `exact`：nhentai gallery 是單本、JM photo 是單章、JM album／可信封面是當下所有章節且不追蹤。收藏列表才是帳號 inbox：nhentai 收藏仍為單本 exact，指定 JM 收藏資料夾的聯集則為 `series_and_follow`；資料夾名稱可從遠端解析並以本機名稱/FID fallback。完整頁面會存入 `comic-pages`，並原子封裝成含 `ComicInfo.xml`、適合 Kavita 的 CBZ；影片、音訊與文字內容不會進入漫畫候選。
 
+JMComic album manifest 是章號權威來源，provider 重號使用 deterministic collision suffix。`jmcomic.library.reconcile` 提供全 library 唯讀 plan 與明確確認 apply，可用健康本機頁修復既有 DB／CBZ identity，不重新下載媒體，也不還原 `.trash`。
+
 這個目錄是繁體中文交接文件。英文預設文件在 `.agents/`，日文文件在 `.agents_jp/`。
 
 ## 建議閱讀順序
@@ -55,6 +57,7 @@ uv run --locked mediagent tools inspect pixiv.bookmarks.collect --json
 uv run --locked mediagent tools inspect pixiv.bookmarks.sync --json
 uv run --locked mediagent tools inspect pixiv.library.reconcile --json
 uv run --locked mediagent tools inspect pixiv.comics.package --json
+uv run --locked mediagent tools inspect jmcomic.library.reconcile --json
 uv run --locked mediagent tools inspect core.cleanup.media_state --json
 uv run --locked mediagent tools inspect telegram.auth.login --json
 uv run --locked mediagent tools inspect telegram.messages.sync --json

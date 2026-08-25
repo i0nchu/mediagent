@@ -35,7 +35,7 @@ from mediagent.platforms.jmcomic.links import JMComicLinkError, parse_jmcomic_li
 from mediagent.platforms.nhentai import auth as nh_auth
 from mediagent.platforms.nhentai import client as nh_client
 from mediagent.platforms.nhentai.links import parse_gallery_link
-from mediagent.tools import link_tools
+from mediagent.tools import jmcomic_reconcile, link_tools
 from mediagent.tools.pixiv_library_tools import (
     _apply_comic_package,
     _comic_package_plan,
@@ -249,7 +249,195 @@ def definitions() -> list[ToolDefinition]:
             ),
             handler=jmcomic_favorites_sync,
         ),
+        ToolDefinition(
+            spec=ToolSpec(
+                name="jmcomic.library.reconcile",
+                description=(
+                    "Audit existing JMComic chapters against current album manifests and, "
+                    "with explicit confirmation, rebuild only affected CBZ archives from healthy local pages."
+                ),
+                input_schema={
+                    "type": "object",
+                    "required": ["mode"],
+                    "properties": {
+                        "mode": {"type": "string", "enum": ["plan", "apply"]},
+                        "confirm": {"type": "boolean"},
+                        "db_path": {"type": "string"},
+                        "library_root": {"type": "string"},
+                        "quarantine_dir": {"type": "string"},
+                        "include_platform_layer": {"type": "boolean"},
+                        "album_id": {"type": "string"},
+                        "album_ids": {"type": "array", "items": {"type": "string"}},
+                        "limit": {"type": "integer", "minimum": 1},
+                        "include_details": {"type": "boolean"},
+                        "session_file": {"type": "string"},
+                        "timeout_seconds": {"type": "number"},
+                    },
+                },
+                output_schema={"type": "object"},
+                permissions=(
+                    Permission.READ_ENV,
+                    Permission.READ_CREDENTIALS,
+                    Permission.NETWORK,
+                    Permission.READ_DB,
+                    Permission.WRITE_DB,
+                    Permission.READ_FILES,
+                    Permission.WRITE_FILES,
+                ),
+                dry_run_supported=True,
+            ),
+            handler=jmcomic_library_reconcile,
+        ),
     ]
+
+
+async def jmcomic_library_reconcile(context: ToolContext, input_data: dict[str, Any]) -> ToolResult:
+    mode = str(input_data.get("mode") or "").strip().lower()
+    if mode not in {"plan", "apply"}:
+        return ToolResult.failure(
+            "jmcomic_reconcile_mode_invalid",
+            "mode must be plan or apply.",
+            category=ErrorCategory.VALIDATION,
+        )
+    path_error = _validate_sync_paths(context, input_data)
+    if path_error is not None:
+        return path_error
+    db_path = _required_db_path(context, input_data)
+    assert isinstance(db_path, Path)
+    library_root = _library_root(context, input_data).resolve()
+    quarantine_dir = (
+        normalize_path(str(input_data["quarantine_dir"]), env=context.env, cwd=context.cwd)
+        if input_data.get("quarantine_dir")
+        else library_root / ".trash" / "mediagent-jmcomic-reconcile" / context.run_id
+    ).resolve()
+    try:
+        ensure_inside(quarantine_dir, [library_root])
+        if not db_path.is_file():
+            raise ValueError(f"Database does not exist: {db_path}")
+        existing_items = jmcomic_reconcile.select_jmcomic_items(db_path)
+        available_album_ids = {
+            album_id
+            for item in existing_items
+            if (album_id := jmcomic_reconcile.album_id_for_item(item)) is not None
+        }
+        requested = _reconcile_album_ids(input_data)
+        if requested is not None:
+            unknown = sorted(requested - available_album_ids, key=int)
+            if unknown:
+                raise ValueError(f"JMComic albums are not present in the database: {', '.join(unknown)}")
+            selected_album_ids = requested
+        else:
+            selected_album_ids = available_album_ids
+        ordered_album_ids = sorted(selected_album_ids, key=int)
+        if input_data.get("limit") is not None:
+            ordered_album_ids = ordered_album_ids[: int(input_data["limit"])]
+        selected_album_ids = set(ordered_album_ids)
+
+        resolved_by_album: dict[str, list[dict[str, Any]]] = {}
+        failed_albums: dict[str, dict[str, str]] = {}
+        if ordered_album_ids:
+            client = _jm_client(context, input_data, login_if_needed=False)
+            for album_id in ordered_album_ids:
+                try:
+                    album = client.get_album(album_id)
+                    resolved_by_album[album_id] = jmcomic_reconcile.identities_from_album(album)
+                except Exception as exc:
+                    failed_albums[album_id] = {
+                        "code": str(getattr(exc, "code", "jmcomic_manifest_failed")),
+                        "exception_type": type(exc).__name__,
+                    }
+        manifest = jmcomic_reconcile.build_manifest(
+            db_path=db_path,
+            library_root=library_root,
+            quarantine_dir=quarantine_dir,
+            resolved_by_album=resolved_by_album,
+            failed_albums=failed_albums,
+            include_platform_layer=bool(input_data.get("include_platform_layer", True)),
+            selected_album_ids=selected_album_ids,
+        )
+        is_plan = mode == "plan" or context.dry_run
+        public = jmcomic_reconcile.public_manifest(
+            manifest,
+            include_details=bool(input_data.get("include_details", True)),
+        )
+        public.update(
+            {
+                "provider": "jmcomic",
+                "mode": "plan" if is_plan else "apply",
+                "dry_run": context.dry_run,
+                "quarantine_dir": str(quarantine_dir),
+            }
+        )
+        if is_plan:
+            return ToolResult.success(public)
+        if not bool(input_data.get("confirm")):
+            return ToolResult.failure(
+                "jmcomic_reconcile_confirmation_required",
+                "Apply mode requires confirm=true after reviewing a plan.",
+                data=public,
+                category=ErrorCategory.VALIDATION,
+            )
+        if manifest["summary"]["blocked"]:
+            return ToolResult.failure(
+                "jmcomic_reconcile_blocked",
+                "No changes were applied because one or more albums or chapters could not be reconciled safely.",
+                data=public,
+                category=ErrorCategory.VALIDATION,
+            )
+        manifest = jmcomic_reconcile.apply_manifest(
+            db_path=db_path,
+            library_root=library_root,
+            manifest=manifest,
+        )
+        public = jmcomic_reconcile.public_manifest(
+            manifest,
+            include_details=bool(input_data.get("include_details", True)),
+        )
+        public.update(
+            {
+                "provider": "jmcomic",
+                "mode": "apply",
+                "dry_run": False,
+                "quarantine_dir": str(quarantine_dir),
+            }
+        )
+        if manifest["summary"].get("apply_failed"):
+            return ToolResult.failure(
+                "jmcomic_reconcile_partial",
+                "Reconciliation completed with one or more rebuild failures.",
+                data=public,
+                category=ErrorCategory.FILESYSTEM,
+            )
+        db.insert_run(
+            db_path,
+            run_type="maintenance",
+            name="jmcomic.library.reconcile",
+            status="success",
+            summary=public["summary"],
+            error=None,
+            dry_run=False,
+        )
+        return ToolResult.success(public)
+    except (PathSafetyError, ValueError) as exc:
+        return ToolResult.failure(
+            "jmcomic_reconcile_invalid",
+            str(exc),
+            details={"exception_type": type(exc).__name__},
+            category=ErrorCategory.VALIDATION,
+        )
+    except Exception as exc:
+        return _provider_failure(exc)
+
+
+def _reconcile_album_ids(input_data: dict[str, Any]) -> set[str] | None:
+    raw_values = [input_data.get("album_id"), *(input_data.get("album_ids") or [])]
+    values = [str(value).strip() for value in raw_values if str(value or "").strip()]
+    if not values:
+        return None
+    invalid = [value for value in values if not value.isdigit() or int(value) <= 0]
+    if invalid:
+        raise ValueError("JMComic album IDs must be positive integers.")
+    return set(values)
 
 
 async def comic_link_sync(context: ToolContext, input_data: dict[str, Any]) -> ToolResult:

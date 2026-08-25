@@ -6,6 +6,8 @@
 
 直接 URL 不建立追蹤。帳號收藏必須先完整抓完所有分頁，才可在單一 SQLite transaction 提交 snapshot；任何不完整或失敗的收集都不得停用舊 membership。取消收藏只停用該來源，不刪既有頁面或 CBZ。active 的 JM album 收藏會在之後同步時重新解析以發現新章，nhentai 收藏則維持 exact。
 
+JMComic album-scoped resolution 的章號由 album episode list 決定；per-photo payload 只提供頁面與標題，當其 series list 落後時不能把章號降回第 1 章。Raw 重號會在 normalized items 進入 DB／封裝層前先消歧。歷史資料修復會解析 DB 中出現的每個 album、比較目前 manifest identity 與 DB／CBZ `ComicInfo.xml`、先產生唯讀 manifest，再於明確確認的 apply 中只用健康且 tracked 的原始頁重建受影響 archive，並隔離被取代 CBZ。Provider/network 或 source-health 缺口會在任何 mutation 前阻擋 apply。
+
 Schema v8 新增 `source_collections` 與 `source_collection_memberships`；v9 新增 `source_collection_scope_aliases`，保存帳號 scoped 的人類名稱與遠端 collection scope 映射。穩定 page file key 避免 CDN URL 輪替造成重複紀錄；cookies、token、敏感 headers 與 JM runtime decode 資料不得寫入持久 metadata。
 
 ## 產品邊界

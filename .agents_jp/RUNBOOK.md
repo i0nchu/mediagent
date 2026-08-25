@@ -59,6 +59,22 @@ Filename-hash descramble fix 前に download した JMComic page が horizontal 
 
 JMComic chapter manifest には、valid だがほぼ空で height が calculated scramble segment count より小さい WebP が含まれる場合がある。Mediagent はこの non-content strip を `media_files.status=skipped`／`file_health=ignored_spacer` として記録し、source file を書かず、CBZ／`ComicInfo.xml` page count に含めず、missing-file repair でも再試行しない。`summary.files_skipped` が件数を返す。Malformed image または normal-sized decode failure は引き続き error になる。
 
+JMComic album chapter number は complete album episode manifest を authoritative source とする。Photo payload は lagging して chapter 1 に見える場合がある。Duplicate provider sort には `55.001` のような stable suffix を使い、Kavita が異なる photo ID を merge するのを防ぐ。最初に configured local development DB/library を read-only audit する。
+
+```bash
+uv run --locked mediagent tools run jmcomic.library.reconcile \
+  --input examples/tools/jmcomic.library.reconcile.plan.json --json
+```
+
+`summary.blocked`、`failed_albums`、`missing_from_manifest`、item paths を確認する。範囲を限定する場合は input を copy して `album_id` または `album_ids` を追加する。Clean plan の後だけ apply する。
+
+```bash
+uv run --locked mediagent tools run jmcomic.library.reconcile \
+  --input examples/tools/jmcomic.library.reconcile.apply.json --json
+```
+
+Apply は media を download しない。Existing metadata を更新し、complete/healthy local source pages から affected CBZ を atomic build し、replaced archive を `library/.trash/mediagent-jmcomic-reconcile/<run-id>/` に移す。すでに `.trash` にある files は触らず、復元しない。Series `Count` の変化だけなら DB metadata のみ更新し、全 archive を rewrite しない。これは development project workflow であり Production mutation の許可ではない。将来の Production run は別 approval、overlapping JMComic sync／Kavita activity の停止、Production plan review、one-time apply、Kavita rescan が必要である。
+
 Telegram inbox と future custom inbox は provider-specific comic command を個別に呼ぶ必要がない。対応 nhentai/JMComic links は shared `link.media.sync` intake を通り、generic HTML resolution より前に exact comic adapter へ自動 dispatch される。そのため inbox の direct comic link は linked work だけを download/package し、series follow は有効にしない。`summary.comic_links_considered` と CBZ counters で dispatch を確認できる。
 
 ## 環境

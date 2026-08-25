@@ -20,6 +20,7 @@
 - SQLite connection 使用 30 秒 busy timeout。system-level 漫畫收藏 timer 範例使用共用 non-blocking run lock 與精簡 `--summary-json`；JMComic 初次完整同步 timeout 為 18 小時。follow 是定期重跑 `jmcomic.favorites.sync`，不是常駐 daemon。
 - 共用 link intake 現在會在 generic HTML resolution 前，先把辨識到的 nhentai／JMComic links 分派給 exact comic adapter。direct `link.media.sync`、queued links、Telegram inbox，以及未來沿用相同 queue/tool boundary 的 inbox 都會生效；Telegram provenance 會保留，但不會建立 follow state。
 - 完整章節會原子封裝為含 `ComicInfo.xml` 的 Kavita CBZ；只有一章的 JM album 仍維持穩定 series layout，避免未來新增章節時搬動舊 CBZ。
+- JMComic album resolver 現在以 album episode manifest 作為章號權威來源，不再信任可能落後的 photo payload。provider 重複章號會取得 deterministic collision suffix（例如 `55.001`），避免 Kavita 把不同 photo ID 合併。`jmcomic.library.reconcile` 會以目前 album manifest 盤點 DB 中所有既有 JMComic items；plan 唯讀，明確確認的 apply 才會更新 metadata，並僅用健康的本機原始頁重封裝受影響 CBZ。被取代的 archive 會隔離到 `.trash`，已在 `.trash` 的檔案永遠不會還原。
 - 取消收藏不刪媒體，不完整 snapshot 不提交。
 - 資料夾選擇 feature 已完成本機實作與 live 驗證，尚未部署至 server。
 

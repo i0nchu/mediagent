@@ -66,6 +66,7 @@ class ComicToolTests(unittest.TestCase):
                 "jmcomic.favorites.folders.collect",
                 "jmcomic.favorites.collect",
                 "jmcomic.favorites.sync",
+                "jmcomic.library.reconcile",
             }.issubset(names)
         )
 

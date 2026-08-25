@@ -20,6 +20,7 @@
 - SQLite connection は 30 秒 busy timeout を使う。System-level comic favorite timer example は shared non-blocking run lock と compact `--summary-json` を使い、JMComic initial full sync timeout は 18 時間。follow は resident daemon ではなく、`jmcomic.favorites.sync` の定期再実行である。
 - Shared link intake は generic HTML resolution の前に recognized nhentai/JMComic links を exact comic adapter へ dispatch する。direct `link.media.sync`、queued links、Telegram inbox、同じ queue/tool boundary を使う future inbox に適用され、Telegram provenance は保持するが follow state は作らない。
 - 完全な chapter は `ComicInfo.xml` 付き Kavita CBZ に atomic package する。一章だけの JM album も安定した series layout を維持し、将来の新章で既存 CBZ を移動させない。
+- JMComic album resolver は lagging の可能性がある photo payload ではなく、album episode manifest を authoritative chapter-number source とする。Provider の duplicate chapter number には `55.001` のような deterministic collision suffix を付け、Kavita が異なる photo ID を merge するのを防ぐ。`jmcomic.library.reconcile` は DB 内の全 existing JMComic items を current album manifest と照合する。Plan は read-only、confirmed apply は metadata を更新し、healthy local source pages から affected CBZ だけを rebuild する。Replaced archive は `.trash` に quarantine し、すでに `.trash` にある files は復元しない。
 - favorite 解除で media は削除せず、不完全 snapshot は commit しない。
 - Folder-selection feature は local implementation/live verification 完了、server 未 deploy。
 

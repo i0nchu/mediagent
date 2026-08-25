@@ -9,6 +9,8 @@
 - [x] JMComic 遠端 session 過期時每輪最多以帳密恢復一次，在 collection／album resolve 後 checkpoint 輪替 cookie，並將初次完整同步 timeout 調整為 18 小時。
 - [x] 將有效的 JMComic 1-12 px spacer strip 分類為 ignored non-content，從 CBZ／page count 排除，並避免 repair 重複嘗試。
 - [x] 加入 JMComic 遠端名稱/FID/URL 多資料夾選擇、本機 alias fallback、原子 union membership 與選擇變更 follow 語意，並 live 驗證名稱模式 7 本與 aggregate All 49 本。
+- [x] 讓 JM album episode manifest 成為章號權威來源、加入 deterministic 重號 collision suffix，並新增全 library 的 plan／明確確認 apply reconciliation 工具，以本機原始頁重封裝受影響 CBZ。
+- [ ] 本機驗收後再獨立部署章號修正；停止重疊的 JMComic／Kavita 活動，先檢視 production `jmcomic.library.reconcile` plan，取得明確 production 授權後才 apply 與重掃 Kavita。
 - [ ] 將 JMComic 資料夾選擇部署至 server，初次先用數字 FID 指定目標資料夾，確認 service snapshot 後再交由 timer。
 
 本檔只追蹤接下來要做的實作與驗證工作。已完成狀態、live-test 歷史與已解決問題請放在 `STATE.md`、`ISSUES.md` 與 `RUNBOOK.md`。

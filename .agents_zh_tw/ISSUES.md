@@ -64,6 +64,7 @@ JMComic `/favorite` 正常會回 `folder_list`，FID `0` 是 aggregate All；但
 
 ## Recently Resolved
 
+- JMComic photo payload 可能落後 album episode list 且不含目前 photo，舊 parser 因此錯誤 fallback 到第 1 章；不同 provider photo 也可能共用同一 raw chapter sort，使 Kavita 合併兩個 CBZ。Album-scoped normalization 現在以完整 album manifest 決定章號，重號使用 `55.001` 等 deterministic collision suffix。新的全 library reconciliation plan/apply 可用既有健康頁修復 DB metadata 與受影響 CBZ identity；不重新下載、不還原 `.trash`，且尚未對 Production 執行。
 - JMComic manifest 可能包含僅 1-12 px 高但結構有效的 WebP spacer strip。它們先前會永遠撞上 `height < segment_count` safety check，雖然 CDN 都回 HTTP 200，仍留下 12 個 failed files／9 個 partial chapters。下載管線現在會記錄 terminal `skipped`／`ignored_spacer` 而不落地，並從 CBZ 與 `ComicInfo.xml` page count 排除；malformed image 仍然拒絕。Focused tests 已覆蓋混合內容／spacer、全 spacer chapter、malformed tiny data、封裝輸出與第二輪 repair dedupe。
 - JMComic recurring favorites 不再因長任務未執行最後一次 session 保存就結束而持續失敗。`jmcomic.favorites.collect`／`.sync` 遇到 `jmcomic_auth_required` 時，每輪最多使用設定好的帳密登入重試一次，立即保存 recovered session，並在 collection 與每個 album resolve 後 checkpoint 輪替 cookie。其他錯誤不會觸發登入，第二次 auth 拒絕會乾淨停止；system service 也為初次完整同步保留 18 小時。
 - 已知平台頁面網域不再 fallback 到 generic direct-media 或 generic HTML resolution。Unsupported Instagram page URLs，例如 stories，現在會回傳 structured `instagram_url_unsupported` skip，而不是從偶然出現在 HTML 中的 CDN URL 建立 `instagram_com` media item。Pixiv 非 artwork 頁面與 Imgur gallery/album 類頁面也使用同一個 `reserved_platform_page` guard；Reddit 與 Redgifs 原本就由完整網域 resolver 接管，會繼續回傳平台專屬 structured skips。
@@ -143,4 +144,4 @@ JMComic `/favorite` 正常會回 `folder_list`，FID `0` 是 aggregate All；但
 - Localized issue handoffs 已同步到目前英文 issue 狀態。
 - Localized TODO handoffs 已包含 Pixiv `pixiv.auth.login` / OAuth PKCE planning update，包括 authorization-code exchange、credential-file writing、redaction tests，以及 skipped-by-default live browser tests。
 - 英文、繁中、日文 handoff docs 已同步到 Pixiv first-slice status。
-- 預設測試是綠燈：`uv run --locked python -m unittest discover -s tests` 通過 323 個測試。
+- 預設測試是綠燈：`uv run --locked python -m unittest discover -s tests` 通過 368 個測試。

@@ -60,8 +60,10 @@ class JMComicResolution:
         album = self.album
         total_count = len(album.episodes) if album else None
         album_title = album.title if album else None
+        album_chapters = canonical_album_chapters(album) if album else {}
         items = []
         for photo in self.photos:
+            album_chapter = album_chapters.get(photo.photo_id)
             files = []
             for page in photo.pages:
                 runtime: dict[str, Any] = {
@@ -93,6 +95,11 @@ class JMComicResolution:
                 album_title=album_title,
                 total_count=total_count,
                 album_scoped=album is not None,
+                chapter_number=album_chapter["chapter_number"] if album_chapter else None,
+                chapter_number_source=album_chapter["chapter_number_source"] if album_chapter else None,
+                provider_chapter_number=album_chapter["provider_chapter_number"] if album_chapter else None,
+                album_position=album_chapter["album_position"] if album_chapter else None,
+                chapter_collision_index=album_chapter["chapter_collision_index"] if album_chapter else None,
             )
             comic["tags"] = list(dict.fromkeys([*(album.tags if album else ()), *photo.tags]))
             if album and album.description:
@@ -118,12 +125,41 @@ class JMComicResolution:
                             "entity_type": "photo",
                             "photo_id": photo.photo_id,
                             "album_id": photo.album_id,
-                            "chapter_number": photo.number,
+                            "chapter_number": comic["chapter_number"],
+                            "chapter_number_source": comic["chapter_number_source"],
+                            "provider_chapter_number": comic["provider_chapter_number"],
+                            "album_position": comic.get("album_position"),
+                            "chapter_collision_index": comic.get("chapter_collision_index"),
                         },
                     },
                 }
             )
         return items
+
+
+def canonical_album_chapters(album: JMComicAlbum) -> dict[str, dict[str, Any]]:
+    """Make Kavita chapter numbers unique without trusting lagging photo payloads."""
+
+    occurrences: dict[int, int] = {}
+    chapters: dict[str, dict[str, Any]] = {}
+    for episode in album.episodes:
+        collision_index = occurrences.get(episode.number, 0)
+        occurrences[episode.number] = collision_index + 1
+        chapter_number: int | str = episode.number
+        source = f"album_{episode.number_source}"
+        if collision_index:
+            # Kavita groups archives by Number. A stable fractional suffix keeps
+            # distinct provider photos from silently becoming one chapter.
+            chapter_number = f"{episode.number}.{collision_index:03d}"
+            source = f"{source}_collision"
+        chapters[episode.photo_id] = {
+            "chapter_number": chapter_number,
+            "chapter_number_source": source,
+            "provider_chapter_number": episode.number,
+            "album_position": episode.position,
+            "chapter_collision_index": collision_index,
+        }
+    return chapters
 
 
 class JMComicApiTransport:

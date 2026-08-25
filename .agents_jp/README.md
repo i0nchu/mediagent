@@ -4,6 +4,8 @@
 
 nhentai と JMComic/18comic にコミック専用 adapter／tool を追加した。直接リンクは常に `exact` であり、nhentai gallery は一冊、JM photo は一章、JM album／信頼済み cover は現在の全章を取得するが追跡しない。アカウントの favorites が inbox となり、nhentai は gallery exact、selected JM favorite folders の union が `series_and_follow` となる。Folder name は remote から resolve し local name/FID fallback も使える。完全なページ集合は `comic-pages` に保存し、`ComicInfo.xml` を含む Kavita 向け CBZ として atomic に package する。video/audio/text はコミック候補にしない。
 
+JMComic album manifest は chapter-number authority で、provider duplicate number には deterministic collision suffix を使う。`jmcomic.library.reconcile` は full-library read-only plan と explicit confirmed apply を提供し、media を redownload せず、`.trash` を復元せずに healthy local pages から existing DB／CBZ identity を修復する。
+
 このディレクトリは日本語の引き継ぎ資料です。英語の既定資料は `.agents/`、繁体字中国語版は `.agents_zh_tw/` にあります。
 
 ## 推奨読書順
@@ -55,6 +57,7 @@ uv run --locked mediagent tools inspect pixiv.bookmarks.collect --json
 uv run --locked mediagent tools inspect pixiv.bookmarks.sync --json
 uv run --locked mediagent tools inspect pixiv.library.reconcile --json
 uv run --locked mediagent tools inspect pixiv.comics.package --json
+uv run --locked mediagent tools inspect jmcomic.library.reconcile --json
 uv run --locked mediagent tools inspect core.cleanup.media_state --json
 uv run --locked mediagent tools inspect telegram.auth.login --json
 uv run --locked mediagent tools inspect telegram.messages.sync --json

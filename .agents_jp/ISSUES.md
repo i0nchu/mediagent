@@ -64,6 +64,7 @@ JMComic `/favorite` は通常 `folder_list` を返し、FID `0` は aggregate Al
 
 ## Recently Resolved
 
+- JMComic photo payload は album episode list より遅れ、current photo を含まない場合があり、旧 parser は chapter 1 に誤 fallback していた。異なる provider photo が同じ raw chapter sort を共有すると Kavita が二つの CBZ を merge する。Album-scoped normalization は complete album manifest を chapter-number source とし、duplicate には `55.001` のような deterministic collision suffix を付ける。新しい full-library reconciliation plan/apply は existing healthy pages から DB metadata と affected CBZ identity を修復する。Media の redownload や `.trash` の復元は行わず、Production では未実行である。
 - JMComic manifest は height 1-12 px だけの structurally valid WebP spacer strips を含むことがある。以前は `height < segment_count` safety check に永続的に失敗し、CDN がすべて HTTP 200 でも 12 failed files／9 partial chapters が残った。Download pipeline は現在、これらを terminal `skipped`／`ignored_spacer` として file を書かずに記録し、CBZ と `ComicInfo.xml` page count から除外する。Malformed image は引き続き reject する。Focused tests は mixed content/spacer chapters、all-spacer chapters、malformed tiny data、package output、second-run repair dedupe を cover する。
 - JMComic recurring favorites は、長い run が final session save 前に終了した後も失敗し続けることがなくなった。`jmcomic.favorites.collect`／`.sync` は `jmcomic_auth_required` を run ごとに最大 1 回 configured credential login で retry し、recovered session を即時保存し、collection と各 album resolve 後に rotated cookie を checkpoint する。他 error classes は login を発火せず、二度目の auth rejection は clean stop する。System service は initial full sync に 18 時間を許可する。
 - Known platform page domains は generic direct-media または generic HTML resolution に fall through しなくなりました。Stories などの unsupported Instagram page URLs は、HTML 内に偶然出た CDN URL から `instagram_com` media item を作るのではなく、structured `instagram_url_unsupported` skip を返します。Pixiv non-artwork pages と Imgur gallery/album-style pages も同じ `reserved_platform_page` guard を使います。Reddit と Redgifs は以前から full-domain resolvers が所有しており、platform-specific structured skips を返し続けます。
@@ -143,4 +144,4 @@ JMComic `/favorite` は通常 `folder_list` を返し、FID `0` は aggregate Al
 - Localized issue handoffs は現在の英語版 issue state に同期済みです。
 - Localized TODO handoffs は Pixiv `pixiv.auth.login` / OAuth PKCE planning update に対応済みで、authorization-code exchange、credential-file writing、redaction tests、skipped-by-default live browser tests を含みます。
 - 英語、繁体字中国語、日本語の handoff docs は Pixiv first-slice status に同期済みです。
-- default test suite は green です: `uv run --locked python -m unittest discover -s tests` が 323 tests passing です。
+- default test suite は green です: `uv run --locked python -m unittest discover -s tests` が 368 tests passing です。
