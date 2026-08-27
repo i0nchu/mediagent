@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 
-SCHEMA_VERSION = "9"
+SCHEMA_VERSION = "10"
 SQLITE_BUSY_TIMEOUT_MILLISECONDS = 30_000
 
 
@@ -21,6 +21,7 @@ def initialize_database(db_path: Path) -> None:
         _ensure_media_items_schema(connection)
         _ensure_media_files_schema(connection)
         _ensure_link_queue_schema(connection)
+        _ensure_library_content_schema(connection)
         connection.execute(
             """
             INSERT INTO schema_meta (key, value)
@@ -692,7 +693,7 @@ def upsert_media_file(
             """
             SELECT id, media_item_id, file_key, remote_url, local_path, mime_type,
                    size_bytes, checksum, status, library_relative_path, storage_layout,
-                   file_health, source_timestamp, verified_at
+                   file_health, source_timestamp, verified_at, library_entry_id
             FROM media_files
             WHERE media_item_id = ? AND file_key = ?
             """,
@@ -731,9 +732,13 @@ def list_media_files(
             SELECT mf.id, mi.platform, mi.remote_id, mf.file_key, mf.remote_url,
                    mf.local_path, mf.library_relative_path, mf.storage_layout,
                    mf.mime_type, mf.size_bytes, mf.checksum, mf.status,
-                   mf.file_health, mf.source_timestamp, mf.verified_at
+                   mf.file_health, mf.source_timestamp, mf.verified_at,
+                   mf.library_entry_id, le.state AS library_state,
+                   le.trash_path AS library_trash_path,
+                   le.display_name_override
             FROM media_files mf
             JOIN media_items mi ON mi.id = mf.media_item_id
+            LEFT JOIN library_entries le ON le.id = mf.library_entry_id
             {where}
             ORDER BY mf.id
             {limit_sql}
@@ -1351,6 +1356,8 @@ def _ensure_media_files_schema(connection: sqlite3.Connection) -> None:
         connection.execute("ALTER TABLE media_files ADD COLUMN source_timestamp TEXT")
     if "verified_at" not in columns:
         connection.execute("ALTER TABLE media_files ADD COLUMN verified_at TEXT")
+    if "library_entry_id" not in columns:
+        connection.execute("ALTER TABLE media_files ADD COLUMN library_entry_id TEXT")
     connection.execute(
         """
         UPDATE media_files
@@ -1376,6 +1383,68 @@ def _ensure_media_files_schema(connection: sqlite3.Connection) -> None:
         """
         CREATE UNIQUE INDEX IF NOT EXISTS idx_media_files_item_file_key
         ON media_files(media_item_id, file_key)
+        """
+    )
+    connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_media_files_library_entry
+        ON media_files(library_entry_id)
+        """
+    )
+
+
+def _ensure_library_content_schema(connection: sqlite3.Connection) -> None:
+    connection.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS content_blobs (
+            id TEXT PRIMARY KEY,
+            checksum TEXT NOT NULL UNIQUE,
+            size_bytes INTEGER NOT NULL,
+            mime_type TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS library_entries (
+            id TEXT PRIMARY KEY,
+            content_blob_id TEXT NOT NULL,
+            presentation_key TEXT NOT NULL,
+            state TEXT NOT NULL DEFAULT 'active',
+            local_path TEXT NOT NULL,
+            library_relative_path TEXT,
+            display_name_override TEXT,
+            trash_path TEXT,
+            removed_at TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(content_blob_id, presentation_key),
+            UNIQUE(local_path),
+            FOREIGN KEY(content_blob_id) REFERENCES content_blobs(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS library_operations (
+            id TEXT PRIMARY KEY,
+            operation_type TEXT NOT NULL,
+            library_entry_id TEXT NOT NULL,
+            state TEXT NOT NULL,
+            original_path TEXT,
+            target_path TEXT,
+            reason TEXT,
+            external_ref TEXT,
+            metadata_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL,
+            completed_at TEXT,
+            FOREIGN KEY(library_entry_id) REFERENCES library_entries(id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_library_entries_blob
+        ON library_entries(content_blob_id);
+
+        CREATE INDEX IF NOT EXISTS idx_library_entries_state
+        ON library_entries(state);
+
+        CREATE INDEX IF NOT EXISTS idx_library_operations_entry
+        ON library_operations(library_entry_id, created_at);
         """
     )
 

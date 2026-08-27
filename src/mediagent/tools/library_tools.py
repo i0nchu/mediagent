@@ -74,6 +74,8 @@ async def library_file_verify(context: ToolContext, input_data: dict[str, Any]) 
         status=input_data.get("status", "downloaded"),
         limit=input_data.get("limit"),
     )
+    removed_records = [record for record in records if record.get("library_state") == "removed"]
+    records = [record for record in records if record.get("library_state") != "removed"]
     summary = {value: 0 for value in sorted(FILE_HEALTH_VALUES)}
     checked = []
     for record in records:
@@ -100,7 +102,7 @@ async def library_file_verify(context: ToolContext, input_data: dict[str, Any]) 
         {
             "db_path": str(db_path),
             "library_root": str(library_root),
-            "summary": {"checked": len(records), **summary},
+            "summary": {"checked": len(records), "removed_skipped": len(removed_records), **summary},
             "files": checked,
             "dry_run": context.dry_run,
         }

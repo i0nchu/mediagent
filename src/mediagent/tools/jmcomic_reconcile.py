@@ -11,7 +11,7 @@ from typing import Any
 from xml.etree import ElementTree
 from zipfile import BadZipFile, ZipFile
 
-from mediagent.core import db
+from mediagent.core import db, library_content
 from mediagent.core.comics import (
     CBZ_MIME_TYPE,
     CBZ_STORAGE_LAYOUT,
@@ -507,6 +507,7 @@ def _commit_rebuilt_archive(*, db_path: Path, action: dict[str, Any], package: d
     now = datetime.now(UTC).isoformat()
     item_id = int(action["item"]["id"])
     archive_record = action.get("archive_record")
+    file_id: int
     with db.connect(db_path) as connection:
         connection.execute("BEGIN IMMEDIATE")
         connection.execute(
@@ -514,6 +515,7 @@ def _commit_rebuilt_archive(*, db_path: Path, action: dict[str, Any], package: d
             (json.dumps(action["item"]["metadata"], sort_keys=True), now, item_id),
         )
         if archive_record is not None:
+            file_id = int(archive_record["id"])
             connection.execute(
                 """
                 UPDATE media_files
@@ -538,7 +540,7 @@ def _commit_rebuilt_archive(*, db_path: Path, action: dict[str, Any], package: d
                 ),
             )
         else:
-            connection.execute(
+            cursor = connection.execute(
                 """
                 INSERT INTO media_files (
                     media_item_id, file_key, remote_url, local_path, mime_type,
@@ -564,3 +566,5 @@ def _commit_rebuilt_archive(*, db_path: Path, action: dict[str, Any], package: d
                     now,
                 ),
             )
+            file_id = int(cursor.lastrowid)
+    library_content.adopt_media_file(db_path, file_id=file_id)

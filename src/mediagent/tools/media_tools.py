@@ -5,8 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from mediagent.core import db
-from mediagent.core.filesystem import resolve_placeholders
+from mediagent.core import db, library_content
+from mediagent.core.filesystem import PathSafetyError, ensure_inside, resolve_placeholders
 from mediagent.core.redaction import redact_secrets
 from mediagent.core.sync import MEDIA_ITEM_STATUSES
 from mediagent.core.tooling import (
@@ -254,6 +254,15 @@ async def file_upsert(context: ToolContext, input_data: dict[str, Any]) -> ToolR
     }
     if context.dry_run:
         return ToolResult.success({"db_path": str(db_path), "would_upsert": record})
+    if record["status"] == "downloaded" and record.get("local_path") and record.get("checksum"):
+        try:
+            local_path = Path(
+                resolve_placeholders(str(record["local_path"]), context.env)
+            ).expanduser().resolve()
+            ensure_inside(local_path, context.allowed_write_roots())
+            record["local_path"] = str(local_path)
+        except PathSafetyError as exc:
+            return ToolResult.failure("unsafe_path", str(exc), category=ErrorCategory.FILESYSTEM)
     db.initialize_database(db_path)
     try:
         result = db.upsert_media_file(db_path, **record)
@@ -262,6 +271,28 @@ async def file_upsert(context: ToolContext, input_data: dict[str, Any]) -> ToolR
             "unknown_media_item",
             str(exc),
             category=ErrorCategory.DATABASE,
+        )
+    try:
+        if record["status"] == "downloaded" and record.get("local_path") and record.get("checksum"):
+            adoption = library_content.adopt_media_file(db_path, file_id=int(result["id"]))
+            if adoption.get("adopted"):
+                result["local_path"] = adoption.get("target_path")
+                result["library_relative_path"] = adoption.get("library_relative_path")
+                result["library_entry_id"] = adoption.get("entry_id")
+                result["deduplicated"] = adoption.get("deduplicated", False)
+                result["hardlinked"] = adoption.get("hardlinked", False)
+    except ValueError as exc:
+        return ToolResult.failure(
+            "library_content_conflict",
+            str(exc),
+            category=ErrorCategory.FILESYSTEM,
+        )
+    except OSError as exc:
+        return ToolResult.failure(
+            "library_content_failed",
+            str(exc),
+            details={"exception_type": type(exc).__name__},
+            category=ErrorCategory.FILESYSTEM,
         )
     return ToolResult.success({"db_path": str(db_path), "file": result})
 

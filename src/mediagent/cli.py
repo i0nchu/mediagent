@@ -69,6 +69,36 @@ def build_parser() -> argparse.ArgumentParser:
     link_sync.add_argument("--dry-run", action="store_true", help="Run without tool side effects.")
     link_sync.set_defaults(handler=handle_link_sync)
 
+    library = subcommands.add_parser("library", help="Manage Mediagent-tracked library content.")
+    library_commands = library.add_subparsers(dest="library_command")
+
+    library_dedupe = library_commands.add_parser("deduplicate", help="Globally deduplicate tracked file content.")
+    library_dedupe.add_argument("--db-path", default=None, help="SQLite database path. Defaults to MEDIAGENT_DB_PATH.")
+    library_dedupe.add_argument("--library-root", default=None, help="Managed library root.")
+    library_dedupe.add_argument("--dry-run", action="store_true", help="Hash and report without changing files or SQLite.")
+    library_dedupe.add_argument("--json", action="store_true", help="Emit machine-readable JSON.")
+    library_dedupe.set_defaults(handler=handle_library_deduplicate)
+
+    library_remove = library_commands.add_parser("remove", help="Move one managed library entry to Mediagent trash.")
+    _add_library_selector_arguments(library_remove)
+    library_remove.add_argument("--reason", default=None, help="Optional audit reason.")
+    library_remove.add_argument("--external-ref", default=None, help="Optional external-system identifier.")
+    library_remove.add_argument("--json", action="store_true", help="Emit machine-readable JSON.")
+    library_remove.set_defaults(handler=handle_library_remove)
+
+    library_restore = library_commands.add_parser("restore", help="Restore one removed managed library entry.")
+    _add_library_selector_arguments(library_restore, include_path=True)
+    library_restore.add_argument("--removal-id", default=None, help="Removal operation identifier.")
+    library_restore.add_argument("--json", action="store_true", help="Emit machine-readable JSON.")
+    library_restore.set_defaults(handler=handle_library_restore)
+
+    library_rename = library_commands.add_parser("rename", help="Rename one active managed library entry.")
+    _add_library_selector_arguments(library_rename)
+    library_rename.add_argument("--name", required=True, help="New display/file name; the existing extension is retained.")
+    library_rename.add_argument("--external-ref", default=None, help="Optional external-system identifier.")
+    library_rename.add_argument("--json", action="store_true", help="Emit machine-readable JSON.")
+    library_rename.set_defaults(handler=handle_library_rename)
+
     tools = subcommands.add_parser("tools", help="Inspect and run agent-callable tools.")
     tool_commands = tools.add_subparsers(dest="tools_command")
 
@@ -207,6 +237,59 @@ def handle_link_sync(args: argparse.Namespace) -> int:
         json_output=args.json,
         summary_json=False,
         dry_run=args.dry_run,
+    )
+
+
+def _add_library_selector_arguments(parser: argparse.ArgumentParser, *, include_path: bool = True) -> None:
+    selector = parser.add_mutually_exclusive_group()
+    if include_path:
+        selector.add_argument("--path", default=None, help="Managed library file path.")
+    selector.add_argument("--entry-id", default=None, help="Stable Mediagent library entry identifier.")
+    parser.add_argument("--db-path", default=None, help="SQLite database path. Defaults to MEDIAGENT_DB_PATH.")
+    parser.add_argument("--library-root", default=None, help="Managed library root.")
+
+
+def _library_input(args: argparse.Namespace, *names: str) -> dict[str, Any]:
+    return {name: getattr(args, name) for name in names if getattr(args, name, None) is not None}
+
+
+def handle_library_deduplicate(args: argparse.Namespace) -> int:
+    return run_tool_command(
+        tool="library.content.deduplicate",
+        input_data=_library_input(args, "db_path", "library_root"),
+        json_output=args.json,
+        summary_json=False,
+        dry_run=args.dry_run,
+    )
+
+
+def handle_library_remove(args: argparse.Namespace) -> int:
+    return run_tool_command(
+        tool="library.entry.remove",
+        input_data=_library_input(args, "db_path", "library_root", "path", "entry_id", "reason", "external_ref"),
+        json_output=args.json,
+        summary_json=False,
+        dry_run=False,
+    )
+
+
+def handle_library_restore(args: argparse.Namespace) -> int:
+    return run_tool_command(
+        tool="library.entry.restore",
+        input_data=_library_input(args, "db_path", "library_root", "path", "entry_id", "removal_id"),
+        json_output=args.json,
+        summary_json=False,
+        dry_run=False,
+    )
+
+
+def handle_library_rename(args: argparse.Namespace) -> int:
+    return run_tool_command(
+        tool="library.entry.rename",
+        input_data=_library_input(args, "db_path", "library_root", "path", "entry_id", "name", "external_ref"),
+        json_output=args.json,
+        summary_json=False,
+        dry_run=False,
     )
 
 

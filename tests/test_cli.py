@@ -6,6 +6,8 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from mediagent.core import db, library_content
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -159,9 +161,94 @@ class CliTests(unittest.TestCase):
         payload = json.loads(completed.stdout)
         self.assertEqual(payload["status"], "success")
 
-    def run_cli(self, *args: str, input_text: str | None = None) -> subprocess.CompletedProcess[str]:
+    def test_library_cli_deduplicate_rename_remove_restore_workflow(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            data_dir = Path(temp_dir) / "data"
+            library_root = Path(temp_dir) / "library"
+            db_path = data_dir / "mediagent.sqlite3"
+            source = library_root / "photo/original.jpg"
+            source.parent.mkdir(parents=True)
+            source.write_bytes(b"cli-library-content")
+            db.initialize_database(db_path)
+            db.upsert_media_item(
+                db_path,
+                {"platform": "pixiv", "remote_id": "cli-one", "media_type": "photo"},
+            )
+            file_record = db.upsert_media_file(
+                db_path,
+                platform="pixiv",
+                remote_id="cli-one",
+                remote_url="https://example.invalid/cli-one.jpg",
+                local_path=str(source),
+                mime_type="image/jpeg",
+                size_bytes=source.stat().st_size,
+                checksum=library_content.sha256_checksum(source)[0],
+                status="downloaded",
+                library_relative_path="photo/original.jpg",
+            )
+            library_content.adopt_media_file(db_path, file_id=file_record["id"])
+            env_updates = {
+                "MEDIAGENT_DATA_DIR": str(data_dir),
+                "MEDIAGENT_LIBRARY_DIR": str(library_root),
+                "MEDIAGENT_DB_PATH": str(db_path),
+            }
+
+            preview = self.run_cli(
+                "library",
+                "deduplicate",
+                "--dry-run",
+                "--json",
+                env_updates=env_updates,
+            )
+            renamed = self.run_cli(
+                "library",
+                "rename",
+                "--path",
+                str(source),
+                "--name",
+                "renamed",
+                "--json",
+                env_updates=env_updates,
+            )
+            renamed_payload = json.loads(renamed.stdout)
+            renamed_path = Path(renamed_payload["data"]["new_path"])
+            removed = self.run_cli(
+                "library",
+                "remove",
+                "--path",
+                str(renamed_path),
+                "--reason",
+                "cli test",
+                "--json",
+                env_updates=env_updates,
+            )
+            removed_payload = json.loads(removed.stdout)
+            restored = self.run_cli(
+                "library",
+                "restore",
+                "--removal-id",
+                removed_payload["data"]["removal_id"],
+                "--json",
+                env_updates=env_updates,
+            )
+
+            self.assertEqual(preview.returncode, 0, preview.stderr)
+            self.assertTrue(json.loads(preview.stdout)["data"]["dry_run"])
+            self.assertEqual(renamed.returncode, 0, renamed.stderr)
+            self.assertTrue(renamed_path.is_file())
+            self.assertEqual(removed.returncode, 0, removed.stderr)
+            self.assertEqual(restored.returncode, 0, restored.stderr)
+            self.assertTrue(renamed_path.is_file())
+
+    def run_cli(
+        self,
+        *args: str,
+        input_text: str | None = None,
+        env_updates: dict[str, str] | None = None,
+    ) -> subprocess.CompletedProcess[str]:
         env = os.environ.copy()
         env["PYTHONPATH"] = str(PROJECT_ROOT / "src")
+        env.update(env_updates or {})
         return subprocess.run(
             [sys.executable, "-m", "mediagent", *args],
             input=input_text,

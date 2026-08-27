@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from mediagent.core import db
+from mediagent.core import db, library_content
 from mediagent.core.comics import (
     CBZ_MIME_TYPE,
     CBZ_STORAGE_LAYOUT,
@@ -482,12 +482,19 @@ def _select_pixiv_items(db_path: Path) -> list[dict[str, Any]]:
         ).fetchall()
         file_rows = connection.execute(
             """
-            SELECT id, media_item_id, file_key, remote_url, local_path,
-                   library_relative_path, storage_layout, mime_type, status,
-                   file_health, size_bytes, checksum
-            FROM media_files
-            WHERE media_item_id IN (SELECT id FROM media_items WHERE platform = 'pixiv')
-            ORDER BY media_item_id, id
+            SELECT mf.id, mf.media_item_id, mf.file_key, mf.remote_url,
+                   mf.local_path, mf.library_relative_path, mf.storage_layout,
+                   mf.mime_type, mf.status, mf.file_health, mf.size_bytes,
+                   mf.checksum, mf.library_entry_id,
+                   le.state AS library_state,
+                   le.trash_path AS library_trash_path,
+                   le.display_name_override
+            FROM media_files mf
+            LEFT JOIN library_entries le ON le.id = mf.library_entry_id
+            WHERE mf.media_item_id IN (
+                SELECT id FROM media_items WHERE platform = 'pixiv'
+            )
+            ORDER BY mf.media_item_id, mf.id
             """
         ).fetchall()
     files_by_item: dict[int, list[dict[str, Any]]] = {}
@@ -549,8 +556,30 @@ def _comic_package_plan(
     migrate_legacy: bool,
     refresh_tracked: bool = False,
 ) -> dict[str, Any]:
-    relative_path = comic_archive_relative_path(item=item, include_platform_layer=include_platform_layer)
-    target_path = (library_root / relative_path).resolve()
+    cbz_records = [record for record in item["files"] if _is_cbz_file(record)]
+    removed_cbz = next(
+        (record for record in cbz_records if record.get("library_state") == "removed"),
+        None,
+    )
+    renamed_cbz = next(
+        (
+            record
+            for record in cbz_records
+            if record.get("library_state") == "active"
+            and str(record.get("display_name_override") or "").strip()
+            and record.get("local_path")
+        ),
+        None,
+    )
+    if renamed_cbz is not None:
+        target_path = Path(str(renamed_cbz["local_path"])).expanduser().resolve()
+        try:
+            relative_path = target_path.relative_to(library_root)
+        except ValueError:
+            relative_path = Path(str(renamed_cbz.get("library_relative_path") or target_path.name))
+    else:
+        relative_path = comic_archive_relative_path(item=item, include_platform_layer=include_platform_layer)
+        target_path = (library_root / relative_path).resolve()
     plan = {
         "item": item,
         "remote_id": item["remote_id"],
@@ -560,6 +589,9 @@ def _comic_package_plan(
         "page_count": 0,
         "target_path": str(target_path),
         "relative_path": relative_path.as_posix(),
+        "display_name_override": (
+            str(renamed_cbz.get("display_name_override")) if renamed_cbz is not None else None
+        ),
         "legacy_cbz": [],
     }
     try:
@@ -576,8 +608,11 @@ def _comic_package_plan(
         plan["status"] = "incomplete"
         plan["reason"] = f"item_status:{item.get('status')}"
         return plan
+    if removed_cbz is not None:
+        plan["status"] = "skipped"
+        plan["reason"] = "comic archive was explicitly removed"
+        return plan
 
-    cbz_records = [record for record in item["files"] if _is_cbz_file(record)]
     existing_cbz = next(
         (
             record
@@ -760,14 +795,15 @@ def _apply_comic_package(
             "pages": plan["page_count"],
         }
     else:
+        package_item = _item_with_display_override(item, plan.get("display_name_override"))
         package = build_cbz_atomic(
             target_path=Path(plan["target_path"]),
             pages=plan["pages"],
-            item=item,
+            item=package_item,
             allowed_root=library_root,
         )
         source_dt, _ = source_datetime(item, {})
-        db.upsert_media_file(
+        file_record = db.upsert_media_file(
             db_path,
             platform=item["platform"],
             remote_id=item["remote_id"],
@@ -784,11 +820,29 @@ def _apply_comic_package(
             verified_at=datetime.now(UTC).isoformat(),
             file_key="archive:cbz" if item["platform"] != "pixiv" else None,
         )
+        adoption = library_content.adopt_media_file(db_path, file_id=int(file_record["id"]))
+        if adoption.get("target_path"):
+            package["target_path"] = adoption["target_path"]
+            package["deduplicated"] = adoption.get("deduplicated", False)
+            package["hardlinked"] = adoption.get("hardlinked", False)
     quarantined = _quarantine_legacy_cbz(db_path=db_path, entries=plan.get("legacy_cbz", []))
     package["legacy_cbz_retired"] = len(plan.get("legacy_cbz", []))
     package["legacy_cbz_quarantined"] = len(quarantined)
     package["legacy_quarantine_paths"] = quarantined
     return package
+
+
+def _item_with_display_override(item: dict[str, Any], display_name: Any) -> dict[str, Any]:
+    title = str(display_name or "").strip()
+    if not title:
+        return item
+    overridden = dict(item)
+    metadata = dict(item.get("metadata") or {})
+    comic = dict(metadata.get("comic") or {})
+    comic["title"] = title
+    metadata["comic"] = comic
+    overridden["metadata"] = metadata
+    return overridden
 
 
 def _quarantine_legacy_cbz(*, db_path: Path, entries: list[dict[str, Any]]) -> list[str]:

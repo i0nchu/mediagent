@@ -1149,7 +1149,19 @@ def _load_comic_items(db_path: Path, identities: set[tuple[str, str]]) -> list[d
             placeholders = ",".join("?" for _ in item_id_batch)
             file_rows.extend(
                 connection.execute(
-                    f"SELECT id, media_item_id, file_key, remote_url, local_path, mime_type, size_bytes, checksum, status, library_relative_path, storage_layout, file_health, source_timestamp, verified_at FROM media_files WHERE media_item_id IN ({placeholders}) ORDER BY id",
+                    f"""
+                    SELECT mf.id, mf.media_item_id, mf.file_key, mf.remote_url,
+                           mf.local_path, mf.mime_type, mf.size_bytes, mf.checksum,
+                           mf.status, mf.library_relative_path, mf.storage_layout,
+                           mf.file_health, mf.source_timestamp, mf.verified_at,
+                           mf.library_entry_id, le.state AS library_state,
+                           le.trash_path AS library_trash_path,
+                           le.display_name_override
+                    FROM media_files mf
+                    LEFT JOIN library_entries le ON le.id = mf.library_entry_id
+                    WHERE mf.media_item_id IN ({placeholders})
+                    ORDER BY mf.id
+                    """,
                     item_id_batch,
                 ).fetchall()
             )

@@ -10,7 +10,7 @@ from collections.abc import Callable
 from typing import Any
 from urllib.parse import urlparse
 
-from mediagent.core import db
+from mediagent.core import db, library_content
 from mediagent.core.comics import IGNORED_COMIC_SPACER_HEALTH
 from mediagent.core.filesystem import PathSafetyError, ensure_inside, normalize_path, resolve_placeholders
 from mediagent.core.links import (
@@ -304,6 +304,8 @@ async def media_sync(context: ToolContext, input_data: dict[str, Any]) -> ToolRe
         "partial": 0,
         "failed": 0,
         "files_downloaded": 0,
+        "files_deduplicated": 0,
+        "dedup_bytes_reclaimed": 0,
         "files_failed": 0,
         "bytes_written": 0,
         "comic_links_considered": 0,
@@ -396,6 +398,8 @@ async def media_sync(context: ToolContext, input_data: dict[str, Any]) -> ToolRe
         item_results.append(result)
         summary[result["status"]] += 1
         summary["files_downloaded"] += result["files_downloaded"]
+        summary["files_deduplicated"] += result.get("files_deduplicated", 0)
+        summary["dedup_bytes_reclaimed"] += result.get("dedup_bytes_reclaimed", 0)
         summary["files_failed"] += result["files_failed"]
         summary["bytes_written"] += result["bytes_written"]
         if item.get("_repair"):
@@ -797,7 +801,9 @@ def _repair_assessment(db_path: Path, item: dict[str, Any]) -> dict[str, Any]:
             health = str(record.get("file_health") or "unknown")
             status = str(record.get("status") or "")
             local_path = record.get("local_path")
-            if status == "skipped" and health == IGNORED_COMIC_SPACER_HEALTH:
+            if record.get("library_state") == "removed":
+                pass
+            elif status == "skipped" and health == IGNORED_COMIC_SPACER_HEALTH:
                 pass
             elif health == "corrupt":
                 reason = "corrupt_file"
@@ -870,6 +876,8 @@ async def _sync_one_link_item(
         "files_total": len(files),
         "files_downloaded": 0,
         "files_skipped": 0,
+        "files_deduplicated": 0,
+        "dedup_bytes_reclaimed": 0,
         "files_failed": 0,
         "bytes_written": 0,
         "artifacts": [],
@@ -902,6 +910,15 @@ async def _sync_one_link_item(
             result["files_failed"] += 1
             result["errors"].append(_file_error(file_info, "unsafe_path", str(exc)))
             continue
+        if overwrite:
+            try:
+                library_content.ensure_target_write_safe(db_path, target_path)
+            except ValueError as exc:
+                result["files_failed"] += 1
+                result["errors"].append(
+                    _file_error(file_info, "shared_content_write_conflict", str(exc))
+                )
+                continue
         if target_path.exists() and not overwrite:
             if not _path_known_to_item(db_path, item, file_info, target_path):
                 _record_failed_link_file(
@@ -918,9 +935,10 @@ async def _sync_one_link_item(
                 )
                 continue
             file_record = _existing_file_record(db_path, item, file_info, plan)
+            final_target = Path(str(file_record.get("local_path") or target_path))
             result["files_downloaded"] += 1
             result["bytes_written"] += file_record.get("size_bytes") or 0
-            result["artifacts"].append(str(target_path))
+            result["artifacts"].append(str(final_target))
             continue
         download_result = _download_file_safely(
             context,
@@ -956,7 +974,7 @@ async def _sync_one_link_item(
                     f"Ignored non-content JMComic spacer at page {int(file_info.get('page', 0)) + 1}."
                 )
                 continue
-            db.upsert_media_file(
+            file_record = db.upsert_media_file(
                 db_path,
                 platform=platform,
                 remote_id=remote_id,
@@ -973,15 +991,22 @@ async def _sync_one_link_item(
                 verified_at=datetime.now(UTC).isoformat(),
                 file_key=_stable_file_key(file_info),
             )
+            adoption = library_content.adopt_media_file(db_path, file_id=int(file_record["id"]))
+            final_target = Path(str(adoption.get("target_path") or download_result.data["target_path"]))
+            if adoption.get("deduplicated"):
+                result["files_deduplicated"] += 1
+                result["dedup_bytes_reclaimed"] += int(adoption.get("bytes_reclaimed") or 0)
             result["files_downloaded"] += 1
             result["bytes_written"] += download_result.data.get("size_bytes") or 0
-            result["artifacts"].append(download_result.data["target_path"])
-            if write_sidecar_metadata:
+            result["artifacts"].append(str(final_target))
+            if write_sidecar_metadata and adoption.get("deduplicated"):
+                result["warnings"].append("Skipped source-specific sidecar for globally deduplicated content.")
+            elif write_sidecar_metadata:
                 metadata_result = await _write_sidecar_metadata(
                     context,
                     item=item,
                     file_info=file_info,
-                    target_path=target_path,
+                    target_path=final_target,
                     overwrite=overwrite,
                 )
                 result["warnings"].extend(metadata_result["warnings"])
@@ -1315,7 +1340,7 @@ def _existing_file_record(
     target_path = plan.final_path
     content = target_path.read_bytes()
     checksum = hashlib.sha256(content).hexdigest()
-    return db.upsert_media_file(
+    record = db.upsert_media_file(
         db_path,
         platform=item["platform"],
         remote_id=item["remote_id"],
@@ -1332,6 +1357,13 @@ def _existing_file_record(
         verified_at=datetime.now(UTC).isoformat(),
         file_key=_stable_file_key(file_info),
     )
+    adoption = library_content.adopt_media_file(db_path, file_id=int(record["id"]))
+    if adoption.get("adopted"):
+        record["local_path"] = adoption.get("target_path")
+        record["library_relative_path"] = adoption.get("library_relative_path")
+        record["library_entry_id"] = adoption.get("entry_id")
+        record["deduplicated"] = adoption.get("deduplicated", False)
+    return record
 
 
 def _path_known_to_item(

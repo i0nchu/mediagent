@@ -853,6 +853,101 @@ class ComicToolTests(unittest.TestCase):
         self.assertTrue(second.is_success, second.to_dict())
         self.assertEqual(names, ["001.png", "002.png", "ComicInfo.xml"])
 
+    def test_renamed_cbz_keeps_path_and_title_after_manifest_rebuild(self) -> None:
+        registry = create_default_registry()
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            library = root / "library"
+            database = root / "state.sqlite3"
+            context = ToolContext.from_env(
+                cwd=root,
+                env={
+                    "MEDIAGENT_DATA_DIR": str(root),
+                    "MEDIAGENT_LIBRARY_DIR": str(library),
+                    "MEDIAGENT_DB_PATH": str(database),
+                },
+                http_client=ImageHttpClient(_png_bytes()),
+            )
+            first = asyncio.run(comic_tools._sync_items(context, {}, [_comic_item()]))
+            original_cbz = next(
+                record
+                for record in db.list_media_files(database, platform="nhentai", remote_id="gallery:123")
+                if record["mime_type"] == "application/vnd.comicbook+zip"
+            )
+            renamed = asyncio.run(
+                registry.run(
+                    "library.entry.rename",
+                    {"path": original_cbz["local_path"], "name": "My Renamed Chapter"},
+                    context,
+                )
+            )
+            changed = _comic_item()
+            changed["metadata"]["page_count"] = 2
+            changed["metadata"]["files"].append(
+                {
+                    "url": "https://1.1.1.1/page-2.png",
+                    "kind": "image",
+                    "page": 1,
+                    "page_number": 2,
+                    "mime_type": "image/png",
+                    "extension": ".png",
+                    "storage_category": "comic-pages",
+                }
+            )
+            rebuilt = asyncio.run(comic_tools._sync_items(context, {}, [changed]))
+            rebuilt_path = Path(rebuilt.data["packages"][0]["target_path"])
+            cbz_records = [
+                record
+                for record in db.list_media_files(database, platform="nhentai", remote_id="gallery:123")
+                if record["mime_type"] == "application/vnd.comicbook+zip"
+            ]
+            with zipfile.ZipFile(rebuilt_path) as archive:
+                comic_info = archive.read("ComicInfo.xml").decode("utf-8")
+
+        self.assertTrue(first.is_success)
+        self.assertTrue(renamed.is_success, renamed.to_dict())
+        self.assertTrue(rebuilt.is_success, rebuilt.to_dict())
+        self.assertEqual(rebuilt_path.name, "My Renamed Chapter.cbz")
+        self.assertIn("<Title>My Renamed Chapter</Title>", comic_info)
+        self.assertEqual(len(cbz_records), 1)
+        self.assertEqual(cbz_records[0]["local_path"], str(rebuilt_path))
+        self.assertEqual(cbz_records[0]["display_name_override"], "My Renamed Chapter")
+
+    def test_removed_cbz_is_not_repackaged_by_later_sync(self) -> None:
+        registry = create_default_registry()
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            database = root / "state.sqlite3"
+            context = ToolContext.from_env(
+                cwd=root,
+                env={
+                    "MEDIAGENT_DATA_DIR": str(root),
+                    "MEDIAGENT_LIBRARY_DIR": str(root / "library"),
+                    "MEDIAGENT_DB_PATH": str(database),
+                },
+                http_client=ImageHttpClient(_png_bytes()),
+            )
+            first = asyncio.run(comic_tools._sync_items(context, {}, [_comic_item()]))
+            cbz_record = next(
+                record
+                for record in db.list_media_files(database, platform="nhentai", remote_id="gallery:123")
+                if record["mime_type"] == "application/vnd.comicbook+zip"
+            )
+            removed = asyncio.run(
+                registry.run("library.entry.remove", {"path": cbz_record["local_path"]}, context)
+            )
+            rerun = asyncio.run(comic_tools._sync_items(context, {}, [_comic_item()]))
+            original_exists = Path(removed.data["original_path"]).exists()
+            trash_exists = Path(removed.data["trash_path"]).is_file()
+
+        self.assertTrue(first.is_success)
+        self.assertTrue(removed.is_success, removed.to_dict())
+        self.assertTrue(rerun.is_success, rerun.to_dict())
+        self.assertEqual(rerun.data["packages"][0]["status"], "skipped")
+        self.assertEqual(rerun.data["packages"][0]["reason"], "comic archive was explicitly removed")
+        self.assertFalse(original_exists)
+        self.assertTrue(trash_exists)
+
     def test_removed_manifest_page_rebuilds_cbz_without_deleting_old_source(self) -> None:
         with TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
