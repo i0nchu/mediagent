@@ -79,6 +79,24 @@ def build_parser() -> argparse.ArgumentParser:
     library_dedupe.add_argument("--json", action="store_true", help="Emit machine-readable JSON.")
     library_dedupe.set_defaults(handler=handle_library_deduplicate)
 
+    library_reconcile_trash = library_commands.add_parser(
+        "reconcile-trash",
+        help="Import verified pre-v10 trash as removed library state.",
+    )
+    library_reconcile_trash.add_argument(
+        "--db-path",
+        default=None,
+        help="SQLite database path. Defaults to MEDIAGENT_DB_PATH.",
+    )
+    library_reconcile_trash.add_argument("--library-root", default=None, help="Managed library root.")
+    library_reconcile_trash.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Verify and report legacy trash without changing SQLite.",
+    )
+    library_reconcile_trash.add_argument("--json", action="store_true", help="Emit machine-readable JSON.")
+    library_reconcile_trash.set_defaults(handler=handle_library_reconcile_trash)
+
     library_remove = library_commands.add_parser("remove", help="Move one managed library entry to Mediagent trash.")
     _add_library_selector_arguments(library_remove)
     library_remove.add_argument("--reason", default=None, help="Optional audit reason.")
@@ -256,6 +274,16 @@ def _library_input(args: argparse.Namespace, *names: str) -> dict[str, Any]:
 def handle_library_deduplicate(args: argparse.Namespace) -> int:
     return run_tool_command(
         tool="library.content.deduplicate",
+        input_data=_library_input(args, "db_path", "library_root"),
+        json_output=args.json,
+        summary_json=False,
+        dry_run=args.dry_run,
+    )
+
+
+def handle_library_reconcile_trash(args: argparse.Namespace) -> int:
+    return run_tool_command(
+        tool="library.trash.reconcile",
         input_data=_library_input(args, "db_path", "library_root"),
         json_output=args.json,
         summary_json=False,

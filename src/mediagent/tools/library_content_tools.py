@@ -38,6 +38,23 @@ def definitions() -> list[ToolDefinition]:
         ),
         ToolDefinition(
             spec=ToolSpec(
+                name="library.trash.reconcile",
+                description="Import verified pre-v10 trash files as explicit removed library entries.",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "db_path": {"type": "string"},
+                        "library_root": {"type": "string"},
+                    },
+                },
+                output_schema={"type": "object"},
+                permissions=(Permission.READ_DB, Permission.WRITE_DB, Permission.READ_FILES),
+                dry_run_supported=True,
+            ),
+            handler=reconcile_legacy_trash,
+        ),
+        ToolDefinition(
+            spec=ToolSpec(
                 name="library.entry.remove",
                 description="Move one managed scanner-visible library entry to Mediagent trash and suppress resync.",
                 input_schema={
@@ -118,6 +135,40 @@ def deduplicate_content(context: ToolContext, input_data: dict[str, Any]) -> Too
     except (OSError, ValueError) as exc:
         return ToolResult.failure(
             "library_dedup_failed",
+            str(exc),
+            details={"exception_type": type(exc).__name__},
+            category=ErrorCategory.FILESYSTEM,
+        )
+
+
+def reconcile_legacy_trash(context: ToolContext, input_data: dict[str, Any]) -> ToolResult:
+    resolved = _paths(context, input_data, require_library_root=True)
+    if isinstance(resolved, ToolResult):
+        return resolved
+    db_path, explicit_root = resolved
+    if not db_path.exists():
+        return ToolResult.failure("missing_db", "Database does not exist.", category=ErrorCategory.DATABASE)
+    library_root = explicit_root or default_library_root(
+        data_dir=context.data_dir,
+        library_dir=context.library_dir,
+    )
+    try:
+        ensure_inside(library_root, context.allowed_write_roots())
+        plan = library_content.legacy_trash_plan(db_path, library_root=library_root)
+        if context.dry_run:
+            return ToolResult.success({"dry_run": True, "plan": plan})
+        if plan.get("blocked"):
+            return ToolResult.failure(
+                "legacy_trash_reconcile_blocked",
+                "Legacy trash reconciliation is blocked; review the dry-run report.",
+                data={"dry_run": False, "plan": plan},
+                category=ErrorCategory.FILESYSTEM,
+            )
+        applied = library_content.apply_legacy_trash_plan(db_path, plan)
+        return ToolResult.success({"dry_run": False, "plan": applied})
+    except (OSError, ValueError) as exc:
+        return ToolResult.failure(
+            "legacy_trash_reconcile_failed",
             str(exc),
             details={"exception_type": type(exc).__name__},
             category=ErrorCategory.FILESYSTEM,

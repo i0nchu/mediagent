@@ -2,10 +2,12 @@
 
 ## 2026-08-27 全域內容識別與 Library 操作
 
+- Schema v10 與 commit `340b406` 已部署到 Production，所有 Mediagent timers 目前停止。遷移前 schema-v9 備份是 `/data/services/mediagent/data/backups/mediagent.sqlite3.pre-v10.20260827T141834Z.bak`；遷移保留 2,817 個 media items 與 91,455 個 media files，SQLite integrity check 通過。
 - 開發位於 `codex/global-content-dedup-library-ops`；本節只代表本機實作與離線測試，尚未部署或操作 Production。
 - SQLite schema v10 新增 SHA-256 `content_blobs`、scanner-visible `library_entries`、可稽核的 `library_operations`，以及 `media_files.library_entry_id`。
 - 所有 managed download 成功後都會加入全域內容識別。一般照片／影片／音訊的相同內容會收斂成一個可被掃描的路徑，但 SQLite 仍保留每個來源；漫畫頁與 CBZ 保留不同閱讀脈絡，檔案系統支援時以 hard link 做實體去重。
 - `library.content.deduplicate` 提供完整 tracked-library SHA-256 掃描；dry-run 不修改檔案或 DB，apply 可安全重跑。
+- 第一次 Production dry-run hash 了 90,629 個現存檔案，找到 32 個一般媒體 collapse paths、428 個漫畫 hard-link candidates，約可回收 491 MB。另有 807 筆 downloaded rows 是被 v10 前的 cleanup 搬到 legacy `.trash`；每筆都有精確 recorded path/size 對應，且沒有任何 active checksum identity 衝突。Branch `codex/legacy-trash-reconcile` 新增 `library.trash.reconcile`，可在 dedup apply 前把它們匯入為明確 removed entry；不移檔、保留較舊重複 trash copies、遇 active identity 衝突會阻擋，且可安全重跑。
 - 已實作一次性的 `mediagent library remove|restore|rename`。Remove 移到 `.trash/mediagent/<removal-id>/` 並抑制 repair/redownload；restore 驗證 checksum；rename 更新名稱，CBZ 也會原子改寫 `ComicInfo.xml`。
 - Remove/restore/rename 不支援 dry-run；planned remove/rename 可在中斷後恢復。尚未實作 trash 到期或 purge。
 - Immich cleanup systemd script 位於本 repo 之外，依使用者指示延後處理。
@@ -97,6 +99,7 @@
 - `download.http`
 - `library.file.verify`
 - `library.content.deduplicate`
+- `library.trash.reconcile`
 - `library.entry.remove`
 - `library.entry.restore`
 - `library.entry.rename`

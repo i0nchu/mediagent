@@ -2,10 +2,11 @@
 
 ## 2026-08-27 Global content identity と library operations
 
-- 開発 branch は `codex/global-content-dedup-library-ops`。ここで述べるのは local implementation/offline tests のみで、Production には未 deploy・未適用。
+- Schema v10 と commit `340b406` は Production に deploy 済みで、全 Mediagent timers は停止中。Migration 前 schema-v9 backup は `/data/services/mediagent/data/backups/mediagent.sqlite3.pre-v10.20260827T141834Z.bak`。Migration は 2,817 media items と 91,455 media files を保持し、SQLite integrity check に通過した。
 - SQLite schema v10 は SHA-256 `content_blobs`、scanner-visible `library_entries`、audit 用 `library_operations`、`media_files.library_entry_id` を追加する。
 - Managed download 成功後は global content identity に adoption する。一般 photo/video/audio の同一内容は一つの scanner-visible path に集約しつつ、SQLite は全 source references を保持する。Comic pages/CBZ は reading context を分離し、filesystem 対応時は hard link で physical dedup する。
 - `library.content.deduplicate` は tracked library 全体の SHA-256 scan を提供する。Dry-run は file/DB を変更せず、apply は rerunnable/idempotent。
+- 最初の Production dry-run は existing 90,629 files を hash し、ordinary collapse paths 32、comic hard-link candidates 428、約 491 MB reclaimable を検出した。さらに pre-v10 cleanup が legacy `.trash` へ移動した downloaded rows 807 件を検出した。全件に exact recorded path/size match があり、active checksum identity conflict は 0。Branch `codex/legacy-trash-reconcile` は dedup apply 前に明示的 removed entry として import する `library.trash.reconcile` を追加する。Files は移動せず、old duplicate trash copies を保持し、active identity conflict を block し、rerunnable である。
 - One-shot `mediagent library remove|restore|rename` を実装済み。Remove は `.trash/mediagent/<removal-id>/` へ移動して repair/redownload を抑止、restore は checksum validation、rename は path/title を更新し CBZ の `ComicInfo.xml` も atomic rewrite する。
 - Remove/restore/rename は dry-run 非対応。Interrupted planned remove/rename は再実行で recovery できる。Trash expiry/purge は未実装。
 - Immich cleanup systemd script は repo 外にあり、user 指示により repo 機能/test 完了後まで延期。
@@ -97,6 +98,7 @@
 - `download.http`
 - `library.file.verify`
 - `library.content.deduplicate`
+- `library.trash.reconcile`
 - `library.entry.remove`
 - `library.entry.restore`
 - `library.entry.rename`

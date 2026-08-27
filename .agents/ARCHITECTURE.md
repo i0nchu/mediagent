@@ -22,7 +22,7 @@ src/mediagent/
 
 - `tooling.py`: `ToolSpec`, `ToolContext`, `ToolResult`, permissions, registry errors, and `ToolRegistry`
 - `db.py`: SQLite schema and persistence helpers
-- `library_content.py`: global SHA-256 content identity, scanner-visible projections, dedup scan/apply, and remove/restore/rename lifecycle
+- `library_content.py`: global SHA-256 content identity, scanner-visible projections, dedup scan/apply, verified legacy-trash reconciliation, and remove/restore/rename lifecycle
 - `filesystem.py`: path placeholder expansion, normalization, and write-boundary checks
 - `http.py`: small HTTP client abstraction for testable downloads
 - `auth.py`: credential references, credential JSON helpers, and redacted auth session models

@@ -2,10 +2,11 @@
 
 ## 2026-08-27 Global Content Identity And Library Operations
 
-- Development is on `codex/global-content-dedup-library-ops`; this section describes local implementation and offline tests only. It has not been deployed or run against Production.
+- Schema v10 and commit `340b406` are deployed to Production with all Mediagent timers stopped. The pre-migration schema-v9 backup is `/data/services/mediagent/data/backups/mediagent.sqlite3.pre-v10.20260827T141834Z.bak`; the migration preserved 2,817 media items and 91,455 media files and passed SQLite integrity checks.
 - SQLite schema v10 adds SHA-256 `content_blobs`, scanner-visible `library_entries`, auditable `library_operations`, and `media_files.library_entry_id`.
 - Managed download paths now adopt every successful media file into global content identity. Ordinary photo/video/audio duplicates collapse to one scanner-visible path while all provider/media-item references remain in SQLite. Comic pages and CBZ files retain separate reading contexts and use hard links for physical deduplication when the filesystem supports them.
 - `library.content.deduplicate` provides a full tracked-library SHA-256 scan. Dry-run hashes and reports duplicate paths, hard-link candidates, missing files, and reclaimable bytes without changing SQLite or files; apply is rerunnable and idempotent.
+- The first Production dry-run hashed 90,629 existing files and found 32 ordinary collapse paths, 428 comic hard-link candidates, and about 491 MB reclaimable. It also found 807 downloaded rows whose files had been moved by pre-v10 cleanup jobs. Every one has an exact recorded path/size match in legacy `.trash`, and none collides with an active checksum identity. Branch `codex/legacy-trash-reconcile` adds `library.trash.reconcile` so those files can become explicit removed entries before dedup apply; it never moves files, retains older duplicate trash copies, blocks active-identity conflicts, and is rerunnable.
 - One-shot `mediagent library remove|restore|rename` commands and matching tools are implemented. Remove moves one logical entry under `.trash/mediagent/<removal-id>/`, updates every attached source reference, and suppresses repair/redownload. Restore checksum-validates and returns to the exact path. Rename updates paths and title override; CBZ rename also rewrites root `ComicInfo.xml` atomically.
 - Remove/restore/rename intentionally do not support dry-run. Planned remove/rename operations can recover safely after an interruption between the filesystem move and SQLite completion. No trash expiry or purge policy is implemented.
 - The external Immich cleanup systemd script is outside this repository and is intentionally deferred until repository implementation and tests are complete.
@@ -98,6 +99,7 @@
 - `download.http`
 - `library.file.verify`
 - `library.content.deduplicate`
+- `library.trash.reconcile`
 - `library.entry.remove`
 - `library.entry.restore`
 - `library.entry.rename`

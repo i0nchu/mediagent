@@ -157,6 +157,185 @@ class LibraryContentToolTests(unittest.TestCase):
             self.assertTrue(repeated.is_success)
             self.assertEqual(repeated.data["plan"]["applied"]["paths_collapsed"], 0)
 
+    def test_legacy_trash_reconcile_imports_removed_state_and_is_idempotent(self) -> None:
+        registry = create_default_registry()
+        with TemporaryDirectory() as temp_dir:
+            root, db_path = self._workspace(temp_dir)
+            original = root / "pixiv/photo/2026/08/legacy.jpg"
+            original.parent.mkdir(parents=True)
+            original.write_bytes(b"legacy-removed-content")
+            record = self._record(db_path, original, platform="pixiv", remote_id="legacy-removed")
+            trash = root / ".trash/2026-08-27/pixiv/photo/2026/08/legacy.jpg"
+            trash.parent.mkdir(parents=True)
+            os.replace(original, trash)
+
+            dry_result = asyncio.run(
+                registry.run(
+                    "library.trash.reconcile",
+                    {},
+                    self._context(temp_dir, root, db_path, dry_run=True),
+                )
+            )
+
+            self.assertTrue(dry_result.is_success)
+            self.assertEqual(dry_result.data["plan"]["summary"]["source_rows_importable"], 1)
+            self.assertEqual(dry_result.data["plan"]["summary"]["blocked_rows"], 0)
+            with db.connect(db_path) as connection:
+                self.assertEqual(connection.execute("SELECT COUNT(*) FROM library_entries").fetchone()[0], 0)
+
+            context = self._context(temp_dir, root, db_path)
+            applied = asyncio.run(registry.run("library.trash.reconcile", {}, context))
+            removal_id = applied.data["plan"]["actions"][0]["removal_id"]
+            repeated = asyncio.run(registry.run("library.trash.reconcile", {}, context))
+            stored = db.list_media_files(db_path, platform="pixiv", remote_id="legacy-removed")[0]
+
+            self.assertTrue(applied.is_success)
+            self.assertEqual(applied.data["plan"]["applied"]["removed_entries_imported"], 1)
+            self.assertEqual(applied.data["plan"]["applied"]["files_moved"], 0)
+            self.assertEqual(stored["library_state"], "removed")
+            self.assertEqual(stored["local_path"], str(trash.resolve()))
+            self.assertEqual(repeated.data["plan"]["summary"]["missing_rows"], 0)
+            self.assertEqual(repeated.data["plan"]["applied"]["removed_entries_imported"], 0)
+            post_import_scan = library_content.scan_plan(db_path)
+            self.assertEqual(post_import_scan["summary"]["trash_files_skipped"], 1)
+            self.assertEqual(post_import_scan["summary"]["missing_files"], 0)
+
+            restored = asyncio.run(
+                registry.run("library.entry.restore", {"removal_id": removal_id}, context)
+            )
+            self.assertTrue(restored.is_success)
+            self.assertTrue(original.is_file())
+            self.assertFalse(trash.exists())
+            self.assertEqual(original.read_bytes(), b"legacy-removed-content")
+            self.assertEqual(record["id"], stored["id"])
+
+    def test_legacy_trash_reconcile_selects_latest_verified_duplicate(self) -> None:
+        registry = create_default_registry()
+        with TemporaryDirectory() as temp_dir:
+            root, db_path = self._workspace(temp_dir)
+            original = root / "pixiv/photo/legacy.jpg"
+            original.parent.mkdir(parents=True)
+            original.write_bytes(b"matching-content")
+            self._record(db_path, original, platform="pixiv", remote_id="legacy-duplicates")
+            older = root / ".trash/pixiv-unbookmarked-old/photo/legacy.jpg"
+            newer = root / ".trash/pixiv-unbookmarked-new/photo/legacy.jpg"
+            mismatch = root / ".trash/pixiv-unbookmarked-wrong/photo/legacy.jpg"
+            older.parent.mkdir(parents=True)
+            newer.parent.mkdir(parents=True)
+            mismatch.parent.mkdir(parents=True)
+            os.replace(original, older)
+            newer.write_bytes(b"matching-content")
+            mismatch.write_bytes(b"wrongggg-content")
+            os.utime(older, ns=(100, 100))
+            os.utime(newer, ns=(200, 200))
+            os.utime(mismatch, ns=(300, 300))
+
+            plan = library_content.legacy_trash_plan(db_path, library_root=root)
+            action = plan["actions"][0]
+
+            self.assertEqual(plan["summary"]["blocked_rows"], 0)
+            self.assertEqual(action["trash_path"], str(newer.resolve()))
+            self.assertEqual(action["duplicate_candidate_paths"], [str(older.resolve())])
+            self.assertTrue(older.is_file())
+            self.assertTrue(mismatch.is_file())
+
+            result = asyncio.run(
+                registry.run(
+                    "library.trash.reconcile",
+                    {},
+                    self._context(temp_dir, root, db_path),
+                )
+            )
+            self.assertTrue(result.is_success)
+            self.assertTrue(older.is_file())
+            self.assertTrue(newer.is_file())
+            self.assertTrue(mismatch.is_file())
+
+    def test_legacy_trash_reconcile_blocks_active_global_identity(self) -> None:
+        registry = create_default_registry()
+        with TemporaryDirectory() as temp_dir:
+            root, db_path = self._workspace(temp_dir)
+            removed_source = root / "pixiv/photo/removed.jpg"
+            active_source = root / "telegram/photo/active.jpg"
+            removed_source.parent.mkdir(parents=True)
+            active_source.parent.mkdir(parents=True)
+            removed_source.write_bytes(b"shared-legacy-content")
+            active_source.write_bytes(b"shared-legacy-content")
+            removed_record = self._record(
+                db_path,
+                removed_source,
+                platform="pixiv",
+                remote_id="legacy-conflict",
+            )
+            active_record = self._record(
+                db_path,
+                active_source,
+                platform="telegram",
+                remote_id="active-conflict",
+            )
+            library_content.adopt_media_file(db_path, file_id=active_record["id"])
+            trash = root / ".trash/2026-08-27/pixiv/photo/removed.jpg"
+            trash.parent.mkdir(parents=True)
+            os.replace(removed_source, trash)
+
+            dry_result = asyncio.run(
+                registry.run(
+                    "library.trash.reconcile",
+                    {},
+                    self._context(temp_dir, root, db_path, dry_run=True),
+                )
+            )
+            applied = asyncio.run(
+                registry.run(
+                    "library.trash.reconcile",
+                    {},
+                    self._context(temp_dir, root, db_path),
+                )
+            )
+
+            self.assertTrue(dry_result.is_success)
+            self.assertEqual(dry_result.data["plan"]["summary"]["blocked_rows"], 1)
+            self.assertEqual(dry_result.data["plan"]["blocked"][0]["reason"], "active_identity_conflict")
+            self.assertFalse(applied.is_success)
+            self.assertEqual(applied.error.code, "legacy_trash_reconcile_blocked")
+            stored = db.list_media_files(db_path, platform="pixiv", remote_id="legacy-conflict")[0]
+            self.assertIsNone(stored["library_entry_id"])
+            self.assertEqual(stored["id"], removed_record["id"])
+
+    def test_legacy_trash_reconcile_attaches_to_existing_removed_identity(self) -> None:
+        registry = create_default_registry()
+        with TemporaryDirectory() as temp_dir:
+            root, db_path = self._workspace(temp_dir)
+            canonical = root / "pixiv/photo/canonical.jpg"
+            legacy = root / "telegram/photo/legacy.jpg"
+            canonical.parent.mkdir(parents=True)
+            legacy.parent.mkdir(parents=True)
+            canonical.write_bytes(b"already-removed-content")
+            legacy.write_bytes(b"already-removed-content")
+            canonical_record = self._record(db_path, canonical, platform="pixiv", remote_id="canonical")
+            legacy_record = self._record(db_path, legacy, platform="telegram", remote_id="legacy")
+            canonical_entry = library_content.adopt_media_file(db_path, file_id=canonical_record["id"])
+            context = self._context(temp_dir, root, db_path)
+            removed = asyncio.run(
+                registry.run("library.entry.remove", {"entry_id": canonical_entry["entry_id"]}, context)
+            )
+            legacy_trash = root / ".trash/2026-08-27/telegram/photo/legacy.jpg"
+            legacy_trash.parent.mkdir(parents=True)
+            os.replace(legacy, legacy_trash)
+
+            plan = library_content.legacy_trash_plan(db_path, library_root=root)
+
+            self.assertEqual(plan["summary"]["blocked_rows"], 0)
+            self.assertEqual(plan["actions"][0]["action"], "attach_removed")
+            self.assertEqual(plan["actions"][0]["trash_path"], removed.data["trash_path"])
+            applied = library_content.apply_legacy_trash_plan(db_path, plan)
+            stored = db.list_media_files(db_path, platform="telegram", remote_id="legacy")[0]
+            self.assertEqual(applied["applied"]["removed_entries_imported"], 0)
+            self.assertEqual(stored["library_entry_id"], canonical_entry["entry_id"])
+            self.assertEqual(stored["library_state"], "removed")
+            self.assertTrue(legacy_trash.is_file())
+            self.assertEqual(stored["id"], legacy_record["id"])
+
     def test_remove_suppresses_redownload_and_restore_is_idempotent(self) -> None:
         registry = create_default_registry()
         with TemporaryDirectory() as temp_dir:

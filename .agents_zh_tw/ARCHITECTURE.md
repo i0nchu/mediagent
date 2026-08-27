@@ -36,7 +36,7 @@ src/mediagent/
 
 - `tooling.py`：`ToolSpec`、`ToolContext`、`ToolResult`、permissions、registry errors、`ToolRegistry`
 - `db.py`：SQLite schema 與 persistence helpers
-- `library_content.py`：全域 SHA-256 內容識別、scanner-visible projection、dedup scan/apply，以及 remove/restore/rename lifecycle
+- `library_content.py`：全域 SHA-256 內容識別、scanner-visible projection、dedup scan/apply、驗證式 legacy-trash reconcile，以及 remove/restore/rename lifecycle
 - `filesystem.py`：path placeholder expansion、normalization、write-boundary checks
 - `auth.py`：credential refs、credential JSON helpers、redacted auth session model
 - `http.py`：可測試的 HTTP client abstraction

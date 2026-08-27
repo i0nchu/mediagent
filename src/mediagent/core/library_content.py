@@ -7,7 +7,9 @@ import hashlib
 import json
 import os
 import shutil
+import stat
 import uuid
+from collections import defaultdict
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -315,6 +317,7 @@ def scan_plan(db_path: Path) -> dict[str, Any]:
     rows = _downloaded_rows(db_path)
     files: list[dict[str, Any]] = []
     missing: list[dict[str, Any]] = []
+    trash_files_skipped = 0
     hash_cache: dict[tuple[int, int, int, int], tuple[str, int]] = {}
     for row in rows:
         raw_path = row.get("local_path")
@@ -323,6 +326,7 @@ def scan_plan(db_path: Path) -> dict[str, Any]:
             continue
         path = Path(str(raw_path)).resolve()
         if _in_trash(path):
+            trash_files_skipped += 1
             continue
         if not path.is_file():
             missing.append({"file_id": row["id"], "path": str(path), "reason": "missing_file"})
@@ -401,6 +405,7 @@ def scan_plan(db_path: Path) -> dict[str, Any]:
             "files_hashed": len(files),
             "physical_files_hashed": len(hash_cache),
             "missing_files": len(missing),
+            "trash_files_skipped": trash_files_skipped,
             "content_blobs": len(checksum_groups),
             "checksum_updates_required": checksum_updates_required,
             "duplicate_paths": len(duplicate_paths),
@@ -454,6 +459,487 @@ def apply_scan_plan(db_path: Path, plan: dict[str, Any]) -> dict[str, Any]:
             "bytes_reclaimed": bytes_reclaimed,
         },
     }
+
+
+def legacy_trash_plan(db_path: Path, *, library_root: Path) -> dict[str, Any]:
+    """Plan adoption of pre-v10 trash files as explicit removed entries.
+
+    Older cleanup jobs moved scanner-visible files below ``.trash`` without
+    updating SQLite.  This planner matches only downloaded rows whose recorded
+    path is now missing, requires a valid recorded SHA-256 checksum, and hashes
+    every path/size candidate before considering it safe to import.  Managed
+    v10 trash and JMComic reconciliation backups are deliberately excluded.
+    """
+
+    root = library_root.resolve()
+    trash_root = (root / ".trash").resolve()
+    rows = _downloaded_rows(db_path)
+    missing: list[dict[str, Any]] = []
+    blocked: list[dict[str, Any]] = []
+    missing_rows_seen = 0
+    for row in rows:
+        raw_path = row.get("local_path")
+        if not raw_path:
+            missing_rows_seen += 1
+            blocked.append({"file_id": row["id"], "reason": "missing_local_path"})
+            continue
+        path = Path(str(raw_path)).resolve()
+        try:
+            path_is_file = path.is_file()
+        except OSError as exc:
+            blocked.append(
+                {
+                    "file_id": row["id"],
+                    "path": str(path),
+                    "reason": "path_unreadable",
+                    "error_type": type(exc).__name__,
+                }
+            )
+            continue
+        if path_is_file or _in_trash(path):
+            continue
+        missing_rows_seen += 1
+        try:
+            relative = path.relative_to(root)
+        except ValueError:
+            blocked.append(
+                {
+                    "file_id": row["id"],
+                    "path": str(path),
+                    "reason": "outside_library_root",
+                }
+            )
+            continue
+        checksum = _normalized_checksum(row.get("checksum"))
+        size_bytes = int(row.get("size_bytes") or 0)
+        if checksum is None or size_bytes <= 0:
+            blocked.append(
+                {
+                    "file_id": row["id"],
+                    "path": str(path),
+                    "reason": "missing_content_identity",
+                }
+            )
+            continue
+        key = presentation_key(
+            platform=str(row["platform"]),
+            remote_id=str(row["remote_id"]),
+            file_key=str(row["file_key"]),
+            library_relative_path=row.get("library_relative_path") or relative.as_posix(),
+            mime_type=row.get("mime_type"),
+        )
+        missing.append(
+            {
+                **row,
+                "expected_path": str(path),
+                "expected_relative": relative.as_posix(),
+                "checksum": checksum,
+                "size_bytes": size_bytes,
+                "presentation_key": key,
+                "candidates": [],
+            }
+        )
+
+    candidate_summary = _index_legacy_trash_candidates(trash_root=trash_root, missing=missing)
+    hash_cache: dict[tuple[int, int, int, int], tuple[str, int]] = {}
+    ready: list[dict[str, Any]] = []
+    for item in missing:
+        valid_candidates: list[dict[str, Any]] = []
+        rejected_candidates: list[str] = []
+        for candidate in item["candidates"]:
+            candidate_path = Path(str(candidate["path"]))
+            physical_identity = (
+                int(candidate["device"]),
+                int(candidate["inode"]),
+                int(candidate["size_bytes"]),
+                int(candidate["mtime_ns"]),
+            )
+            checksum_and_size = hash_cache.get(physical_identity)
+            if checksum_and_size is None:
+                checksum_and_size = sha256_checksum(candidate_path)
+                hash_cache[physical_identity] = checksum_and_size
+            actual_checksum, actual_size = checksum_and_size
+            if actual_checksum == item["checksum"] and actual_size == item["size_bytes"]:
+                valid_candidates.append(candidate)
+            else:
+                rejected_candidates.append(str(candidate_path))
+        if not valid_candidates:
+            blocked.append(
+                {
+                    "file_id": item["id"],
+                    "path": item["expected_path"],
+                    "reason": "trash_candidate_not_found" if not item["candidates"] else "trash_checksum_mismatch",
+                    "rejected_candidates": rejected_candidates,
+                }
+            )
+            continue
+        selected = max(valid_candidates, key=lambda value: (int(value["mtime_ns"]), str(value["path"])))
+        ready.append(
+            {
+                **item,
+                "selected_trash_path": str(selected["path"]),
+                "valid_candidate_paths": sorted(str(value["path"]) for value in valid_candidates),
+                "rejected_candidate_paths": sorted(rejected_candidates),
+            }
+        )
+
+    grouped: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+    for item in ready:
+        grouped[(str(item["checksum"]), str(item["presentation_key"]))].append(item)
+
+    actions: list[dict[str, Any]] = []
+    with db.connect(db_path) as connection:
+        for (checksum, key), group in sorted(grouped.items()):
+            canonical = min(group, key=lambda value: int(value["id"]))
+            existing = connection.execute(
+                """
+                SELECT le.id, le.state, le.local_path, le.library_relative_path, le.trash_path
+                FROM library_entries le
+                JOIN content_blobs cb ON cb.id = le.content_blob_id
+                WHERE cb.checksum = ? AND le.presentation_key = ?
+                """,
+                (checksum, key),
+            ).fetchone()
+            reserved = connection.execute(
+                "SELECT id, state FROM library_entries WHERE local_path = ?",
+                (canonical["expected_path"],),
+            ).fetchone()
+            if existing is not None and str(existing["state"]) != "removed":
+                blocked.extend(
+                    {
+                        "file_id": item["id"],
+                        "path": item["expected_path"],
+                        "reason": "active_identity_conflict",
+                        "library_entry_id": existing["id"],
+                    }
+                    for item in group
+                )
+                continue
+            if reserved is not None and (existing is None or str(reserved["id"]) != str(existing["id"])):
+                blocked.extend(
+                    {
+                        "file_id": item["id"],
+                        "path": item["expected_path"],
+                        "reason": "original_path_reserved",
+                        "library_entry_id": reserved["id"],
+                    }
+                    for item in group
+                )
+                continue
+
+            selected_paths = {
+                str(item["selected_trash_path"])
+                for item in group
+            }
+            all_valid_paths = {
+                candidate
+                for item in group
+                for candidate in item["valid_candidate_paths"]
+            }
+            existing_trash_path = (
+                Path(str(existing["trash_path"])).resolve()
+                if existing is not None and existing["trash_path"]
+                else None
+            )
+            selected_trash_path = max(
+                selected_paths,
+                key=lambda value: (Path(value).stat().st_mtime_ns, value),
+            )
+            if existing_trash_path is not None and existing_trash_path.is_file():
+                existing_checksum, existing_size = sha256_checksum(existing_trash_path)
+                if existing_checksum != checksum or existing_size != int(canonical["size_bytes"]):
+                    blocked.extend(
+                        {
+                            "file_id": item["id"],
+                            "path": item["expected_path"],
+                            "reason": "existing_removed_content_conflict",
+                            "library_entry_id": existing["id"],
+                        }
+                        for item in group
+                    )
+                    continue
+                selected_trash_path = str(existing_trash_path)
+            identity_digest = hashlib.sha256(f"{checksum}\0{key}".encode("utf-8")).hexdigest()[:32]
+            actions.append(
+                {
+                    "action": "attach_removed" if existing is not None else "import_removed",
+                    "entry_id": str(existing["id"]) if existing is not None else f"entry_legacy_{identity_digest}",
+                    "removal_id": f"rmv_legacy_{identity_digest}",
+                    "checksum": checksum,
+                    "size_bytes": int(canonical["size_bytes"]),
+                    "mime_type": canonical.get("mime_type"),
+                    "presentation_key": key,
+                    "original_path": (
+                        str(existing["local_path"])
+                        if existing is not None
+                        else str(canonical["expected_path"])
+                    ),
+                    "library_relative_path": (
+                        existing["library_relative_path"]
+                        if existing is not None
+                        else canonical.get("library_relative_path") or canonical["expected_relative"]
+                    ),
+                    "trash_path": selected_trash_path,
+                    "source_file_ids": sorted(int(item["id"]) for item in group),
+                    "source_original_paths": sorted(str(item["expected_path"]) for item in group),
+                    "duplicate_candidate_paths": sorted(all_valid_paths - {selected_trash_path}),
+                }
+            )
+
+    conflicted_entries: set[str] = set()
+    for field, reason in (
+        ("original_path", "planned_original_path_conflict"),
+        ("trash_path", "planned_trash_path_conflict"),
+    ):
+        actions_by_path: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for action in actions:
+            actions_by_path[str(action[field])].append(action)
+        for path, path_actions in actions_by_path.items():
+            if len(path_actions) < 2:
+                continue
+            for action in path_actions:
+                conflicted_entries.add(str(action["entry_id"]))
+                blocked.extend(
+                    {
+                        "file_id": file_id,
+                        "path": path,
+                        "reason": reason,
+                    }
+                    for file_id in action["source_file_ids"]
+                )
+    if conflicted_entries:
+        actions = [action for action in actions if str(action["entry_id"]) not in conflicted_entries]
+
+    duplicate_candidates = sum(len(action["duplicate_candidate_paths"]) for action in actions)
+    summary = {
+        "tracked_rows": len(rows),
+        "missing_rows": missing_rows_seen,
+        "candidate_files_scanned": candidate_summary["candidate_files_scanned"],
+        "candidate_files_hashed": len(hash_cache),
+        "source_rows_importable": sum(len(action["source_file_ids"]) for action in actions),
+        "removed_entries_importable": len(actions),
+        "duplicate_candidates_retained": duplicate_candidates,
+        "blocked_rows": len(blocked),
+        "bytes_represented": sum(int(action["size_bytes"]) for action in actions),
+    }
+    return {
+        "summary": summary,
+        "actions": actions,
+        "blocked": blocked,
+        "trash_root": str(trash_root),
+    }
+
+
+def apply_legacy_trash_plan(db_path: Path, plan: dict[str, Any]) -> dict[str, Any]:
+    """Atomically import a complete, unblocked legacy-trash plan."""
+
+    blocked = plan.get("blocked") or []
+    if blocked:
+        raise ValueError("Legacy trash reconciliation is blocked; review the dry-run report.")
+    actions = list(plan.get("actions") or [])
+    for action in actions:
+        trash_path = Path(str(action["trash_path"])).resolve()
+        checksum, size_bytes = sha256_checksum(trash_path)
+        if checksum != action["checksum"] or size_bytes != int(action["size_bytes"]):
+            raise ValueError(f"Legacy trash content changed after planning: {trash_path}")
+
+    now = datetime.now(UTC).isoformat()
+    source_rows_linked = 0
+    entries_imported = 0
+    with db.connect(db_path) as connection:
+        for action in actions:
+            checksum = str(action["checksum"])
+            blob_id = f"blob_{checksum.removeprefix('sha256:')}"
+            connection.execute(
+                """
+                INSERT INTO content_blobs (id, checksum, size_bytes, mime_type, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(checksum) DO UPDATE SET updated_at = excluded.updated_at
+                """,
+                (blob_id, checksum, action["size_bytes"], action.get("mime_type"), now, now),
+            )
+            blob = connection.execute("SELECT id FROM content_blobs WHERE checksum = ?", (checksum,)).fetchone()
+            stored_blob = connection.execute(
+                "SELECT size_bytes FROM content_blobs WHERE id = ?",
+                (blob["id"],),
+            ).fetchone()
+            if int(stored_blob["size_bytes"]) not in (0, int(action["size_bytes"])):
+                raise ValueError("Legacy trash checksum identity has conflicting file sizes.")
+            existing = connection.execute(
+                """
+                SELECT id, state, trash_path FROM library_entries
+                WHERE content_blob_id = ? AND presentation_key = ?
+                """,
+                (blob["id"], action["presentation_key"]),
+            ).fetchone()
+            if existing is not None and str(existing["state"]) != "removed":
+                raise ValueError("Legacy trash identity became active after planning.")
+            entry_id = str(existing["id"]) if existing is not None else str(action["entry_id"])
+            trash_path = str(action["trash_path"])
+            if existing is None:
+                connection.execute(
+                    """
+                    INSERT INTO library_entries (
+                        id, content_blob_id, presentation_key, state, local_path,
+                        library_relative_path, trash_path, removed_at, created_at, updated_at
+                    ) VALUES (?, ?, ?, 'removed', ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        entry_id,
+                        blob["id"],
+                        action["presentation_key"],
+                        action["original_path"],
+                        action.get("library_relative_path"),
+                        trash_path,
+                        now,
+                        now,
+                        now,
+                    ),
+                )
+                entries_imported += 1
+            elif str(existing["trash_path"] or "") != trash_path:
+                connection.execute(
+                    """
+                    UPDATE library_entries
+                    SET trash_path = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (trash_path, now, entry_id),
+                )
+            metadata = {
+                "import_kind": "legacy_trash",
+                "source_file_ids": action["source_file_ids"],
+                "source_original_paths": action["source_original_paths"],
+                "duplicate_candidate_paths": action["duplicate_candidate_paths"],
+            }
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO library_operations (
+                    id, operation_type, library_entry_id, state, original_path,
+                    target_path, reason, metadata_json, created_at, completed_at
+                ) VALUES (?, 'remove', ?, 'completed', ?, ?, 'legacy trash import', ?, ?, ?)
+                """,
+                (
+                    action["removal_id"],
+                    entry_id,
+                    action["original_path"],
+                    trash_path,
+                    json.dumps(metadata, sort_keys=True),
+                    now,
+                    now,
+                ),
+            )
+            file_ids = [int(value) for value in action["source_file_ids"]]
+            placeholders = ",".join("?" for _ in file_ids)
+            connection.execute(
+                f"""
+                UPDATE media_files
+                SET library_entry_id = ?, local_path = ?,
+                    library_relative_path = ?, file_health = 'valid',
+                    verified_at = ?, updated_at = ?
+                WHERE id IN ({placeholders})
+                """,
+                (
+                    entry_id,
+                    trash_path,
+                    action.get("library_relative_path"),
+                    now,
+                    now,
+                    *file_ids,
+                ),
+            )
+            source_rows_linked += len(file_ids)
+    return {
+        **plan,
+        "applied": {
+            "removed_entries_imported": entries_imported,
+            "source_rows_linked": source_rows_linked,
+            "files_moved": 0,
+            "duplicate_candidates_retained": sum(
+                len(action["duplicate_candidate_paths"])
+                for action in actions
+            ),
+        },
+    }
+
+
+def _index_legacy_trash_candidates(*, trash_root: Path, missing: list[dict[str, Any]]) -> dict[str, int]:
+    if not trash_root.is_dir() or not missing:
+        return {"candidate_files_scanned": 0}
+    full_paths: dict[tuple[str, ...], list[dict[str, Any]]] = defaultdict(list)
+    short_paths: dict[tuple[str, tuple[str, ...]], list[dict[str, Any]]] = defaultdict(list)
+    full_depths: set[int] = set()
+    short_depths: dict[str, set[int]] = defaultdict(set)
+    platforms: set[str] = set()
+    for item in missing:
+        relative_parts = Path(str(item["expected_relative"])).parts
+        full_paths[relative_parts].append(item)
+        full_depths.add(len(relative_parts))
+        platform = str(item["platform"])
+        platforms.add(platform)
+        if relative_parts and relative_parts[0].lower() == platform.lower() and len(relative_parts) > 1:
+            short = relative_parts[1:]
+            short_paths[(platform, short)].append(item)
+            short_depths[platform].add(len(short))
+
+    files_scanned = 0
+    excluded_roots = {"mediagent", "mediagent-jmcomic-reconcile"}
+    for directory, directories, files in os.walk(trash_root, followlinks=False):
+        directory_path = Path(directory)
+        relative_directory = directory_path.relative_to(trash_root)
+        root_bucket = relative_directory.parts[0] if relative_directory.parts else ""
+        if root_bucket in excluded_roots:
+            directories[:] = []
+            continue
+        for name in files:
+            raw_candidate = directory_path / name
+            try:
+                metadata = raw_candidate.lstat()
+            except OSError:
+                continue
+            if not stat.S_ISREG(metadata.st_mode):
+                continue
+            candidate = raw_candidate.resolve()
+            try:
+                candidate.relative_to(trash_root)
+            except ValueError:
+                continue
+            files_scanned += 1
+            relative_candidate = (relative_directory / name).parts
+            matches: dict[int, dict[str, Any]] = {}
+            for depth in full_depths:
+                if len(relative_candidate) >= depth:
+                    for item in full_paths.get(relative_candidate[-depth:], []):
+                        matches[int(item["id"])] = item
+            for platform in platforms:
+                if not _legacy_provider_bucket(root_bucket, platform):
+                    continue
+                for depth in short_depths.get(platform, set()):
+                    if len(relative_candidate) >= depth:
+                        for item in short_paths.get((platform, relative_candidate[-depth:]), []):
+                            matches[int(item["id"])] = item
+            for item in matches.values():
+                if int(item["size_bytes"]) != int(metadata.st_size):
+                    continue
+                item["candidates"].append(
+                    {
+                        "path": str(candidate),
+                        "device": metadata.st_dev,
+                        "inode": metadata.st_ino,
+                        "size_bytes": metadata.st_size,
+                        "mtime_ns": metadata.st_mtime_ns,
+                    }
+                )
+    return {"candidate_files_scanned": files_scanned}
+
+
+def _legacy_provider_bucket(bucket: str, platform: str) -> bool:
+    lowered_bucket = bucket.lower()
+    lowered_platform = platform.lower()
+    return lowered_bucket == lowered_platform or any(
+        lowered_bucket.startswith(f"{lowered_platform}{separator}")
+        for separator in ("-", "_", ".")
+    )
 
 
 def resolve_entry(

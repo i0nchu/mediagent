@@ -1,10 +1,11 @@
 # 実装上の注意点
 
-## Global content identity は local test 済みだが Production migration 未実施
+## Production global identity migration には legacy-trash reconcile が必要
 
-- **状態:** Local implementation。Deploy と external cleanup integration は pending。
+- **状態:** Schema/code deploy と Production dry-run は完了。Reconcile helper の開発/test 中は timers を停止したままにする。
 - **現在:** Managed sync は SHA-256 identity を採用し、full scan は non-mutating dry-run 対応。一般 media は一つの scanner-visible entry を共有し、comic context は分離して hard link を利用可能。Remove/restore/rename は audited one-shot operations。Raw transport tools は DB media identity がないため unmanaged のまま。Removed entry は repair/redownload を抑止する。Multiple sources が共有する ordinary-media path の in-place overwrite は mutation 前に拒否し、自動 source separation/COW は deferred。Trash auto-expiry はない。
-- **次:** Full offline suite と branch review を完了し、Production では dry-run から開始する。その後に repo 外の Immich systemd cleanup script を remove command に変更する。この phase では trash purge を追加しない。
+- **Production evidence:** 2026-08-27 dry-run は 90,629 files を hash し、ordinary collapse 32、comic hard links 428、491,170,708 reclaimable bytes を計画した。Missing rows 807 件は全て legacy trash path/size に一致（Pixiv 795、Instagram 12、約 1.46 GB）し、active checksum/identity conflicts は 0。一部 content は old cleanup/redownload cycle により 2～3 copies が trash に残る。
+- **次:** Verified/all-or-nothing `library.trash.reconcile` dry-run/apply を完成し、files を移動せず 807 rows を removed state に import する。その後 global dedup apply/rerun と timer restore を行う。Repo 外の Immich systemd cleanup script は最後に remove command へ変更する。この phase では trash purge を追加しない。
 
 ## nhentai browser cookie renewal の live re-verification が未完了
 

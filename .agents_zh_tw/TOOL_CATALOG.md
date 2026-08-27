@@ -85,6 +85,7 @@ uv run --locked mediagent agent run "<natural language task>" --json
 - `storage.path.plan`：為一個 normalized media file 規劃 deterministic scanner-friendly library path。預設 layout 是 `<platform>/<storage_category>/<yyyy>/<mm>/<yyyymmdd>__<platform>__<remote_id>__<part>.<ext>`；storage category 通常等於 media type，Pixiv manga 原始頁面則使用 `comic-pages`。Library root 依序使用 explicit `library_root`、`MEDIAGENT_<PLATFORM>_LIBRARY_DIR`、`MEDIAGENT_LIBRARY_DIR`，最後 fallback 到 `${MEDIAGENT_DATA_DIR}/library`。平台專屬 root 已經屬於單一平台，因此預設不會再加入重複的 platform directory。
 - `library.file.verify`：依照 SQLite 已知檔案紀錄檢查 local existence、size 與 checksum，並把 file health 標記成 `valid`、`missing`、`corrupt` 或 `unknown`。它不刪除檔案，也不連線來源平台。
 - `library.content.deduplicate`：對 `.trash` 之外的 tracked downloaded files 計算 SHA-256；dry-run 只規劃，apply 讓一般媒體收斂為單一可見路徑，漫畫脈絡保持分離並盡可能使用 hard link。
+- `library.trash.reconcile`：規劃或原子匯入被 pre-v10 cleanup 搬走的 downloaded rows，將其轉成明確 removed library state。它驗證原始相對路徑、記錄大小與 legacy trash candidate 的 SHA-256；不搬檔、保留重複舊 trash copies、忽略 managed/reconcile trash，任何 unmatched row 或 active identity 衝突會阻擋整次 apply。支援 dry-run，apply 前必須審查。
 - `library.entry.remove`：以 `path` 或 `entry_id` 移到 `.trash/mediagent/<removal-id>/`、同步來源 rows 並抑制 repair；不支援 dry-run。
 - `library.entry.restore`：以 `removal_id`、`entry_id` 或 managed path 驗證 checksum 後還原；不支援 dry-run。
 - `library.entry.rename`：以 `path` 或 `entry_id` 改名，CBZ 會原子改寫 `ComicInfo.xml`；不支援 dry-run。

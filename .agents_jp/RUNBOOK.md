@@ -441,9 +441,13 @@ uv run --locked mediagent tools run library.file.verify --json
 Global content dedup を apply する前に preview します。
 
 ```bash
+uv run --locked mediagent library reconcile-trash --dry-run --json
+uv run --locked mediagent library reconcile-trash --json
 uv run --locked mediagent library deduplicate --dry-run --json
 uv run --locked mediagent library deduplicate --json
 ```
+
+`reconcile-trash` は pre-v10 migration 専用で、apply 前に必ず dry-run を review します。Original path が missing の downloaded rows を調べ、legacy `.trash` 下で path/size が一致する candidates のみを DB 記録 SHA-256 で検証し、complete/unblocked plan だけを一つの SQLite transaction で removed state に import します。Files は移動せず、v10 `.trash/mediagent/` と JMComic reconciliation backups を無視し、古い duplicate trash copies を保持します。Unmatched row または active global identity conflict が一つでもあれば apply 全体を block します。Repair が意図的に removed された legacy content を再 download しないよう、global dedup より先に実行してください。
 
 Apply/remove/restore/rename の前に overlapping sync services を停止するか、同じ deployment-wide `mediagent-sync.lock` を保持してください。SQLite busy timeout だけでは filesystem mutation を serialize できません。
 

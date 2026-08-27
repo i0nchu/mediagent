@@ -467,9 +467,13 @@ uv run --locked mediagent tools run library.file.verify --json
 Preview a global content scan before applying it:
 
 ```bash
+uv run --locked mediagent library reconcile-trash --dry-run --json
+uv run --locked mediagent library reconcile-trash --json
 uv run --locked mediagent library deduplicate --dry-run --json
 uv run --locked mediagent library deduplicate --json
 ```
+
+Run `reconcile-trash` only during a pre-v10 migration and always review dry-run first. It examines downloaded rows whose original paths are missing, finds only path/size candidates below legacy `.trash` layouts, verifies their recorded SHA-256 checksums, and imports a complete unblocked plan as removed state in one SQLite transaction. It moves no files, ignores v10 `.trash/mediagent/` plus JMComic reconciliation backups, retains superseded duplicate trash copies, and refuses apply if any row is unmatched or conflicts with an active global identity. Run it before global dedup so later repair cannot redownload intentionally removed legacy content.
 
 For apply/remove/restore/rename, stop overlapping sync services or hold the same deployment-wide `mediagent-sync.lock`; SQLite busy timeout alone does not serialize filesystem mutations.
 

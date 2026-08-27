@@ -4,7 +4,9 @@
 
 - [x] Schema-v10 global SHA-256 identity、ordinary-media path collapse、comic-context hard links、全 managed download paths の adoption を追加する。
 - [x] Full-library dedup dry-run/apply と、audit/checksum conflict/removed-state suppression/interruption recovery を持つ one-shot remove/restore/rename を追加する。
-- [ ] Repo suite が green で branch review 完了後にのみ merge/push する。Production は最初に dry-run scan だけを実行し、deploy には explicit approval が必要。
+- [x] Schema v10 を merge/push し、Production timers を停止、Production DB を backup/migrate して最初の global dedup dry-run を実行した。
+- [ ] `library.trash.reconcile` を完成、test、deploy し、global dedup apply 前に verified pre-v10 trash rows 807 件を removed として import する。
+- [ ] Shared deployment lock 下で global dedup を apply し、rerun idempotence を確認してから Production timers を restore/monitor する。
 - [ ] Repo work 完了後、repo 外の systemd Immich cleanup script を別途調査し、direct file move を `mediagent library remove` に置き換える。今は意図的に skip。
 - [ ] Trash expiry/purge は deferred のままにする。
 

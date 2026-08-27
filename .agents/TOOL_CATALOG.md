@@ -228,6 +228,10 @@ Permissions:
 
 Hashes every tracked downloaded file outside `.trash` and plans or applies global SHA-256 content deduplication. Dry-run is non-mutating. Ordinary media collapses to one scanner-visible path; comic contexts remain separate and use hard links when supported.
 
+### `library.trash.reconcile`
+
+Plans or atomically imports downloaded rows moved by pre-v10 cleanup jobs into explicit removed library state. It verifies original relative path, recorded size, and SHA-256 against legacy trash candidates; it never moves files, retains duplicate old trash copies, ignores managed/reconciliation trash, and blocks the whole apply on unmatched rows or active-identity conflicts. Dry-run is supported and must be reviewed before apply.
+
 ### `library.entry.remove`
 
 Moves one managed logical entry to `.trash/mediagent/<removal-id>/`, updates every attached source row, and suppresses sync repair. Accepts exactly one `path` or `entry_id`; no dry-run.

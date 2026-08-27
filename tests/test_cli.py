@@ -240,6 +240,53 @@ class CliTests(unittest.TestCase):
             self.assertEqual(restored.returncode, 0, restored.stderr)
             self.assertTrue(renamed_path.is_file())
 
+    def test_library_cli_reconcile_trash_dry_run(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            data_dir = Path(temp_dir) / "data"
+            library_root = Path(temp_dir) / "library"
+            db_path = data_dir / "mediagent.sqlite3"
+            source = library_root / "pixiv/photo/legacy.jpg"
+            source.parent.mkdir(parents=True)
+            source.write_bytes(b"cli-legacy-trash")
+            db.initialize_database(db_path)
+            db.upsert_media_item(
+                db_path,
+                {"platform": "pixiv", "remote_id": "cli-legacy", "media_type": "photo"},
+            )
+            db.upsert_media_file(
+                db_path,
+                platform="pixiv",
+                remote_id="cli-legacy",
+                remote_url="https://example.invalid/cli-legacy.jpg",
+                local_path=str(source),
+                mime_type="image/jpeg",
+                size_bytes=source.stat().st_size,
+                checksum=library_content.sha256_checksum(source)[0],
+                status="downloaded",
+                library_relative_path="pixiv/photo/legacy.jpg",
+            )
+            trash = library_root / ".trash/2026-08-27/pixiv/photo/legacy.jpg"
+            trash.parent.mkdir(parents=True)
+            os.replace(source, trash)
+            completed = self.run_cli(
+                "library",
+                "reconcile-trash",
+                "--dry-run",
+                "--json",
+                env_updates={
+                    "MEDIAGENT_DATA_DIR": str(data_dir),
+                    "MEDIAGENT_LIBRARY_DIR": str(library_root),
+                    "MEDIAGENT_DB_PATH": str(db_path),
+                },
+            )
+
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            payload = json.loads(completed.stdout)
+            self.assertEqual(payload["tool"], "library.trash.reconcile")
+            self.assertEqual(payload["data"]["plan"]["summary"]["source_rows_importable"], 1)
+            with db.connect(db_path) as connection:
+                self.assertEqual(connection.execute("SELECT COUNT(*) FROM library_entries").fetchone()[0], 0)
+
     def run_cli(
         self,
         *args: str,

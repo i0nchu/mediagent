@@ -446,9 +446,13 @@ uv run --locked mediagent tools run library.file.verify --json
 套用全域內容去重前先 preview：
 
 ```bash
+uv run --locked mediagent library reconcile-trash --dry-run --json
+uv run --locked mediagent library reconcile-trash --json
 uv run --locked mediagent library deduplicate --dry-run --json
 uv run --locked mediagent library deduplicate --json
 ```
+
+`reconcile-trash` 只用於 pre-v10 migration，apply 前一定先審查 dry-run。它盤點原始路徑已缺失的 downloaded rows，只接受 legacy `.trash` 下符合 path/size 的 candidates，再以 DB 記錄的 SHA-256 驗證；完整且無阻擋的 plan 才會在單一 SQLite transaction 匯入 removed state。它不搬移檔案、忽略 v10 `.trash/mediagent/` 與 JMComic reconcile backups、保留較舊重複 trash copies，任何 unmatched row 或 active global identity 衝突都會阻擋整次 apply。必須在全域 dedup 前執行，避免 repair 重抓刻意移除的舊內容。
 
 執行 apply/remove/restore/rename 前，先停止重疊的 sync services，或持有相同的 deployment-wide `mediagent-sync.lock`；SQLite busy timeout 本身不會序列化檔案系統 mutation。
 
