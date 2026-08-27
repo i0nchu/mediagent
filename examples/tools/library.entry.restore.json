@@ -1,0 +1,5 @@
+{
+  "db_path": "${MEDIAGENT_DB_PATH}",
+  "library_root": "${MEDIAGENT_LIBRARY_DIR}",
+  "removal_id": "rmv_replace_with_operation_id"
+}

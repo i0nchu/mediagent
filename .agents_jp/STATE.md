@@ -1,5 +1,15 @@
 # Mediagent 現在の状態
 
+## 2026-08-27 Global content identity と library operations
+
+- 開発 branch は `codex/global-content-dedup-library-ops`。ここで述べるのは local implementation/offline tests のみで、Production には未 deploy・未適用。
+- SQLite schema v10 は SHA-256 `content_blobs`、scanner-visible `library_entries`、audit 用 `library_operations`、`media_files.library_entry_id` を追加する。
+- Managed download 成功後は global content identity に adoption する。一般 photo/video/audio の同一内容は一つの scanner-visible path に集約しつつ、SQLite は全 source references を保持する。Comic pages/CBZ は reading context を分離し、filesystem 対応時は hard link で physical dedup する。
+- `library.content.deduplicate` は tracked library 全体の SHA-256 scan を提供する。Dry-run は file/DB を変更せず、apply は rerunnable/idempotent。
+- One-shot `mediagent library remove|restore|rename` を実装済み。Remove は `.trash/mediagent/<removal-id>/` へ移動して repair/redownload を抑止、restore は checksum validation、rename は path/title を更新し CBZ の `ComicInfo.xml` も atomic rewrite する。
+- Remove/restore/rename は dry-run 非対応。Interrupted planned remove/rename は再実行で recovery できる。Trash expiry/purge は未実装。
+- Immich cleanup systemd script は repo 外にあり、user 指示により repo 機能/test 完了後まで延期。
+
 ## 2026-08-14 コミックソース更新
 
 - SQLite schema は v9。atomic collection snapshot、active/inactive membership、account-scoped collection-scope alias を実装済み。
@@ -35,7 +45,7 @@
 - Agent Core V1 は `src/mediagent/agent/` にあり、SKILL loading、strict JSON action parsing、Ollama integration、tool allowlist enforcement、dry-run/execute boundaries、compact/redacted tool-result feedback を含みます。
 - Built-in English agent SKILL files は `src/mediagent/agent/skills/builtin/` にあります。
 - Agent CLI commands は `mediagent agent run`、`mediagent agent skills list`、`mediagent agent skills inspect` です。
-- SQLite 初期化は `src/mediagent/core/db.py` にあり、現在の schema version は `9` です。old media item/file tables、stable `link_queue` lifecycle/retry/provenance fields、comic source collection memberships、collection-scope aliases の idempotent migration に対応しています。
+- SQLite 初期化は `src/mediagent/core/db.py` にあり、現在の schema version は `10` です。old media item/file tables、global content/library-operation identity、stable `link_queue` lifecycle/retry/provenance fields、comic source collection memberships、collection-scope aliases の idempotent migration に対応しています。
 - ファイル安全 helper は `src/mediagent/core/filesystem.py` にあります。
 - credential/auth primitives は `src/mediagent/core/auth.py` にあります。
 - rate-limit metadata parsing は `src/mediagent/core/rate_limit.py` にあります。
@@ -86,6 +96,10 @@
 - `core.sync_cursor.set`
 - `download.http`
 - `library.file.verify`
+- `library.content.deduplicate`
+- `library.entry.remove`
+- `library.entry.restore`
+- `library.entry.rename`
 - `link.queue.upsert`
 - `link.media.sync`
 - `link.resolve.preview`（experimental）

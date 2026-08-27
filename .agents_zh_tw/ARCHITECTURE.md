@@ -8,7 +8,11 @@
 
 JMComic album-scoped resolution 的章號由 album episode list 決定；per-photo payload 只提供頁面與標題，當其 series list 落後時不能把章號降回第 1 章。Raw 重號會在 normalized items 進入 DB／封裝層前先消歧。歷史資料修復會解析 DB 中出現的每個 album、比較目前 manifest identity 與 DB／CBZ `ComicInfo.xml`、先產生唯讀 manifest，再於明確確認的 apply 中只用健康且 tracked 的原始頁重建受影響 archive，並隔離被取代 CBZ。Provider/network 或 source-health 缺口會在任何 mutation 前阻擋 apply。
 
-Schema v8 新增 `source_collections` 與 `source_collection_memberships`；v9 新增 `source_collection_scope_aliases`，保存帳號 scoped 的人類名稱與遠端 collection scope 映射。穩定 page file key 避免 CDN URL 輪替造成重複紀錄；cookies、token、敏感 headers 與 JM runtime decode 資料不得寫入持久 metadata。
+Schema v8 新增 `source_collections` 與 `source_collection_memberships`；v9 新增 `source_collection_scope_aliases`，保存帳號 scoped 的人類名稱與遠端 collection scope 映射；v10 新增 `content_blobs`、`library_entries`、`library_operations` 與 `media_files.library_entry_id`。
+
+`content_blobs` 擁有 checksum identity；provider 的 `media_items` / `media_files` 保留全部來源。一般媒體的相同 checksum 只投影一個 scanner-visible entry，避免跨平台內容在 Immich 重複出現。漫畫頁與 CBZ 使用具脈絡的 presentation key，分開保留路徑並在可行時使用 hard link。Remove 不刪除來源 metadata；repair/verify 會跳過 removed entry，直到明確 restore。原始 `download.http` 沒有 DB media identity，因此仍是 unmanaged transport primitive；managed sync tools 會在 file upsert 後立即 adoption。
+
+穩定 page file key 避免 CDN URL 輪替造成重複紀錄；cookies、token、敏感 headers 與 JM runtime decode 資料不得寫入持久 metadata。
 
 ## 產品邊界
 
@@ -32,6 +36,7 @@ src/mediagent/
 
 - `tooling.py`：`ToolSpec`、`ToolContext`、`ToolResult`、permissions、registry errors、`ToolRegistry`
 - `db.py`：SQLite schema 與 persistence helpers
+- `library_content.py`：全域 SHA-256 內容識別、scanner-visible projection、dedup scan/apply，以及 remove/restore/rename lifecycle
 - `filesystem.py`：path placeholder expansion、normalization、write-boundary checks
 - `auth.py`：credential refs、credential JSON helpers、redacted auth session model
 - `http.py`：可測試的 HTTP client abstraction

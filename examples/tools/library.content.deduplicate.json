@@ -1,0 +1,4 @@
+{
+  "db_path": "${MEDIAGENT_DB_PATH}",
+  "library_root": "${MEDIAGENT_LIBRARY_DIR}"
+}

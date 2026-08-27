@@ -224,6 +224,22 @@ Permissions:
 - `write_db`
 - `read_files`
 
+### `library.content.deduplicate`
+
+Hashes every tracked downloaded file outside `.trash` and plans or applies global SHA-256 content deduplication. Dry-run is non-mutating. Ordinary media collapses to one scanner-visible path; comic contexts remain separate and use hard links when supported.
+
+### `library.entry.remove`
+
+Moves one managed logical entry to `.trash/mediagent/<removal-id>/`, updates every attached source row, and suppresses sync repair. Accepts exactly one `path` or `entry_id`; no dry-run.
+
+### `library.entry.restore`
+
+Restores a removed entry by `removal_id`, `entry_id`, or managed path after checksum validation. It refuses an occupied target with different content; no dry-run.
+
+### `library.entry.rename`
+
+Renames one active entry by `path` or `entry_id`, updates all attached source rows, and stores a display-name override. CBZ rename atomically rewrites root `ComicInfo.xml`; no dry-run.
+
 ## Download And Metadata Tools
 
 ### `download.http`

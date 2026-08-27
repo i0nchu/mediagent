@@ -438,6 +438,29 @@ Pixiv に接続せず、known library files を verify するには:
 uv run --locked mediagent tools run library.file.verify --json
 ```
 
+Global content dedup を apply する前に preview します。
+
+```bash
+uv run --locked mediagent library deduplicate --dry-run --json
+uv run --locked mediagent library deduplicate --json
+```
+
+Apply/remove/restore/rename の前に overlapping sync services を停止するか、同じ deployment-wide `mediagent-sync.lock` を保持してください。SQLite busy timeout だけでは filesystem mutation を serialize できません。
+
+Managed entry を one-shot remove、restore、rename します（この 3 operations は dry-run 非対応）。
+
+```bash
+uv run --locked mediagent library remove \
+  --path "$MEDIAGENT_LIBRARY_DIR/photo/YYYY/MM/example.jpg" \
+  --reason 'external library cleanup' --external-ref 'immich:asset-id' --json
+uv run --locked mediagent library restore --removal-id 'rmv_replace_with_operation_id' --json
+uv run --locked mediagent library rename \
+  --path "$MEDIAGENT_LIBRARY_DIR/photo/YYYY/MM/example.jpg" \
+  --name 'new display name' --external-ref 'immich:asset-id' --json
+```
+
+Remove 後の file は `.trash/mediagent/` に無期限で残り、expiry/purge job はありません。SQLite state を同期する必要がある場合、この interface を迂回して直接 `.trash` へ移動しないでください。External Immich cleanup systemd integration は今回まだ延期しています。
+
 単一 file の manual debugging では `download.http` を使い、Pixiv referer header を付けます。
 
 ```bash

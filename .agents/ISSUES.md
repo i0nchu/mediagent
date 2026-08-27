@@ -4,6 +4,13 @@ This file tracks known caveats that matter for the next handoff. Resolved histor
 
 ## Open
 
+### Global content identity is locally tested but not production-migrated
+
+- **Status:** Local implementation; deployment and external cleanup integration pending.
+- **Observed in:** `src/mediagent/core/library_content.py`, `src/mediagent/tools/library_content_tools.py`, schema v10.
+- **Current behavior:** Managed sync downloads adopt SHA-256 identity, the full scan supports non-mutating dry-run, ordinary media shares one scanner-visible entry, comic contexts remain distinct with optional hard links, and remove/restore/rename are audited one-shot operations. Raw transport tools are intentionally unmanaged because they have no DB media identity. Removed entries suppress repair and repeat downloads. An overwrite that would replace an ordinary-media path shared by multiple sources is rejected before mutation; source-separation/COW automation is deferred. Trash has no automatic expiry.
+- **Expected next step:** Finish the full offline suite and branch review, deploy schema/code separately, run a Production dry-run scan before apply, then inspect the out-of-repository Immich systemd cleanup script and replace direct trash moves with the remove command. Do not add trash purging in this phase.
+
 ### nhentai browser-cookie renewal still requires live re-verification
 
 - **Status:** JMComic live verification complete; nhentai cookie renewal remains external.

@@ -83,6 +83,10 @@ Built-in SKILLs:
 
 - `storage.path.plan`: 一つの normalized media file に対して deterministic scanner-friendly library path を計画します。Default layout は `<platform>/<storage_category>/<yyyy>/<mm>/<yyyymmdd>__<platform>__<remote_id>__<part>.<ext>` です。Storage category は通常 media type と同じで、Pixiv manga source pages は `comic-pages` を使います。Library root は explicit `library_root`、`MEDIAGENT_<PLATFORM>_LIBRARY_DIR`、`MEDIAGENT_LIBRARY_DIR`、最後に `${MEDIAGENT_DATA_DIR}/library` の順で解決します。Platform-specific root はすでに一つの platform に scoped されているため、default では duplicate platform directory を追加しません。
 - `library.file.verify`: SQLite の known file records をもとに local existence、size、checksum を確認し、file health を `valid`、`missing`、`corrupt`、`unknown` に mark します。Files を削除せず、source platforms に接続しません。
+- `library.content.deduplicate`: `.trash` 外の tracked downloaded files を SHA-256 scan します。Dry-run は plan のみ、apply は一般 media を一つの visible path に集約し、comic context は分離したまま可能なら hard link を使います。
+- `library.entry.remove`: `path` または `entry_id` で `.trash/mediagent/<removal-id>/` に移動し、source rows と repair suppression を同期します。Dry-run 非対応。
+- `library.entry.restore`: `removal_id`、`entry_id`、managed path から checksum validation 後に restore します。Dry-run 非対応。
+- `library.entry.rename`: `path` または `entry_id` で rename し、CBZ は `ComicInfo.xml` も atomic rewrite します。Dry-run 非対応。
 
 ## Download And Metadata Tools
 

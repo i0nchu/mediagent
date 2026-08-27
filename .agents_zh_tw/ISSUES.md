@@ -1,5 +1,11 @@
 # 實作議題
 
+## 全域內容識別已在本機測試但尚未 migrate Production
+
+- **狀態：** 本機實作；部署與外部 cleanup 整合待辦。
+- **目前行為：** Managed sync 使用 SHA-256 identity；完整掃描有 non-mutating dry-run；一般媒體共享一個 scanner-visible entry；漫畫脈絡分開並可用 hard link；remove/restore/rename 可稽核。Raw transport tools 沒有 DB media identity，刻意維持 unmanaged。Removed entry 抑制 repair 與重複下載。若 overwrite 會原地取代多來源共享的一般媒體路徑，會在 mutation 前拒絕；自動 source separation/COW 延後。Trash 沒有自動到期。
+- **下一步：** 完成完整離線 suite 與 branch review，Production 先跑 dry-run；之後才修改 repo 外的 Immich systemd cleanup script。本階段不加入 trash purge。
+
 ## nhentai browser cookie 更新仍待 live re-verification
 
 - **狀態：** JMComic live 驗證完成；nhentai cookie 更新仍需外部操作。

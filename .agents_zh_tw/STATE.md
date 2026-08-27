@@ -1,5 +1,15 @@
 # Mediagent 目前狀態
 
+## 2026-08-27 全域內容識別與 Library 操作
+
+- 開發位於 `codex/global-content-dedup-library-ops`；本節只代表本機實作與離線測試，尚未部署或操作 Production。
+- SQLite schema v10 新增 SHA-256 `content_blobs`、scanner-visible `library_entries`、可稽核的 `library_operations`，以及 `media_files.library_entry_id`。
+- 所有 managed download 成功後都會加入全域內容識別。一般照片／影片／音訊的相同內容會收斂成一個可被掃描的路徑，但 SQLite 仍保留每個來源；漫畫頁與 CBZ 保留不同閱讀脈絡，檔案系統支援時以 hard link 做實體去重。
+- `library.content.deduplicate` 提供完整 tracked-library SHA-256 掃描；dry-run 不修改檔案或 DB，apply 可安全重跑。
+- 已實作一次性的 `mediagent library remove|restore|rename`。Remove 移到 `.trash/mediagent/<removal-id>/` 並抑制 repair/redownload；restore 驗證 checksum；rename 更新名稱，CBZ 也會原子改寫 `ComicInfo.xml`。
+- Remove/restore/rename 不支援 dry-run；planned remove/rename 可在中斷後恢復。尚未實作 trash 到期或 purge。
+- Immich cleanup systemd script 位於本 repo 之外，依使用者指示延後處理。
+
 ## 2026-08-14 漫畫來源更新
 
 - SQLite schema 已升為 v9，具備原子收藏 snapshot、active/inactive membership 與帳號 scoped 收藏範圍 alias。
@@ -35,7 +45,7 @@
 - Agent Core V1 位於 `src/mediagent/agent/`，包含 SKILL loading、strict JSON action parsing、Ollama integration、tool allowlist enforcement、dry-run/execute boundaries，以及 compact/redacted tool-result feedback。
 - Built-in English agent SKILL files 位於 `src/mediagent/agent/skills/builtin/`。
 - Agent CLI commands 已建立：`mediagent agent run`、`mediagent agent skills list`、`mediagent agent skills inspect`。
-- SQLite 初始化位於 `src/mediagent/core/db.py`，目前 schema version 是 `9`，並支援舊 media item/file table、stable `link_queue` lifecycle/retry/provenance fields、漫畫來源收藏 memberships 與 collection-scope aliases 的 idempotent migration。
+- SQLite 初始化位於 `src/mediagent/core/db.py`，目前 schema version 是 `10`，並支援舊 media item/file table、全域內容/library-operation identity、stable `link_queue` lifecycle/retry/provenance fields、漫畫來源收藏 memberships 與 collection-scope aliases 的 idempotent migration。
 - 檔案安全 helper 位於 `src/mediagent/core/filesystem.py`。
 - credential/auth primitives 位於 `src/mediagent/core/auth.py`。
 - rate-limit metadata parsing 位於 `src/mediagent/core/rate_limit.py`。
@@ -86,6 +96,10 @@
 - `core.sync_cursor.set`
 - `download.http`
 - `library.file.verify`
+- `library.content.deduplicate`
+- `library.entry.remove`
+- `library.entry.restore`
+- `library.entry.rename`
 - `link.queue.upsert`
 - `link.media.sync`
 - `link.resolve.preview`（experimental）

@@ -464,6 +464,32 @@ Verify known library files without contacting Pixiv:
 uv run --locked mediagent tools run library.file.verify --json
 ```
 
+Preview a global content scan before applying it:
+
+```bash
+uv run --locked mediagent library deduplicate --dry-run --json
+uv run --locked mediagent library deduplicate --json
+```
+
+For apply/remove/restore/rename, stop overlapping sync services or hold the same deployment-wide `mediagent-sync.lock`; SQLite busy timeout alone does not serialize filesystem mutations.
+
+Remove, restore, or rename one managed scanner-visible entry. These operations have no dry-run; keep the returned removal ID for restore and external audit correlation:
+
+```bash
+uv run --locked mediagent library remove \
+  --path "$MEDIAGENT_LIBRARY_DIR/photo/YYYY/MM/example.jpg" \
+  --reason 'external library cleanup' --external-ref 'immich:asset-id' --json
+
+uv run --locked mediagent library restore \
+  --removal-id 'rmv_replace_with_operation_id' --json
+
+uv run --locked mediagent library rename \
+  --path "$MEDIAGENT_LIBRARY_DIR/photo/YYYY/MM/example.jpg" \
+  --name 'new display name' --external-ref 'immich:asset-id' --json
+```
+
+Remove stores files indefinitely under `.trash/mediagent/`; no expiry or purge job exists. Do not move files into `.trash` outside this interface if SQLite state must remain synchronized. The external Immich cleanup systemd integration is intentionally not part of this repository change yet.
+
 For manual one-file debugging, download selected Pixiv image URLs with `download.http` and a Pixiv referer header:
 
 ```bash

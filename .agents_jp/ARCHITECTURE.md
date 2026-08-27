@@ -8,7 +8,11 @@
 
 JMComic album-scoped resolution では album episode list が chapter number を所有する。Per-photo payload は pages/title を提供するが、series list が lagging しても chapter number を 1 に downgrade できない。Raw duplicate number は normalized item が DB/package layer に入る前に disambiguate する。Historical repair は DB に現れる各 album を resolve、current manifest identity と DB／CBZ `ComicInfo.xml` を比較、read-only manifest を生成し、confirmed apply で healthy tracked source pages から affected archive だけを rebuild、replaced CBZ を quarantine する。Provider/network または source-health gap は mutation 前に apply を block する。
 
-Schema v8 は `source_collections` と `source_collection_memberships`、v9 は account-scoped human name と remote collection scope を結ぶ `source_collection_scope_aliases` を追加する。安定した page file key により CDN URL のローテーションで重複 row を作らない。cookie、token、機密 header、JM runtime decode は永続 metadata に保存しない。
+Schema v8 は `source_collections` と `source_collection_memberships`、v9 は account-scoped human name と remote collection scope を結ぶ `source_collection_scope_aliases`、v10 は `content_blobs`、`library_entries`、`library_operations`、`media_files.library_entry_id` を追加する。
+
+`content_blobs` が checksum identity を所有し、provider `media_items` / `media_files` は全 source references を保持する。一般 media の同一 checksum は一つの scanner-visible entry だけを投影し、Immich の cross-provider duplicate を防ぐ。Comic pages/CBZ は context-specific presentation key で path を分離し、可能なら hard link を使う。Remove は source metadata を削除せず、repair/verify は explicit restore まで removed entry を skip する。Raw `download.http` は DB media identity を持たない unmanaged transport primitive であり、managed sync tools は file upsert 直後に adoption する。
+
+安定した page file key により CDN URL のローテーションで重複 row を作らない。cookie、token、機密 header、JM runtime decode は永続 metadata に保存しない。
 
 ## Product Boundary
 
@@ -32,6 +36,7 @@ src/mediagent/
 
 - `tooling.py`: `ToolSpec`、`ToolContext`、`ToolResult`、permissions、registry errors、`ToolRegistry`
 - `db.py`: SQLite schema と persistence helpers
+- `library_content.py`: global SHA-256 identity、scanner-visible projection、dedup scan/apply、remove/restore/rename lifecycle
 - `filesystem.py`: path placeholder expansion、normalization、write-boundary checks
 - `auth.py`: credential refs、credential JSON helpers、redacted auth session model
 - `http.py`: testable HTTP client abstraction

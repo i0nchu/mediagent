@@ -1,5 +1,15 @@
 # Mediagent Current State
 
+## 2026-08-27 Global Content Identity And Library Operations
+
+- Development is on `codex/global-content-dedup-library-ops`; this section describes local implementation and offline tests only. It has not been deployed or run against Production.
+- SQLite schema v10 adds SHA-256 `content_blobs`, scanner-visible `library_entries`, auditable `library_operations`, and `media_files.library_entry_id`.
+- Managed download paths now adopt every successful media file into global content identity. Ordinary photo/video/audio duplicates collapse to one scanner-visible path while all provider/media-item references remain in SQLite. Comic pages and CBZ files retain separate reading contexts and use hard links for physical deduplication when the filesystem supports them.
+- `library.content.deduplicate` provides a full tracked-library SHA-256 scan. Dry-run hashes and reports duplicate paths, hard-link candidates, missing files, and reclaimable bytes without changing SQLite or files; apply is rerunnable and idempotent.
+- One-shot `mediagent library remove|restore|rename` commands and matching tools are implemented. Remove moves one logical entry under `.trash/mediagent/<removal-id>/`, updates every attached source reference, and suppresses repair/redownload. Restore checksum-validates and returns to the exact path. Rename updates paths and title override; CBZ rename also rewrites root `ComicInfo.xml` atomically.
+- Remove/restore/rename intentionally do not support dry-run. Planned remove/rename operations can recover safely after an interruption between the filesystem move and SQLite completion. No trash expiry or purge policy is implemented.
+- The external Immich cleanup systemd script is outside this repository and is intentionally deferred until repository implementation and tests are complete.
+
 ## 2026-08-14 Comic Source Update
 
 - SQLite schema is version 9 with atomic source collection snapshots, active/inactive memberships, and account-scoped collection-scope aliases.
@@ -36,7 +46,7 @@
 - Built-in English agent SKILL files exist under `src/mediagent/agent/skills/builtin/`.
 - Agent CLI commands exist: `mediagent agent run`, `mediagent agent skills list`, and `mediagent agent skills inspect`.
 - SQLite schema initialization exists in `src/mediagent/core/db.py`.
-- Current SQLite schema version is `9`, with idempotent migration support for old media item/file tables, stable `link_queue` lifecycle/retry/provenance fields, comic source collection memberships, and collection-scope aliases.
+- Current SQLite schema version is `10`, with idempotent migration support for old media item/file tables, global content/library-operation identity, stable `link_queue` lifecycle/retry/provenance fields, comic source collection memberships, and collection-scope aliases.
 - Filesystem safety helpers exist in `src/mediagent/core/filesystem.py`.
 - Secret redaction helpers exist in `src/mediagent/core/redaction.py`.
 - HTTP abstraction exists in `src/mediagent/core/http.py`.
@@ -87,6 +97,10 @@
 - `core.sync_cursor.set`
 - `download.http`
 - `library.file.verify`
+- `library.content.deduplicate`
+- `library.entry.remove`
+- `library.entry.restore`
+- `library.entry.rename`
 - `link.queue.upsert`
 - `link.media.sync`
 - `link.resolve.preview` (experimental)

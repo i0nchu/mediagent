@@ -9,6 +9,14 @@ When updating this TODO, update the Traditional Chinese and Japanese copies in t
 
 ## Current Focus: systemd Timer Hardening
 
+## Global Content Identity Follow-up
+
+- [x] Add schema-v10 global SHA-256 blob identity, ordinary-media path collapse, comic-context hard links, and download-time adoption across managed Pixiv, Telegram, generic link, Instagram/comic delegation, and CBZ paths.
+- [x] Add full tracked-library dedup dry-run/apply plus one-shot remove, restore, and rename commands with audit operations, checksum conflicts, removed-state suppression, and interruption recovery.
+- [ ] After the repository suite is green and the branch is reviewed, merge/push and run only a Production dry-run scan first; deployment still requires explicit approval.
+- [ ] After repository work is complete, separately inspect and update the external systemd Immich cleanup script to call `mediagent library remove` instead of moving files directly. It is outside this repository and intentionally skipped for now.
+- [ ] Keep trash expiry/purge deferred; do not add automatic deletion in this phase.
+
 ## Comic Source Follow-up
 
 - [ ] Re-export a fresh nhentai browser cookie and repeat the complete favorites collect/sync live test; the previous user-verified cookie now returns HTTP 401.

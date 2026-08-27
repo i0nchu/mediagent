@@ -22,6 +22,7 @@ src/mediagent/
 
 - `tooling.py`: `ToolSpec`, `ToolContext`, `ToolResult`, permissions, registry errors, and `ToolRegistry`
 - `db.py`: SQLite schema and persistence helpers
+- `library_content.py`: global SHA-256 content identity, scanner-visible projections, dedup scan/apply, and remove/restore/rename lifecycle
 - `filesystem.py`: path placeholder expansion, normalization, and write-boundary checks
 - `http.py`: small HTTP client abstraction for testable downloads
 - `auth.py`: credential references, credential JSON helpers, and redacted auth session models
@@ -137,6 +138,7 @@ explicit URL source
 -> download.http
 -> metadata.write
 -> media.file.upsert
+-> global content/blob adoption
 -> media.item.set_status
 -> core.run.record
 ```
@@ -203,7 +205,11 @@ Direct URL scope is deterministic and never creates follow state. Account favori
 
 For album-scoped JMComic resolution, the album episode list owns chapter numbering; the per-photo payload supplies pages and title but cannot downgrade the chapter number when its series list lags. Duplicate raw numbers are disambiguated before normalized items reach DB/package layers. Historical repair resolves every represented album, compares current manifest identity with DB and CBZ `ComicInfo.xml`, produces a read-only manifest, then on confirmed apply rebuilds only affected archives from healthy tracked source pages and quarantines replaced CBZ files. Provider/network or source-health gaps block apply before mutation.
 
-Schema v8 adds `source_collections` and `source_collection_memberships`; schema v9 adds `source_collection_scope_aliases` for account-scoped human names mapped to remote collection scopes. Stable per-page file keys prevent rotating CDN URLs from creating duplicate media-file rows. Credential-bearing headers, cookies, API tokens, and JM decode runtime metadata remain outside persisted media metadata.
+Schema v8 adds `source_collections` and `source_collection_memberships`; schema v9 adds `source_collection_scope_aliases` for account-scoped human names mapped to remote collection scopes. Schema v10 adds `content_blobs`, `library_entries`, `library_operations`, and `media_files.library_entry_id`.
+
+`content_blobs` owns checksum identity; provider `media_items` and `media_files` keep every source and provenance record. One ordinary-media `library_entry` is scanner-visible for a checksum, so cross-provider duplicates do not appear repeatedly in Immich. Comic source pages and CBZ archives use context-specific presentation keys because one byte-identical page may legitimately belong to multiple chapters; they keep those paths and use hard links when possible. Removing a library entry changes its state and moves its one presentation to Mediagent trash without deleting source metadata. Repair and verification skip removed entries until an explicit restore. Raw `download.http` remains an unmanaged transport primitive; managed sync tools perform adoption immediately after their DB file upsert.
+
+Stable per-page file keys prevent rotating CDN URLs from creating duplicate media-file rows. Credential-bearing headers, cookies, API tokens, and JM decode runtime metadata remain outside persisted media metadata.
 
 RuleSpec is a planned policy layer, not an implemented runtime feature.
 

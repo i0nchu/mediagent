@@ -1,5 +1,13 @@
 # Mediagent 焦點 TODO
 
+## 全域內容識別後續
+
+- [x] 新增 schema-v10 全域 SHA-256 identity、一般媒體路徑收斂、漫畫脈絡 hard links，以及所有 managed download paths 的 adoption。
+- [x] 新增完整 library dedup dry-run/apply 與具 audit、checksum conflict、removed-state suppression、中斷恢復的一次性 remove/restore/rename。
+- [ ] Repo suite 全綠且 branch review 後才 merge/push；Production 必須先只跑 dry-run scan，部署仍需明確許可。
+- [ ] Repo 完成後再修改 repo 外的 systemd Immich cleanup script，以 `mediagent library remove` 取代直接移檔；目前刻意跳過。
+- [ ] Trash 到期/purge 保持延後。
+
 ## 漫畫來源後續
 
 - [ ] 重新匯出新的 nhentai browser cookie，再跑完整收藏 collect/sync live test；先前由使用者驗證的 cookie 現在回 HTTP 401。

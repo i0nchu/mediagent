@@ -1,5 +1,13 @@
 # Mediagent Focused TODO
 
+## Global content identity follow-up
+
+- [x] Schema-v10 global SHA-256 identity、ordinary-media path collapse、comic-context hard links、全 managed download paths の adoption を追加する。
+- [x] Full-library dedup dry-run/apply と、audit/checksum conflict/removed-state suppression/interruption recovery を持つ one-shot remove/restore/rename を追加する。
+- [ ] Repo suite が green で branch review 完了後にのみ merge/push する。Production は最初に dry-run scan だけを実行し、deploy には explicit approval が必要。
+- [ ] Repo work 完了後、repo 外の systemd Immich cleanup script を別途調査し、direct file move を `mediagent library remove` に置き換える。今は意図的に skip。
+- [ ] Trash expiry/purge は deferred のままにする。
+
 ## Comic source follow-up
 
 - [ ] 新しい nhentai browser cookie を再 export し、complete favorites collect/sync live test を再実行する。以前 user 検証済みの cookie は現在 HTTP 401。

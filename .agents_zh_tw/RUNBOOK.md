@@ -443,6 +443,29 @@ Public library 預設不寫 JSON sidecar metadata。Source metadata 會留在 SQ
 uv run --locked mediagent tools run library.file.verify --json
 ```
 
+套用全域內容去重前先 preview：
+
+```bash
+uv run --locked mediagent library deduplicate --dry-run --json
+uv run --locked mediagent library deduplicate --json
+```
+
+執行 apply/remove/restore/rename 前，先停止重疊的 sync services，或持有相同的 deployment-wide `mediagent-sync.lock`；SQLite busy timeout 本身不會序列化檔案系統 mutation。
+
+一次性移除、還原或改名一個 managed entry（這三個操作沒有 dry-run）：
+
+```bash
+uv run --locked mediagent library remove \
+  --path "$MEDIAGENT_LIBRARY_DIR/photo/YYYY/MM/example.jpg" \
+  --reason 'external library cleanup' --external-ref 'immich:asset-id' --json
+uv run --locked mediagent library restore --removal-id 'rmv_replace_with_operation_id' --json
+uv run --locked mediagent library rename \
+  --path "$MEDIAGENT_LIBRARY_DIR/photo/YYYY/MM/example.jpg" \
+  --name 'new display name' --external-ref 'immich:asset-id' --json
+```
+
+Remove 會把檔案無限期保留在 `.trash/mediagent/`；目前沒有到期或 purge job。若要維持 SQLite 同步，不要繞過此介面直接移檔。外部 Immich cleanup systemd 整合依指示尚未納入。
+
 若要手動除錯單一檔案下載，使用 `download.http`，並帶 Pixiv referer header：
 
 ```bash

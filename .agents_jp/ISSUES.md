@@ -1,5 +1,11 @@
 # 実装上の注意点
 
+## Global content identity は local test 済みだが Production migration 未実施
+
+- **状態:** Local implementation。Deploy と external cleanup integration は pending。
+- **現在:** Managed sync は SHA-256 identity を採用し、full scan は non-mutating dry-run 対応。一般 media は一つの scanner-visible entry を共有し、comic context は分離して hard link を利用可能。Remove/restore/rename は audited one-shot operations。Raw transport tools は DB media identity がないため unmanaged のまま。Removed entry は repair/redownload を抑止する。Multiple sources が共有する ordinary-media path の in-place overwrite は mutation 前に拒否し、自動 source separation/COW は deferred。Trash auto-expiry はない。
+- **次:** Full offline suite と branch review を完了し、Production では dry-run から開始する。その後に repo 外の Immich systemd cleanup script を remove command に変更する。この phase では trash purge を追加しない。
+
 ## nhentai browser cookie renewal の live re-verification が未完了
 
 - **状態:** JMComic live verification 完了。nhentai cookie renewal は外部操作待ち。
