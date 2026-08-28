@@ -2,7 +2,7 @@
 
 ## 2026-08-28 Global content identity と managed trash
 
-- Schema v10 と commit `340b406` は Production に deploy 済みで、全 Mediagent timers は停止中。Migration 前 schema-v9 backup は `/data/services/mediagent/data/backups/mediagent.sqlite3.pre-v10.20260827T141834Z.bak`。Migration は 2,817 media items と 91,455 media files を保持し、SQLite integrity check に通過した。
+- Schema v10 と commit `830a900` までの managed-trash fixes は Production に deploy 済み。Migration 前 schema-v9 backup は `/data/services/mediagent/data/backups/mediagent.sqlite3.pre-v10.20260827T141834Z.bak`。Migration は 2,817 media items と 91,455 media files を保持し、SQLite integrity check に通過した。
 - SQLite schema v10 は SHA-256 `content_blobs`、scanner-visible `library_entries`、audit 用 `library_operations`、`media_files.library_entry_id` を追加する。
 - Managed download 成功後は global content identity に adoption する。一般 photo/video/audio の同一内容は一つの scanner-visible path に集約しつつ、SQLite は全 source references を保持する。Comic pages/CBZ は reading context を分離し、filesystem 対応時は hard link で physical dedup する。
 - `library.content.deduplicate` は tracked library 全体の SHA-256 scan を提供する。Dry-run は file/DB を変更せず、apply は rerunnable/idempotent。
@@ -10,6 +10,7 @@
 - One-shot `mediagent library remove|restore|rename` を実装済み。Remove は `.trash/mediagent/<removal-id>/` へ移動して repair/redownload を抑止、restore は checksum validation、rename は path/title を更新し CBZ の `ComicInfo.xml` も atomic rewrite する。
 - `library.trash.status` と `library.trash.prepare` は symlink-safe な `.trash/mediagent` namespace を inspect/create する。Legacy trash はそのまま保持し、Mediagent は `.trash` tree 全体の owner を変更しない。Remove/restore/rename は dry-run 非対応で、interrupted planned operation は再実行で recovery できる。Trash expiry/purge は未実装。
 - `deploy/integrations/immich/` は replacement delete-candidate script と systemd drop-in を提供する。`server` account と共通 `/run/lock/mediagent-sync.lock` を使い、direct file move ではなく Immich audit reference 付き `mediagent library remove` を呼ぶ。
+- Production に root-owned legacy `.trash` parent を変更せず、operational な `server:server` `.trash/mediagent` namespace を配置した。Pixiv V1 CBZ 16 件は audited remove ですべて retire し、idempotent rerun は 16 existing、13 explicit removed/skipped、0 failures。External Immich cleanup script/drop-ins は `/data/services/immich-private/backups/mediagent-integration-20260828T071950Z` に backup 後 Mediagent bridge へ交換し、0 candidates/0 failures で live verify した。Server full suite は 401 tests pass。SQLite は `quick_check=ok`、FK errors 0、90,581 active と 823 removed entries の missing files 0。Production timers 5 個は active に戻り next run も設定済みで、catch-up lock contention は accepted status 75 で安全に skip する。
 
 ## 2026-08-14 コミックソース更新
 

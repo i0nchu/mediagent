@@ -482,7 +482,7 @@ uv run --locked mediagent library rename \
   --name 'new display name' --external-ref 'immich:asset-id' --json
 ```
 
-Remove 會把檔案無限期保留在 `.trash/mediagent/`；目前沒有到期或 purge job。若要維持 SQLite 同步，不要繞過此介面直接移檔。外部 Immich cleanup systemd 整合依指示尚未納入。
+Remove 會把檔案無限期保留在 `.trash/mediagent/`；目前沒有到期或 purge job。若要維持 SQLite 同步，不要繞過此介面直接移檔。Production 已使用審查過的 `deploy/integrations/immich/` bridge：外部 cleanup service 以 `server` 執行、持有 `/run/lock/mediagent-sync.lock`，並呼叫此 remove 介面，不再直接搬檔。整合前 script 與 units 備份位於 `/data/services/immich-private/backups/mediagent-integration-20260828T071950Z`。
 
 若要手動除錯單一檔案下載，使用 `download.http`，並帶 Pixiv referer header：
 

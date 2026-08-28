@@ -6,9 +6,9 @@
 - [x] Full-library dedup dry-run/apply と、audit/checksum conflict/removed-state suppression/interruption recovery を持つ one-shot remove/restore/rename を追加する。
 - [x] Schema v10 を merge/push し、Production timers を停止、Production DB を backup/migrate して最初の global dedup dry-run を実行した。
 - [x] `library.trash.reconcile` を完成/deploy、verified rows 807 件を import、global dedup apply と Production idempotence verification を完了した。
-- [ ] Managed trash と audited Pixiv legacy-CBZ retirement を deploy し、pending cleanup packages 16 件を完了する。
-- [ ] Review 済み Immich bridge/systemd drop-in を install/verify し、shared lock 下で `mediagent library remove` を呼ばせてから Production timers を restore/monitor する。
-- [ ] Trash expiry/purge は deferred のままにする。
+- [x] Managed trash と audited Pixiv legacy-CBZ retirement を deploy し、cleanup packages 16 件をすべて完了・検証した。
+- [x] Review 済み Immich bridge/systemd drop-in を install/verify し、shared lock 下で `mediagent library remove` を呼ばせ、Production timers を restore/monitor した。
+- [x] この phase で trash expiry/purge を deferred のままとし、automatic deletion を追加しない。
 
 ## Comic source follow-up
 

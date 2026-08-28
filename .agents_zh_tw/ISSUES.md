@@ -1,12 +1,5 @@
 # 實作議題
 
-## Managed-trash deployment 與 Pixiv legacy retirement 尚待完成
-
-- **狀態：** 全域 identity reconciliation/dedup 已完成。Managed-trash/CBZ retirement 已在本機實作與測試；Production timers 維持停止直到部署驗證完成。
-- **目前行為：** Managed sync 使用 SHA-256 identity；完整掃描有 non-mutating dry-run；一般媒體共享一個 scanner-visible entry；漫畫脈絡分開並可用 hard link；remove/restore/rename 可稽核。Raw transport tools 沒有 DB media identity，刻意維持 unmanaged。Removed entry 抑制 repair 與重複下載。若 overwrite 會原地取代多來源共享的一般媒體路徑，會在 mutation 前拒絕；自動 source separation/COW 延後。Trash 沒有自動到期。
-- **Production 證據：** Reconciliation 已匯入 807 removed entries/source links；dedup adoption 90,629 rows、collapse 32 paths、hard-link 428 paths、回收 491,170,708 bytes，並通過 integrity/idempotence。仍有 16 個 Pixiv V1 archives 待退役；舊程式因 root-owned `.trash` 阻止 `server` 建立獨立 quarantine directory 而失敗。
-- **下一步：** 部署 managed-trash branch，只為 `server` 預建 `.trash/mediagent`，完成 16 個 Pixiv cleanup packages，安裝已審查的 Immich script/drop-in，驗證後恢復 timers。本階段不加入 trash purge。
-
 ## nhentai browser cookie 更新仍待 live re-verification
 
 - **狀態：** JMComic live 驗證完成；nhentai cookie 更新仍需外部操作。
@@ -26,13 +19,6 @@ JMComic `/favorite` 正常會回 `folder_list`，FID `0` 是 aggregate All；但
 本檔記錄下一次接手仍需要注意的 caveats。已解決的歷史問題不應長期保留在 Open，除非仍影響實作判斷。
 
 ## Open
-
-### 0. Pixiv CBZ 封裝已實作但尚未 live migration
-
-- **狀態：** 等待外部驗證。
-- **位置：** `src/mediagent/core/comics.py`、`src/mediagent/tools/pixiv_library_tools.py`
-- **目前行為：** Unit tests 已覆蓋 `comic-pages` 分類、Kavita one-shot/series directories、normalized `ComicInfo.xml`、deterministic atomic CBZ、V1 quarantine migration、DB 記錄、重跑重用，以及 `package_comics:true` sync integration；本次開發沒有遷移正式 library 或 database。
-- **建議下一步：** 停止重疊 Pixiv jobs，對預定 deployment inputs 執行 reconciliation 與 package dry-run，確認後明確 apply，並在 Immich 同時排除 `comic` 與 `comic-pages`。
 
 ### 1. X OAuth 已實作，但尚未 live-verified
 

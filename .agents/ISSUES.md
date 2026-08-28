@@ -4,14 +4,6 @@ This file tracks known caveats that matter for the next handoff. Resolved histor
 
 ## Open
 
-### Managed-trash deployment and Pixiv legacy retirement are pending
-
-- **Status:** Global identity reconciliation/dedup is complete. Managed-trash/CBZ retirement is implemented and locally tested; Production timers remain stopped until deployment and verification finish.
-- **Observed in:** `src/mediagent/core/library_content.py`, `src/mediagent/tools/library_content_tools.py`, schema v10.
-- **Current behavior:** Managed sync downloads adopt SHA-256 identity, the full scan supports non-mutating dry-run, ordinary media shares one scanner-visible entry, comic contexts remain distinct with optional hard links, and remove/restore/rename are audited one-shot operations. Raw transport tools are intentionally unmanaged because they have no DB media identity. Removed entries suppress repair and repeat downloads. An overwrite that would replace an ordinary-media path shared by multiple sources is rejected before mutation; source-separation/COW automation is deferred. Trash has no automatic expiry.
-- **Production evidence:** Reconciliation imported 807 removed entries/source links and dedup adopted 90,629 rows, collapsed 32 paths, hard-linked 428 paths, reclaimed 491,170,708 bytes, and passed integrity/idempotence checks. Sixteen Pixiv V1 archives still need retirement; old code failed because root-owned `.trash` prevented `server` from creating a separate quarantine directory.
-- **Expected next step:** Deploy the managed-trash branch, pre-create only `.trash/mediagent` for `server`, run the 16 Pixiv cleanup packages, replace the external Immich script/drop-in with the reviewed integration, then verify and restore timers. Do not add trash purging in this phase.
-
 ### nhentai browser-cookie renewal still requires live re-verification
 
 - **Status:** JMComic live verification complete; nhentai cookie renewal remains external.
@@ -27,13 +19,6 @@ This file tracks known caveats that matter for the next handoff. Resolved histor
 - **Current behavior:** JMComic segment-count hashing must exclude the image filename extension. Including `.jpg`/`.webp` selects the wrong number of horizontal bands while still producing a structurally valid image, so filesystem health checks cannot detect it. Old affected files require explicit `--overwrite`; missing-file repair alone intentionally does not replace present files.
 - **Current behavior:** JMComic `/favorite` normally returns `folder_list` and aggregate folder ID `0`, but an older usable session temporarily returned an empty folder index and only 42 items. A fresh credential session returned `all(0)` plus the named custom folder, 49 aggregate items, and all 7 custom-folder items as an All subset. Folder names therefore resolve remotely when available, while numeric IDs and account-scoped local aliases remain supported for stale provider views.
 - **Expected next step:** Return structured auth/rate-limit/response errors, preserve the last complete favorite snapshot on any collection failure, and update fixtures before changing parser behavior.
-
-### 0. Pixiv CBZ packaging is implemented but not live-migrated
-
-- **Status:** Open external verification.
-- **Observed in:** `src/mediagent/core/comics.py`, `src/mediagent/tools/pixiv_library_tools.py`
-- **Current behavior:** Unit tests cover `comic-pages` classification, Kavita one-shot/series directories, normalized `ComicInfo.xml`, deterministic atomic CBZ creation, V1 quarantine migration, DB recording, rerun reuse, and `package_comics:true` sync integration. No production library or database has been migrated by this implementation task.
-- **Expected next step:** Stop overlapping Pixiv jobs, run reconciliation and package dry-runs against the intended deployment inputs, then apply explicitly and configure Immich exclusions for both `comic` and `comic-pages`.
 
 ### 1. X OAuth is implemented but not live-verified
 

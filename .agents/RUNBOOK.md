@@ -507,7 +507,7 @@ uv run --locked mediagent library rename \
   --name 'new display name' --external-ref 'immich:asset-id' --json
 ```
 
-Remove stores files indefinitely under `.trash/mediagent/`; no expiry or purge job exists. Do not move files into `.trash` outside this interface if SQLite state must remain synchronized. The external Immich cleanup systemd integration is intentionally not part of this repository change yet.
+Remove stores files indefinitely under `.trash/mediagent/`; no expiry or purge job exists. Do not move files into `.trash` outside this interface if SQLite state must remain synchronized. Production uses the reviewed `deploy/integrations/immich/` bridge: the external cleanup service runs as `server`, holds `/run/lock/mediagent-sync.lock`, and calls this remove interface instead of moving files directly. The pre-integration script and units are backed up under `/data/services/immich-private/backups/mediagent-integration-20260828T071950Z`.
 
 For manual one-file debugging, download selected Pixiv image URLs with `download.http` and a Pixiv referer header:
 

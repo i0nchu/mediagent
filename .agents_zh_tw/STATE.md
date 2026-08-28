@@ -2,7 +2,7 @@
 
 ## 2026-08-28 全域內容識別與 Managed Trash
 
-- Schema v10 與 commit `340b406` 已部署到 Production，所有 Mediagent timers 目前停止。遷移前 schema-v9 備份是 `/data/services/mediagent/data/backups/mediagent.sqlite3.pre-v10.20260827T141834Z.bak`；遷移保留 2,817 個 media items 與 91,455 個 media files，SQLite integrity check 通過。
+- Schema v10 與 managed-trash 修正（截至 commit `830a900`）已部署到 Production。遷移前 schema-v9 備份是 `/data/services/mediagent/data/backups/mediagent.sqlite3.pre-v10.20260827T141834Z.bak`；遷移保留 2,817 個 media items 與 91,455 個 media files，SQLite integrity check 通過。
 - SQLite schema v10 新增 SHA-256 `content_blobs`、scanner-visible `library_entries`、可稽核的 `library_operations`，以及 `media_files.library_entry_id`。
 - 所有 managed download 成功後都會加入全域內容識別。一般照片／影片／音訊的相同內容會收斂成一個可被掃描的路徑，但 SQLite 仍保留每個來源；漫畫頁與 CBZ 保留不同閱讀脈絡，檔案系統支援時以 hard link 做實體去重。
 - `library.content.deduplicate` 提供完整 tracked-library SHA-256 掃描；dry-run 不修改檔案或 DB，apply 可安全重跑。
@@ -10,6 +10,7 @@
 - 已實作一次性的 `mediagent library remove|restore|rename`。Remove 移到 `.trash/mediagent/<removal-id>/` 並抑制 repair/redownload；restore 驗證 checksum；rename 更新名稱，CBZ 也會原子改寫 `ComicInfo.xml`。
 - `library.trash.status` 與 `library.trash.prepare` 會檢查或建立 symlink-safe 的 `.trash/mediagent` namespace；既有 legacy trash 保持原位，Mediagent 不會改整棵 `.trash` 的 owner。Remove/restore/rename 不支援 dry-run；planned operation 可在中斷後安全恢復。尚未實作 trash 到期或 purge。
 - `deploy/integrations/immich/` 提供替代 delete-candidate script 與 systemd drop-in；它以 `server` 帳號執行、共用 `/run/lock/mediagent-sync.lock`，並以 Immich audit reference 呼叫 `mediagent library remove`，不再直接搬檔。
+- Production 已有可運作的 `server:server` `.trash/mediagent` namespace，且沒有修改 root-owned legacy `.trash` parent。16 個 Pixiv V1 CBZ 已全部透過 audited remove 退役；idempotent 重跑為 16 existing、13 個明確 removed/skipped、0 failure。外部 Immich cleanup script/drop-ins 已備份至 `/data/services/immich-private/backups/mediagent-integration-20260828T071950Z`、替換為 Mediagent bridge，並以 0 candidates/0 failures live 驗證。Server 完整測試 401 項通過；SQLite 為 `quick_check=ok`、0 FK errors，90,581 active 與 823 removed entries 均無缺檔。五個 Production timers 均已恢復 active 並有下次排程；catch-up 時的 lock contention 以允許的 status 75 安全跳過。
 
 ## 2026-08-14 漫畫來源更新
 

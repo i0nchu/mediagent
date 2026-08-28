@@ -478,7 +478,7 @@ uv run --locked mediagent library rename \
   --name 'new display name' --external-ref 'immich:asset-id' --json
 ```
 
-Remove 後の file は `.trash/mediagent/` に無期限で残り、expiry/purge job はありません。SQLite state を同期する必要がある場合、この interface を迂回して直接 `.trash` へ移動しないでください。External Immich cleanup systemd integration は今回まだ延期しています。
+Remove 後の file は `.trash/mediagent/` に無期限で残り、expiry/purge job はありません。SQLite state を同期する必要がある場合、この interface を迂回して直接 `.trash` へ移動しないでください。Production は review 済み `deploy/integrations/immich/` bridge を使用し、external cleanup service は `server` で実行、`/run/lock/mediagent-sync.lock` を保持してこの remove interface を呼び、direct file move はしません。Integration 前の script/units は `/data/services/immich-private/backups/mediagent-integration-20260828T071950Z` に backup 済みです。
 
 単一 file の manual debugging では `download.http` を使い、Pixiv referer header を付けます。
 

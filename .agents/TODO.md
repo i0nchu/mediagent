@@ -15,9 +15,9 @@ When updating this TODO, update the Traditional Chinese and Japanese copies in t
 - [x] Add full tracked-library dedup dry-run/apply plus one-shot remove, restore, and rename commands with audit operations, checksum conflicts, removed-state suppression, and interruption recovery.
 - [x] Merge/push schema v10, stop Production timers, back up and migrate the Production DB, and run the first global dedup dry-run.
 - [x] Complete/deploy `library.trash.reconcile`, import all 807 verified rows, apply global dedup, and verify the idempotent Production result.
-- [ ] Deploy managed trash and audited Pixiv legacy-CBZ retirement, then complete the 16 pending cleanup packages.
-- [ ] Install and verify the reviewed Immich bridge/systemd drop-in so it calls `mediagent library remove` under the shared lock, then restore and monitor Production timers.
-- [ ] Keep trash expiry/purge deferred; do not add automatic deletion in this phase.
+- [x] Deploy managed trash and audited Pixiv legacy-CBZ retirement, then complete and verify all 16 cleanup packages.
+- [x] Install and verify the reviewed Immich bridge/systemd drop-in so it calls `mediagent library remove` under the shared lock, then restore and monitor Production timers.
+- [x] Keep trash expiry/purge deferred; do not add automatic deletion in this phase.
 
 ## Comic Source Follow-up
 

@@ -1,12 +1,5 @@
 # 実装上の注意点
 
-## Managed-trash deployment と Pixiv legacy retirement が未完了
-
-- **状態:** Global identity reconciliation/dedup は完了。Managed-trash/CBZ retirement は local 実装/test 済みで、Production timers は deployment verification 完了まで停止する。
-- **現在:** Managed sync は SHA-256 identity を採用し、full scan は non-mutating dry-run 対応。一般 media は一つの scanner-visible entry を共有し、comic context は分離して hard link を利用可能。Remove/restore/rename は audited one-shot operations。Raw transport tools は DB media identity がないため unmanaged のまま。Removed entry は repair/redownload を抑止する。Multiple sources が共有する ordinary-media path の in-place overwrite は mutation 前に拒否し、自動 source separation/COW は deferred。Trash auto-expiry はない。
-- **Production evidence:** Reconciliation は 807 removed entries/source links を import。Dedup は 90,629 rows adoption、32 paths collapse、428 paths hard-link、491,170,708 bytes reclaim を完了し、integrity/idempotence を通過した。Pixiv V1 archives 16 件が retirement 待ちで、old code は root-owned `.trash` により `server` が別 quarantine directory を作れず失敗した。
-- **次:** Managed-trash branch を deploy、`server` 用に `.trash/mediagent` だけを pre-create、Pixiv cleanup 16 件を完了し、review 済み Immich script/drop-in を install、verify 後 timers を戻す。この phase では trash purge を追加しない。
-
 ## nhentai browser cookie renewal の live re-verification が未完了
 
 - **状態:** JMComic live verification 完了。nhentai cookie renewal は外部操作待ち。
@@ -26,13 +19,6 @@ JMComic `/favorite` は通常 `folder_list` を返し、FID `0` は aggregate Al
 このファイルは次回引き継ぎでまだ重要な caveats だけを記録します。解決済みの履歴は、実装判断に影響しない限り Open に残しません。
 
 ## Open
-
-### 0. Pixiv CBZ packaging は実装済みだが live migration 未実施
-
-- **Status:** External verification 待ち。
-- **Observed in:** `src/mediagent/core/comics.py`、`src/mediagent/tools/pixiv_library_tools.py`
-- **Current behavior:** Unit tests は `comic-pages` classification、Kavita one-shot/series directories、normalized `ComicInfo.xml`、deterministic atomic CBZ、V1 quarantine migration、DB recording、rerun reuse、`package_comics:true` sync integration を覆います。この implementation task では production library/database を migrate していません。
-- **Expected next step:** Overlapping Pixiv jobs を停止し、intended deployment inputs で reconciliation/package dry-run を実行してから明示的に apply し、Immich で `comic` と `comic-pages` の両方を exclude します。
 
 ### 1. X OAuth は実装済みだが live-verified ではない
 
