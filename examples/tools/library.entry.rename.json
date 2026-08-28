@@ -3,5 +3,5 @@
   "library_root": "${MEDIAGENT_LIBRARY_DIR}",
   "path": "${MEDIAGENT_LIBRARY_DIR}/photo/YYYY/MM/example.jpg",
   "name": "new display name",
-  "external_ref": "immich:asset-id"
+  "external_ref": "external-catalog:record-id"
 }

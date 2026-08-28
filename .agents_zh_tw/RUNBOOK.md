@@ -98,7 +98,7 @@ uv run --locked ...
 PYTHONPATH=src python3 -m mediagent ...
 ```
 
-## Managed Trash 與 Immich Cleanup
+## Managed Trash 與外部生命週期 client
 
 請用與 Mediagent service 相同的帳號檢查或建立 namespace：
 
@@ -108,9 +108,10 @@ uv run --locked mediagent library trash prepare --library-root /data/nas/mediage
 ```
 
 若 legacy `.trash` parent 不可寫，管理員只需為 service account 預建
-`.trash/mediagent`；不要遞迴變更 legacy trash owner。已審查的 Immich bridge 位於
-`deploy/integrations/immich/`，必須和 sync services 共用 flock 並呼叫
-`mediagent library remove`，不可直接搬檔。V1 沒有自動 purge。
+`.trash/mediagent`；不要遞迴變更 legacy trash owner。外部 catalog、瀏覽器或 cleanup
+service 必須留在自己的專案；它們可以和 sync services 共用 flock，呼叫平台中立的
+`mediagent library remove|restore|rename`，但 API client、credentials、選取規則、分頁、
+scheduler 與 service units 不屬於本 repo，也不可直接搬動 managed files。V1 沒有自動 purge。
 
 ## 跑測試
 
@@ -475,14 +476,14 @@ uv run --locked mediagent library deduplicate --json
 ```bash
 uv run --locked mediagent library remove \
   --path "$MEDIAGENT_LIBRARY_DIR/photo/YYYY/MM/example.jpg" \
-  --reason 'external library cleanup' --external-ref 'immich:asset-id' --json
+  --reason 'external library cleanup' --external-ref 'external-cleanup:record-id' --json
 uv run --locked mediagent library restore --removal-id 'rmv_replace_with_operation_id' --json
 uv run --locked mediagent library rename \
   --path "$MEDIAGENT_LIBRARY_DIR/photo/YYYY/MM/example.jpg" \
-  --name 'new display name' --external-ref 'immich:asset-id' --json
+  --name 'new display name' --external-ref 'external-catalog:record-id' --json
 ```
 
-Remove 會把檔案無限期保留在 `.trash/mediagent/`；目前沒有到期或 purge job。若要維持 SQLite 同步，不要繞過此介面直接移檔。Production 已使用審查過的 `deploy/integrations/immich/` bridge：外部 cleanup service 以 `server` 執行、持有 `/run/lock/mediagent-sync.lock`，並呼叫此 remove 介面，不再直接搬檔。整合前 script 與 units 備份位於 `/data/services/immich-private/backups/mediagent-integration-20260828T071950Z`。
+Remove 會把檔案無限期保留在 `.trash/mediagent/`；目前沒有到期或 purge job。若要維持 SQLite 同步，不要繞過此介面直接移檔。外部 integration 自行負責 discovery 與 policy、持有 deployment-wide lock、傳入 opaque `external_ref` 供 audit 對照，並以 JSON command result 判斷操作結果；Mediagent 不會 import 或呼叫該外部服務。
 
 若要手動除錯單一檔案下載，使用 `download.http`，並帶 Pixiv referer header：
 

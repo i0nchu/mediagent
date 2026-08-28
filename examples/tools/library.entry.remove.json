@@ -3,5 +3,5 @@
   "library_root": "${MEDIAGENT_LIBRARY_DIR}",
   "path": "${MEDIAGENT_LIBRARY_DIR}/photo/YYYY/MM/example.jpg",
   "reason": "external library cleanup",
-  "external_ref": "immich:asset-id"
+  "external_ref": "external-cleanup:record-id"
 }

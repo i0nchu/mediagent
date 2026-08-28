@@ -44,6 +44,13 @@ Mediagent は、メディアの発見、重複排除、ダウンロード、フ�
 - コアのデータベース重複排除や状態記録を迂回しない。
 - プラットフォーム認証情報を metadata、log、エラーメッセージへ書き込まない。
 
+External catalog、viewer、cleanup service は CLI consumer であり、Mediagent
+platform ではありません。API client、selection policy、credentials、
+pagination、scheduler、service units は所有する external project に置きます。
+この repo は provider-neutral CLI contract を文書化できますが、external
+implementation を保持・deploy しません。`ComicInfo.xml` などの compatibility
+output は file contract であり、reader への runtime coupling を認めるものではありません。
+
 メディアモデルは少なくとも次の種類を予約します。
 
 - `photo`

@@ -44,6 +44,14 @@ Platform modules must respect these boundaries:
 - Do not bypass core database deduplication or state recording.
 - Do not write platform credentials into metadata, logs, or error messages.
 
+External catalog, viewer, and cleanup services are CLI consumers, not Mediagent
+platforms. Their API clients, selection policy, credentials, pagination,
+schedulers, and service units must live in the owning external project. This
+repository may document the provider-neutral CLI contract they call, but must
+not carry or deploy their implementation. A compatibility output format such
+as `ComicInfo.xml` is a file contract and does not authorize runtime coupling to
+the reader that consumes it.
+
 The media model must reserve at least these media types:
 
 - `photo`

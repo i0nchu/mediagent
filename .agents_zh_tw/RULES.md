@@ -44,6 +44,12 @@ Mediagent 的架構以發現媒體、去重、下載、寫入檔案、記錄狀�
 - 不繞過核心資料庫去重與狀態紀錄。
 - 不把平台憑證寫入 metadata、log 或錯誤訊息。
 
+外部 catalog、瀏覽器與 cleanup service 是 CLI consumer，不是 Mediagent
+platform。它們的 API client、selection policy、credentials、pagination、
+scheduler 與 service units 必須留在所屬的外部專案。本 repo 可以記錄
+它們呼叫的 provider-neutral CLI contract，但不得承載或部署其實作。
+`ComicInfo.xml` 之類相容輸出是檔案契約，不代表可以與使用它的閱讀器建立 runtime coupling。
+
 媒體模型至少必須保留以下媒體類型：
 
 - `photo`

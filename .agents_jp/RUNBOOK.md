@@ -93,7 +93,7 @@ uv run --locked ...
 PYTHONPATH=src python3 -m mediagent ...
 ```
 
-## Managed Trash と Immich Cleanup
+## Managed Trash と External Lifecycle Client
 
 Mediagent service と同じ account で namespace を inspect/create します。
 
@@ -104,9 +104,10 @@ uv run --locked mediagent library trash prepare --library-root /data/nas/mediage
 
 Legacy `.trash` parent が writable でない場合、administrator は service account 用の
 `.trash/mediagent` だけを pre-create し、legacy trash owner を recursive に変更しません。
-Review 済み Immich bridge は `deploy/integrations/immich/` にあり、sync services と同じ
-flock の下で `mediagent library remove` を呼び、direct file move は行いません。V1 に
-automatic purge はありません。
+External catalog、viewer、cleanup service は own project に置きます。Sync services と同じ
+flock の下で provider-neutral な `mediagent library remove|restore|rename` を呼べますが、
+API client、credentials、selection rules、pagination、scheduler、service units はこの repo
+に置かず、managed files を直接 move しません。V1 に automatic purge はありません。
 
 ## テスト実行
 
@@ -471,14 +472,14 @@ Managed entry を one-shot remove、restore、rename します（この 3 operat
 ```bash
 uv run --locked mediagent library remove \
   --path "$MEDIAGENT_LIBRARY_DIR/photo/YYYY/MM/example.jpg" \
-  --reason 'external library cleanup' --external-ref 'immich:asset-id' --json
+  --reason 'external library cleanup' --external-ref 'external-cleanup:record-id' --json
 uv run --locked mediagent library restore --removal-id 'rmv_replace_with_operation_id' --json
 uv run --locked mediagent library rename \
   --path "$MEDIAGENT_LIBRARY_DIR/photo/YYYY/MM/example.jpg" \
-  --name 'new display name' --external-ref 'immich:asset-id' --json
+  --name 'new display name' --external-ref 'external-catalog:record-id' --json
 ```
 
-Remove 後の file は `.trash/mediagent/` に無期限で残り、expiry/purge job はありません。SQLite state を同期する必要がある場合、この interface を迂回して直接 `.trash` へ移動しないでください。Production は review 済み `deploy/integrations/immich/` bridge を使用し、external cleanup service は `server` で実行、`/run/lock/mediagent-sync.lock` を保持してこの remove interface を呼び、direct file move はしません。Integration 前の script/units は `/data/services/immich-private/backups/mediagent-integration-20260828T071950Z` に backup 済みです。
+Remove 後の file は `.trash/mediagent/` に無期限で残り、expiry/purge job はありません。SQLite state を同期する必要がある場合、この interface を迂回して直接 `.trash` へ移動しないでください。External integration が discovery/policy、deployment-wide lock、audit 用 opaque `external_ref` を所有し、JSON command result を operation outcome として扱います。Mediagent はその external service を import も call もしません。
 
 単一 file の manual debugging では `download.http` を使い、Pixiv referer header を付けます。
 

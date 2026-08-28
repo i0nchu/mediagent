@@ -113,7 +113,7 @@ Fallback during local development:
 PYTHONPATH=src python3 -m mediagent ...
 ```
 
-## Managed Trash And Immich Cleanup
+## Managed Trash And External Lifecycle Clients
 
 Inspect or prepare the namespace as the same account that runs Mediagent:
 
@@ -124,9 +124,11 @@ uv run --locked mediagent library trash prepare --library-root /data/nas/mediage
 
 If the legacy `.trash` parent is not writable, an administrator must pre-create only
 `.trash/mediagent` for the service account; do not recursively change legacy-trash ownership.
-The reviewed Immich bridge lives in `deploy/integrations/immich/`. It must run under the
-same shared flock as sync services and calls `mediagent library remove`; it must never move
-files directly. Trash has no automatic purge in v1.
+External catalog, viewer, or cleanup services must live in their own project. They may call
+the provider-neutral `mediagent library remove|restore|rename` interface under the same
+shared flock as sync services, but their API clients, credentials, selection rules,
+pagination, schedulers, and service units do not belong in this repository. They must never
+move managed files directly. Trash has no automatic purge in v1.
 
 ## Run Tests
 
@@ -497,17 +499,17 @@ Remove, restore, or rename one managed scanner-visible entry. These operations h
 ```bash
 uv run --locked mediagent library remove \
   --path "$MEDIAGENT_LIBRARY_DIR/photo/YYYY/MM/example.jpg" \
-  --reason 'external library cleanup' --external-ref 'immich:asset-id' --json
+  --reason 'external library cleanup' --external-ref 'external-cleanup:record-id' --json
 
 uv run --locked mediagent library restore \
   --removal-id 'rmv_replace_with_operation_id' --json
 
 uv run --locked mediagent library rename \
   --path "$MEDIAGENT_LIBRARY_DIR/photo/YYYY/MM/example.jpg" \
-  --name 'new display name' --external-ref 'immich:asset-id' --json
+  --name 'new display name' --external-ref 'external-catalog:record-id' --json
 ```
 
-Remove stores files indefinitely under `.trash/mediagent/`; no expiry or purge job exists. Do not move files into `.trash` outside this interface if SQLite state must remain synchronized. Production uses the reviewed `deploy/integrations/immich/` bridge: the external cleanup service runs as `server`, holds `/run/lock/mediagent-sync.lock`, and calls this remove interface instead of moving files directly. The pre-integration script and units are backed up under `/data/services/immich-private/backups/mediagent-integration-20260828T071950Z`.
+Remove stores files indefinitely under `.trash/mediagent/`; no expiry or purge job exists. Do not move files into `.trash` outside this interface if SQLite state must remain synchronized. An external integration owns discovery and policy, passes an opaque `external_ref` for audit correlation, holds the deployment-wide lock, and treats the JSON command result as the operation outcome. Mediagent does not import or call that external service.
 
 For manual one-file debugging, download selected Pixiv image URLs with `download.http` and a Pixiv referer header:
 

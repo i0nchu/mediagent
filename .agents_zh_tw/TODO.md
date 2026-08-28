@@ -7,7 +7,8 @@
 - [x] Merge/push schema v10、停止 Production timers、備份並遷移 Production DB，完成第一次全域 dedup dry-run。
 - [x] 完成並部署 `library.trash.reconcile`、匯入全部 807 筆 verified rows、套用全域 dedup，並驗證 Production idempotent 結果。
 - [x] 部署 managed trash 與 audited Pixiv legacy-CBZ retirement，完成並驗證全部 16 個 cleanup packages。
-- [x] 安裝並驗證已審查的 Immich bridge/systemd drop-in，讓它在 shared lock 下呼叫 `mediagent library remove`，再恢復與監控 Production timers。
+- [x] 解耦外部 cleanup service：其 API client、policy、分頁、credentials 與 systemd units 留在所屬專案；Mediagent 只保留平台中立的 lifecycle CLI 契約。已修正外部 client 的 cursor／executable 處理，並對全部 392 個選取 assets 完成 live 驗證。
+- [x] 稽核 repo 是否有類似外部服務耦合；除正式 acquisition platforms 外沒有其他外部 API client 或 scheduler，留下的 Kavita／Immich 字樣只描述輸出相容性或 operator 設定。
 - [x] 本階段維持延後 trash expiry/purge，不加入自動刪除。
 
 ## 漫畫來源後續

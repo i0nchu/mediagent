@@ -350,7 +350,11 @@ class LibraryContentToolTests(unittest.TestCase):
             removed = asyncio.run(
                 registry.run(
                     "library.entry.remove",
-                    {"path": str(original), "reason": "not wanted", "external_ref": "immich:42"},
+                    {
+                        "path": str(original),
+                        "reason": "not wanted",
+                        "external_ref": "external-cleanup:42",
+                    },
                     context,
                 )
             )
@@ -519,7 +523,11 @@ class LibraryContentToolTests(unittest.TestCase):
             renamed = asyncio.run(
                 registry.run(
                     "library.entry.rename",
-                    {"entry_id": adoption["entry_id"], "name": "new title", "external_ref": "immich:99"},
+                    {
+                        "entry_id": adoption["entry_id"],
+                        "name": "new title",
+                        "external_ref": "external-catalog:99",
+                    },
                     context,
                 )
             )
@@ -536,7 +544,10 @@ class LibraryContentToolTests(unittest.TestCase):
                     "SELECT external_ref, state FROM library_operations WHERE id = ?",
                     (renamed.data["rename_id"],),
                 ).fetchone()
-            self.assertEqual(dict(operation), {"external_ref": "immich:99", "state": "completed"})
+            self.assertEqual(
+                dict(operation),
+                {"external_ref": "external-catalog:99", "state": "completed"},
+            )
 
     def test_renamed_single_source_keeps_name_when_content_revision_arrives(self) -> None:
         registry = create_default_registry()

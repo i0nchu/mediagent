@@ -9,8 +9,8 @@
 - Production legacy-trash reconciliation 已匯入 807 筆 removed entries 並連結全部 807 個來源 rows，過程不搬檔。全域 dedup 隨後 adoption 90,629 rows、collapse 32 paths、建立 428 個漫畫 hard links、回收 491,170,708 bytes，且通過 idempotent rerun、SQLite quick/FK 與 missing-file 驗證。
 - 已實作一次性的 `mediagent library remove|restore|rename`。Remove 移到 `.trash/mediagent/<removal-id>/` 並抑制 repair/redownload；restore 驗證 checksum；rename 更新名稱，CBZ 也會原子改寫 `ComicInfo.xml`。
 - `library.trash.status` 與 `library.trash.prepare` 會檢查或建立 symlink-safe 的 `.trash/mediagent` namespace；既有 legacy trash 保持原位，Mediagent 不會改整棵 `.trash` 的 owner。Remove/restore/rename 不支援 dry-run；planned operation 可在中斷後安全恢復。尚未實作 trash 到期或 purge。
-- `deploy/integrations/immich/` 提供替代 delete-candidate script 與 systemd drop-in；它以 `server` 帳號執行、共用 `/run/lock/mediagent-sync.lock`，並以 Immich audit reference 呼叫 `mediagent library remove`，不再直接搬檔。
-- Production 已有可運作的 `server:server` `.trash/mediagent` namespace，且沒有修改 root-owned legacy `.trash` parent。16 個 Pixiv V1 CBZ 已全部透過 audited remove 退役；idempotent 重跑為 16 existing、13 個明確 removed/skipped、0 failure。外部 Immich cleanup script/drop-ins 已備份至 `/data/services/immich-private/backups/mediagent-integration-20260828T071950Z`、替換為 Mediagent bridge，並以 0 candidates/0 failures live 驗證。Server 完整測試 401 項通過；SQLite 為 `quick_check=ok`、0 FK errors，90,581 active 與 823 removed entries 均無缺檔。五個 Production timers 均已恢復 active 並有下次排程；catch-up 時的 lock contention 以允許的 status 75 安全跳過。
+- 本 repo 不再提供外部 catalog／viewer／cleanup 實作。它們是獨立的 CLI consumer：Mediagent 只擁有平台中立的 `library remove|restore|rename` 契約與 DB／trash 一致性；外部專案自行擁有 API、credentials、選取 policy、分頁、scheduler 與 service units。
+- Production 已有可運作的 `server:server` `.trash/mediagent` namespace，且沒有修改 root-owned legacy `.trash` parent。16 個 Pixiv V1 CBZ 已透過 audited remove 退役。獨立的 `/data/services/immich-private` cleanup client 現在會安全正規化 API 回傳的字串 page cursor，並直接呼叫 `/data/services/mediagent/.venv/bin/mediagent`，不再依賴 systemd `PATH`／`uv`。修正前 script 備份於 `/data/services/immich-private/backups/external-cleanup-fix-20260828T140145Z`；apply 前 DB 備份為 `/data/services/mediagent/data/backups/mediagent.sqlite3.pre-immich-cleanup.20260828T140229Z.bak`（`integrity_check=ok`）。完整 392-asset apply 寫入 392 筆 audited operations，0 skipped／failed；之後 SQLite 為 `quick_check=ok`、0 FK errors、90,266 active、1,215 removed，且兩種 state 都沒有缺少對應路徑的 row。
 
 ## 2026-08-14 漫畫來源更新
 
@@ -205,7 +205,7 @@
 - Pixiv 現在有離線 `pixiv.library.reconcile` plan/apply 流程，可更新舊 work-type metadata、以原子搬移將既有漫畫原始頁面從 `photo` 或舊 `comic` 移到 `comic-pages`、同步搬移 sidecars、quarantine 已知 placeholder downloads、更新 DB paths；apply 必須傳入 `confirm:true`。
 - 本機 development DB 的 plan 驗證找到 309 個 Pixiv items：26 comic、280 illustration、3 animation、17 unavailable placeholder records，blocked actions 為 0。本機 library 中有 245 個 legacy comic source files 已不在 DB 記錄路徑，因此這些應使用 opt-in repair，而不是原地搬移。
 - `.trash` 內的檔案會視為 library 缺檔，永遠不自動搬回；`repair_missing_files:true` 會下載新副本到規劃路徑，並保留 `.trash` 原狀。
-- Locked offline suite 通過 401 tests，包含 managed-trash safety/readiness、audited V1 CBZ retirement 與重跑/skip 語意、fail-closed Immich CLI bridge/systemd policy、Pixiv/JMComic reconciliation、全域 identity、link/inbox dispatch、auth redaction 及 download/repair paths。
+- Locked offline suite 通過 397 tests，包含 managed-trash safety/readiness、audited V1 CBZ retirement 與重跑/skip 語意、外部 client ownership 邊界、Pixiv/JMComic reconciliation、全域 identity、link/inbox dispatch、auth redaction 及 download/repair paths。
 
 - `link.media.sync` 支援明確的 file-health-aware repair：`repair_missing_files: true`。
 - `telegram.inbox.sync_links` 與 `telegram.messages.sync` 也暴露相同選項，作為既有 sync logic 上的 compatibility paths。

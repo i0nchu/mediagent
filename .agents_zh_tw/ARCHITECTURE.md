@@ -10,7 +10,9 @@ JMComic album-scoped resolution 的章號由 album episode list 決定；per-pho
 
 Schema v8 新增 `source_collections` 與 `source_collection_memberships`；v9 新增 `source_collection_scope_aliases`，保存帳號 scoped 的人類名稱與遠端 collection scope 映射；v10 新增 `content_blobs`、`library_entries`、`library_operations` 與 `media_files.library_entry_id`。
 
-`content_blobs` 擁有 checksum identity；provider 的 `media_items` / `media_files` 保留全部來源。一般媒體的相同 checksum 只投影一個 scanner-visible entry，避免跨平台內容在 Immich 重複出現。漫畫頁與 CBZ 使用具脈絡的 presentation key，分開保留路徑並在可行時使用 hard link。Remove 會記錄 planned/completed operation，並將 projection 搬到 symlink-safe 的 `.trash/mediagent/<removal-id>/`，但不刪來源 metadata。Status/prepare 只管理這個 namespace，不接管 legacy trash tree。Repair/verify 會跳過 removed entry，直到明確 restore。原始 `download.http` 沒有 DB media identity，因此仍是 unmanaged transport primitive；managed sync tools 會在 file upsert 後立即 adoption。
+`content_blobs` 擁有 checksum identity；provider 的 `media_items` / `media_files` 保留全部來源。一般媒體的相同 checksum 只投影一個 scanner-visible entry，避免跨平台內容在外部掃描器重複出現。漫畫頁與 CBZ 使用具脈絡的 presentation key，分開保留路徑並在可行時使用 hard link。Remove 會記錄 planned/completed operation，並將 projection 搬到 symlink-safe 的 `.trash/mediagent/<removal-id>/`，但不刪來源 metadata。Status/prepare 只管理這個 namespace，不接管 legacy trash tree。Repair/verify 會跳過 removed entry，直到明確 restore。原始 `download.http` 沒有 DB media identity，因此仍是 unmanaged transport primitive；managed sync tools 會在 file upsert 後立即 adoption。
+
+Library lifecycle CLI 是外部 catalog、viewer 與 cleanup selector 的整合邊界。外部服務可將明確的 managed path 與 opaque `external_ref` 傳給 `mediagent library remove|restore|rename`，但其 API polling、帳號憑證、selection rules、pagination 與 scheduler 必須留在本 repo 之外。Mediagent 不匯入這些外部 API，也不決定使用者在外部服務選了什麼。閱讀器相容檔案與 metadata 只是輸出契約，不是 runtime service dependency。
 
 穩定 page file key 避免 CDN URL 輪替造成重複紀錄；cookies、token、敏感 headers 與 JM runtime decode 資料不得寫入持久 metadata。
 

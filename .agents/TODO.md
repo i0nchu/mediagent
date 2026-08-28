@@ -16,7 +16,8 @@ When updating this TODO, update the Traditional Chinese and Japanese copies in t
 - [x] Merge/push schema v10, stop Production timers, back up and migrate the Production DB, and run the first global dedup dry-run.
 - [x] Complete/deploy `library.trash.reconcile`, import all 807 verified rows, apply global dedup, and verify the idempotent Production result.
 - [x] Deploy managed trash and audited Pixiv legacy-CBZ retirement, then complete and verify all 16 cleanup packages.
-- [x] Install and verify the reviewed Immich bridge/systemd drop-in so it calls `mediagent library remove` under the shared lock, then restore and monitor Production timers.
+- [x] Decouple the external cleanup service: keep its API client, policy, pagination, credentials, and systemd units in its owning project; retain only the provider-neutral lifecycle CLI contract in Mediagent. Fix and live-verify the external client's cursor/executable handling against all 392 selected assets.
+- [x] Audit the repository for similar external-service coupling. No other external API client or scheduler was found outside first-class acquisition platforms; Kavita/Immich references that remain describe output compatibility or operator configuration only.
 - [x] Keep trash expiry/purge deferred; do not add automatic deletion in this phase.
 
 ## Comic Source Follow-up

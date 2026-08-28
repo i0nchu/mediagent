@@ -7,7 +7,8 @@
 - [x] Schema v10 を merge/push し、Production timers を停止、Production DB を backup/migrate して最初の global dedup dry-run を実行した。
 - [x] `library.trash.reconcile` を完成/deploy、verified rows 807 件を import、global dedup apply と Production idempotence verification を完了した。
 - [x] Managed trash と audited Pixiv legacy-CBZ retirement を deploy し、cleanup packages 16 件をすべて完了・検証した。
-- [x] Review 済み Immich bridge/systemd drop-in を install/verify し、shared lock 下で `mediagent library remove` を呼ばせ、Production timers を restore/monitor した。
+- [x] External cleanup service を decouple した。API client、policy、pagination、credentials、systemd units は owning project に置き、Mediagent には provider-neutral lifecycle CLI contract だけを残す。External client の cursor/executable handling を修正し、selected assets 392 件すべてで live verify した。
+- [x] Similar external-service coupling を repository 全体で audit した。First-class acquisition platforms 以外に external API client/scheduler はなく、残る Kavita/Immich references は output compatibility または operator configuration のみである。
 - [x] この phase で trash expiry/purge を deferred のままとし、automatic deletion を追加しない。
 
 ## Comic source follow-up
