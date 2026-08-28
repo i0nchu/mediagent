@@ -1,7 +1,0 @@
-{
-  "limit": 100,
-  "write_sidecar_metadata": false,
-  "retry_failed": false,
-  "retry_auth_skipped": false,
-  "repair_missing_files": false
-}

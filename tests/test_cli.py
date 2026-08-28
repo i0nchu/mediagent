@@ -5,7 +5,9 @@ import sys
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
+from mediagent import cli
 from mediagent.core import db, library_content
 
 
@@ -60,6 +62,109 @@ class CliTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 0)
         self.assertNotIn("experimental", completed.stdout)
         self.assertNotIn("==SUPPRESS==", completed.stdout)
+        self.assertIn("init", completed.stdout)
+        self.assertIn("add", completed.stdout)
+        self.assertIn("sync", completed.stdout)
+        self.assertIn("status", completed.stdout)
+
+    def test_short_init_uses_configured_database(self) -> None:
+        with (
+            patch.dict(os.environ, {"MEDIAGENT_ENV_FILE": ""}),
+            patch("mediagent.cli.run_tool_command", return_value=0) as run_tool,
+        ):
+            result = cli.run(["init", "--dry-run"])
+
+        self.assertEqual(result, 0)
+        self.assertEqual(run_tool.call_args.kwargs["tool"], "core.db.init")
+        self.assertTrue(run_tool.call_args.kwargs["dry_run"])
+        self.assertTrue(run_tool.call_args.kwargs["compact_human"])
+
+    def test_short_add_uses_smart_repair_defaults(self) -> None:
+        with (
+            patch.dict(os.environ, {"MEDIAGENT_ENV_FILE": ""}),
+            patch("mediagent.cli.run_tool_command", return_value=0) as run_tool,
+        ):
+            result = cli.run(["add", "https://example.com/file.jpg", "--dry-run"])
+
+        self.assertEqual(result, 0)
+        self.assertEqual(run_tool.call_args.kwargs["tool"], "link.media.sync")
+        self.assertEqual(
+            run_tool.call_args.kwargs["input_data"],
+            {
+                "url": "https://example.com/file.jpg",
+                "overwrite": False,
+                "retry_failed": True,
+                "repair_missing_files": True,
+                "write_sidecar_metadata": False,
+            },
+        )
+        self.assertTrue(run_tool.call_args.kwargs["compact_human"])
+
+    def test_short_source_sync_applies_provider_defaults(self) -> None:
+        with (
+            patch.dict(os.environ, {"MEDIAGENT_ENV_FILE": ""}),
+            patch("mediagent.cli.run_tool_command", return_value=0) as run_tool,
+        ):
+            result = cli.run(["sync", "pixiv", "--full", "--summary-json"])
+
+        self.assertEqual(result, 0)
+        self.assertEqual(run_tool.call_args.kwargs["tool"], "pixiv.bookmarks.sync")
+        self.assertEqual(
+            run_tool.call_args.kwargs["input_data"],
+            {
+                "overwrite": False,
+                "retry_failed": True,
+                "repair_missing_files": True,
+                "full_sync": True,
+                "package_comics": True,
+                "include_ugoira_metadata": True,
+            },
+        )
+        self.assertTrue(run_tool.call_args.kwargs["summary_json"])
+
+    def test_short_sync_rejects_folder_for_non_jmcomic_source(self) -> None:
+        completed = self.run_cli(
+            "sync",
+            "pixiv",
+            "--folder",
+            "favorites",
+            "--json",
+            env_updates={"MEDIAGENT_ENV_FILE": ""},
+        )
+
+        self.assertEqual(completed.returncode, 2)
+        self.assertEqual(
+            json.loads(completed.stdout)["error"]["code"],
+            "unsupported_source_option",
+        )
+
+    def test_short_status_loads_local_env_without_shell_source(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            data = root / "data"
+            library = root / "library"
+            data.mkdir()
+            library.mkdir()
+            database = data / "mediagent.sqlite3"
+            database.touch()
+            env_file = root / ".env"
+            env_file.write_text(
+                f"MEDIAGENT_DATA_DIR={data}\n"
+                "MEDIAGENT_LIBRARY_DIR=${MEDIAGENT_DATA_DIR}/../library\n"
+                "MEDIAGENT_DB_PATH=${MEDIAGENT_DATA_DIR}/mediagent.sqlite3\n",
+                encoding="utf-8",
+            )
+
+            completed = self.run_cli(
+                "status",
+                "--json",
+                env_updates={"MEDIAGENT_ENV_FILE": str(env_file)},
+            )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        payload = json.loads(completed.stdout)
+        self.assertEqual(payload["status"], "success")
+        self.assertEqual(payload["tool"], "core.env.check")
 
     def test_tools_inspect_unknown_exits_with_validation_error(self) -> None:
         completed = self.run_cli("tools", "inspect", "missing.tool", "--json")

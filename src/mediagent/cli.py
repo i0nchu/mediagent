@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -12,6 +13,7 @@ from typing import Any
 from mediagent.agent import AgentRunner
 from mediagent.agent.llm import OllamaClient
 from mediagent.agent.skills import default_skill_registry
+from mediagent.core.config import EnvFileError, load_env_file
 from mediagent.core.tooling import ErrorCategory, ToolContext, ToolRegistryError
 from mediagent.tools.defaults import create_default_registry
 
@@ -28,6 +30,24 @@ VALIDATION_ERROR_CATEGORIES = {
     ErrorCategory.DATABASE.value,
 }
 
+SIMPLE_COMMANDS = {"init", "add", "sync", "status"}
+SOURCE_SYNC_TOOLS = {
+    "pixiv": "pixiv.bookmarks.sync",
+    "telegram": "telegram.inbox.sync_links",
+    "jmcomic": "jmcomic.favorites.sync",
+    "nhentai": "nhentai.favorites.sync",
+    "instagram": "instagram.saved.sync",
+}
+SOURCE_STATUS_TOOLS = {
+    "pixiv": "pixiv.auth.status",
+    "telegram": "telegram.auth.status",
+    "jmcomic": "jmcomic.auth.status",
+    "nhentai": "nhentai.auth.status",
+    "instagram": "instagram.auth.status",
+    "reddit": "reddit.auth.status",
+    "x": "x.auth.status",
+}
+
 
 def main(argv: list[str] | None = None) -> None:
     raise SystemExit(run(argv))
@@ -38,6 +58,15 @@ def run(argv: list[str] | None = None) -> int:
         argv = sys.argv[1:]
     if argv and argv[0] == "experimental":
         return handle_experimental(argv[1:])
+    if argv and argv[0] in SIMPLE_COMMANDS:
+        try:
+            _load_simple_command_env()
+        except EnvFileError as exc:
+            return print_error(
+                {"code": "invalid_env_file", "message": str(exc), "details": {}},
+                json_output="--json" in argv or "--summary-json" in argv,
+                exit_code=EXIT_VALIDATION_ERROR,
+            )
     parser = build_parser()
     args = parser.parse_args(argv)
     if not hasattr(args, "handler"):
@@ -47,8 +76,71 @@ def run(argv: list[str] | None = None) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="mediagent")
+    parser = argparse.ArgumentParser(
+        prog="mediagent",
+        description="Collect links and configured media sources into one managed library.",
+    )
     subcommands = parser.add_subparsers(dest="command")
+
+    initialize = subcommands.add_parser(
+        "init",
+        help="Initialize or upgrade the configured SQLite database.",
+    )
+    initialize.add_argument("--dry-run", action="store_true", help="Preview without changing SQLite.")
+    initialize.add_argument("--json", action="store_true", help="Emit complete machine-readable JSON.")
+    initialize.set_defaults(handler=handle_init)
+
+    add = subcommands.add_parser("add", help="Download one explicit media or post URL.")
+    add.add_argument("url", help="Explicit URL to resolve and download.")
+    add.add_argument("--overwrite", action="store_true", help="Replace an existing target file.")
+    add.add_argument(
+        "--repair",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Repair missing/failed tracked content (default: enabled).",
+    )
+    add.add_argument("--dry-run", action="store_true", help="Preview without writing files or SQLite.")
+    add.add_argument("--json", action="store_true", help="Emit complete machine-readable JSON.")
+    add.set_defaults(handler=handle_add)
+
+    sync = subcommands.add_parser("sync", help="Synchronize one configured source.")
+    sync.add_argument(
+        "source",
+        choices=tuple(SOURCE_SYNC_TOOLS),
+        help="Configured source to synchronize.",
+    )
+    sync.add_argument(
+        "--folder",
+        action="append",
+        default=[],
+        help="JMComic favorite folder name or ID; repeatable.",
+    )
+    sync.add_argument("--full", action="store_true", help="Request a complete source scan when supported.")
+    sync.add_argument("--overwrite", action="store_true", help="Replace existing target files.")
+    sync.add_argument(
+        "--repair",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Retry failures and repair missing tracked files (default: enabled).",
+    )
+    sync_output = sync.add_mutually_exclusive_group()
+    sync_output.add_argument("--json", action="store_true", help="Emit complete machine-readable JSON.")
+    sync_output.add_argument("--summary-json", action="store_true", help="Emit compact machine-readable JSON.")
+    sync.add_argument("--dry-run", action="store_true", help="Preview without writing files or SQLite.")
+    sync.set_defaults(handler=handle_source_sync)
+
+    status = subcommands.add_parser(
+        "status",
+        help="Check core configuration or one source session.",
+    )
+    status.add_argument(
+        "source",
+        nargs="?",
+        choices=tuple(SOURCE_STATUS_TOOLS),
+        help="Optional source name.",
+    )
+    status.add_argument("--json", action="store_true", help="Emit complete machine-readable JSON.")
+    status.set_defaults(handler=handle_status)
 
     link = subcommands.add_parser("link", help="Resolve and download explicit media links.")
     link_commands = link.add_subparsers(dest="link_command")
@@ -203,6 +295,93 @@ def handle_tools_list(args: argparse.Namespace) -> int:
         for spec in specs:
             print(f"{spec['name']}\t{spec['description']}")
     return EXIT_SUCCESS
+
+
+def handle_init(args: argparse.Namespace) -> int:
+    return run_tool_command(
+        tool="core.db.init",
+        input_data={},
+        json_output=args.json,
+        summary_json=False,
+        dry_run=args.dry_run,
+        compact_human=True,
+    )
+
+
+def handle_add(args: argparse.Namespace) -> int:
+    comic_link = _is_comic_link(args.url)
+    input_data: dict[str, Any] = {
+        "url": args.url,
+        "overwrite": args.overwrite,
+        "retry_failed": args.repair,
+        "repair_missing_files": args.repair,
+    }
+    if not comic_link:
+        input_data["write_sidecar_metadata"] = False
+    return run_tool_command(
+        tool="comic.link.sync" if comic_link else "link.media.sync",
+        input_data=input_data,
+        json_output=args.json,
+        summary_json=False,
+        dry_run=args.dry_run,
+        compact_human=True,
+    )
+
+
+def handle_source_sync(args: argparse.Namespace) -> int:
+    if args.folder and args.source != "jmcomic":
+        return print_error(
+            {
+                "code": "unsupported_source_option",
+                "message": "--folder is only supported for the jmcomic source.",
+                "details": {"source": args.source},
+            },
+            json_output=args.json or args.summary_json,
+            exit_code=EXIT_VALIDATION_ERROR,
+        )
+    input_data: dict[str, Any] = {
+        "overwrite": args.overwrite,
+        "retry_failed": args.repair,
+        "repair_missing_files": args.repair,
+    }
+    if args.full and args.source in {"pixiv", "telegram", "instagram"}:
+        input_data["full_sync"] = True
+    if args.source == "pixiv":
+        input_data.update({"package_comics": True, "include_ugoira_metadata": True})
+    if args.folder:
+        input_data["folders"] = args.folder
+    return run_tool_command(
+        tool=SOURCE_SYNC_TOOLS[args.source],
+        input_data=input_data,
+        json_output=args.json,
+        summary_json=args.summary_json,
+        dry_run=args.dry_run,
+        compact_human=True,
+    )
+
+
+def handle_status(args: argparse.Namespace) -> int:
+    if args.source:
+        tool = SOURCE_STATUS_TOOLS[args.source]
+        input_data: dict[str, Any] = {}
+    else:
+        tool = "core.env.check"
+        required = ["MEDIAGENT_DATA_DIR", "MEDIAGENT_DB_PATH"]
+        library_paths = sorted(
+            name
+            for name in os.environ
+            if name.startswith("MEDIAGENT_") and name.endswith("_LIBRARY_DIR")
+        )
+        inspected_paths = list(dict.fromkeys([*required, "MEDIAGENT_LIBRARY_DIR", *library_paths]))
+        input_data = {"required": required, "path_vars": inspected_paths}
+    return run_tool_command(
+        tool=tool,
+        input_data=input_data,
+        json_output=args.json,
+        summary_json=False,
+        dry_run=False,
+        compact_human=True,
+    )
 
 
 def handle_tools_inspect(args: argparse.Namespace) -> int:
@@ -454,6 +633,7 @@ def run_tool_command(
     summary_json: bool,
     dry_run: bool,
     allow_experimental: bool = False,
+    compact_human: bool = False,
 ) -> int:
     registry = create_default_registry()
     context = ToolContext.from_env(dry_run=dry_run)
@@ -477,6 +657,8 @@ def run_tool_command(
         print_json(_summary_tool_payload(payload))
     elif json_output:
         print_json(payload)
+    elif compact_human:
+        print_compact_human_result(payload)
     else:
         print_human_result(payload)
     if result.is_success:
@@ -520,6 +702,16 @@ def _summary_tool_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "rate_limit": payload.get("rate_limit"),
         "error": payload.get("error"),
     }
+
+
+def _load_simple_command_env() -> None:
+    configured = os.environ.get("MEDIAGENT_ENV_FILE")
+    if configured == "":
+        return
+    env_path = Path(configured).expanduser() if configured else Path.cwd() / ".env"
+    if not env_path.is_absolute():
+        env_path = Path.cwd() / env_path
+    load_env_file(env_path.resolve())
 
 
 def build_llm_client() -> OllamaClient:
@@ -602,6 +794,32 @@ def print_human_result(payload: dict[str, Any]) -> None:
             print(f"warning: {warning}", file=sys.stderr)
     if payload.get("error"):
         print(f"error: {payload['error']['message']}", file=sys.stderr)
+
+
+def print_compact_human_result(payload: dict[str, Any]) -> None:
+    compact = _summary_tool_payload(payload)
+    source_data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+    for key in (
+        "auth_status",
+        "authenticated",
+        "remote_verified",
+        "reusable",
+        "credentials_configured",
+        "session_configured",
+        "session_present",
+        "missing",
+        "paths",
+    ):
+        if key in source_data:
+            compact["data"][key] = source_data[key]
+    print(f"status: {compact['status']}")
+    print(f"operation: {compact['tool']}")
+    if compact["data"]:
+        print(json.dumps(compact["data"], ensure_ascii=False, indent=2, sort_keys=True))
+    for warning in compact["warnings"]:
+        print(f"warning: {warning}", file=sys.stderr)
+    if compact["error"]:
+        print(f"error: {compact['error']['message']}", file=sys.stderr)
 
 
 def print_agent_human_result(payload: dict[str, Any]) -> None:
