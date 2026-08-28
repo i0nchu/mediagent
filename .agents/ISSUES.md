@@ -4,13 +4,13 @@ This file tracks known caveats that matter for the next handoff. Resolved histor
 
 ## Open
 
-### Production global identity migration requires legacy-trash reconciliation
+### Managed-trash deployment and Pixiv legacy retirement are pending
 
-- **Status:** Schema/code deployed and Production dry-run complete; timers remain stopped while the reconciliation helper is developed and tested.
+- **Status:** Global identity reconciliation/dedup is complete. Managed-trash/CBZ retirement is implemented and locally tested; Production timers remain stopped until deployment and verification finish.
 - **Observed in:** `src/mediagent/core/library_content.py`, `src/mediagent/tools/library_content_tools.py`, schema v10.
 - **Current behavior:** Managed sync downloads adopt SHA-256 identity, the full scan supports non-mutating dry-run, ordinary media shares one scanner-visible entry, comic contexts remain distinct with optional hard links, and remove/restore/rename are audited one-shot operations. Raw transport tools are intentionally unmanaged because they have no DB media identity. Removed entries suppress repair and repeat downloads. An overwrite that would replace an ordinary-media path shared by multiple sources is rejected before mutation; source-separation/COW automation is deferred. Trash has no automatic expiry.
-- **Production evidence:** The 2026-08-27 dry-run hashed 90,629 files, planned 32 ordinary collapses and 428 comic hard links, and reported 491,170,708 reclaimable bytes. Its 807 missing rows all match legacy trash path/size records (795 Pixiv, 12 Instagram; about 1.46 GB), with zero active checksum/identity collisions. Some content has two or three retained trash copies from repeated old cleanup/redownload cycles.
-- **Expected next step:** Finish the verified, all-or-nothing `library.trash.reconcile` dry-run/apply path, import the 807 rows as removed without moving files, then apply/rerun global dedup and restore timers. Only afterward inspect the out-of-repository Immich systemd cleanup script and replace direct trash moves with the remove command. Do not add trash purging in this phase.
+- **Production evidence:** Reconciliation imported 807 removed entries/source links and dedup adopted 90,629 rows, collapsed 32 paths, hard-linked 428 paths, reclaimed 491,170,708 bytes, and passed integrity/idempotence checks. Sixteen Pixiv V1 archives still need retirement; old code failed because root-owned `.trash` prevented `server` from creating a separate quarantine directory.
+- **Expected next step:** Deploy the managed-trash branch, pre-create only `.trash/mediagent` for `server`, run the 16 Pixiv cleanup packages, replace the external Immich script/drop-in with the reviewed integration, then verify and restore timers. Do not add trash purging in this phase.
 
 ### nhentai browser-cookie renewal still requires live re-verification
 

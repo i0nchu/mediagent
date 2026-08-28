@@ -232,6 +232,14 @@ Hashes every tracked downloaded file outside `.trash` and plans or applies globa
 
 Plans or atomically imports downloaded rows moved by pre-v10 cleanup jobs into explicit removed library state. It verifies original relative path, recorded size, and SHA-256 against legacy trash candidates; it never moves files, retains duplicate old trash copies, ignores managed/reconciliation trash, and blocks the whole apply on unmatched rows or active-identity conflicts. Dry-run is supported and must be reviewed before apply.
 
+### `library.trash.status`
+
+Reports whether `.trash/mediagent` is a safe, writable directory for the current service account, including UID/GID/mode and the explicit no-automatic-purge retention policy. A successful tool invocation does not imply `operational:true`; callers must inspect that field.
+
+### `library.trash.prepare`
+
+Creates and validates only `.trash/mediagent` without changing an existing `.trash` owner or permissions. It rejects symlinks and paths outside the library. Dry-run reports current readiness without creating directories.
+
 ### `library.entry.remove`
 
 Moves one managed logical entry to `.trash/mediagent/<removal-id>/`, updates every attached source row, and suppresses sync repair. Accepts exactly one `path` or `entry_id`; no dry-run.
@@ -360,7 +368,7 @@ Permissions:
 
 ### `pixiv.comics.package`
 
-Plans or creates one deterministic Kavita-oriented CBZ per complete downloaded Pixiv manga. Archives live under `comic/<series-directory>/`, contain zero-padded page names plus root-level `ComicInfo.xml`, and are recorded as `comic-kavita-v2`. One-shots use a unique series identity with `Number=1`, `Count=1`, and `Format=One-Shot`; real Pixiv series share a directory and preserve series/chapter metadata when supplied. Writes use `.partial` plus atomic replacement. `migrate_legacy:true` rebuilds V1 date-layout archives, moves old CBZ files to `.trash/mediagent-comic-v1`, and removes their stale DB rows only after the V2 archive succeeds. It does not contact Pixiv or delete source pages.
+Plans or creates one deterministic Kavita-oriented CBZ per complete downloaded Pixiv manga. Archives live under `comic/<series-directory>/`, contain zero-padded page names plus root-level `ComicInfo.xml`, and are recorded as `comic-kavita-v2`. One-shots use a unique series identity with `Number=1`, `Count=1`, and `Format=One-Shot`; real Pixiv series share a directory and preserve series/chapter metadata when supplied. Writes use `.partial` plus atomic replacement. `migrate_legacy:true` rebuilds V1 date-layout archives, then retires old CBZ files through `library.entry.remove`; the old media/source row remains linked to an explicit removed entry and reruns ignore it. It does not contact Pixiv or delete source pages.
 
 Permissions:
 

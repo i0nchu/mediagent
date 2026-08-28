@@ -93,6 +93,21 @@ uv run --locked ...
 PYTHONPATH=src python3 -m mediagent ...
 ```
 
+## Managed Trash と Immich Cleanup
+
+Mediagent service と同じ account で namespace を inspect/create します。
+
+```bash
+uv run --locked mediagent library trash status --library-root /data/nas/mediagent --json
+uv run --locked mediagent library trash prepare --library-root /data/nas/mediagent --json
+```
+
+Legacy `.trash` parent が writable でない場合、administrator は service account 用の
+`.trash/mediagent` だけを pre-create し、legacy trash owner を recursive に変更しません。
+Review 済み Immich bridge は `deploy/integrations/immich/` にあり、sync services と同じ
+flock の下で `mediagent library remove` を呼び、direct file move は行いません。V1 に
+automatic purge はありません。
+
 ## テスト実行
 
 ```bash
@@ -397,7 +412,7 @@ uv run --locked mediagent tools run pixiv.comics.package \
   --input examples/tools/pixiv.comics.package.json --dry-run --json
 ```
 
-`--dry-run` を外すと CBZ を作成します。Committed example は `migrate_legacy:true` を設定します。Tool は complete/healthy source pages だけを読み、`.partial` と atomic replacement で Kavita V2 archive を書き、SQLite に記録し、source pages は保持します。V2 成功後、old V1 date-layout CBZ は `library/.trash/mediagent-comic-v1` に移され、その後 stale DB row が削除されます。Future bookmark sync は `package_comics:true` で newly downloaded manga を自動 package できます。
+`--dry-run` を外すと CBZ を作成します。Committed example は `migrate_legacy:true` を設定します。Tool は complete/healthy source pages だけを読み、`.partial` と atomic replacement で Kavita V2 archive を書き、SQLite に記録し、source pages は保持します。V2 成功後、old V1 archive は audited `.trash/mediagent/<removal-id>/` lifecycle で retire され、source row は removed state に link したまま保持されます。Rerun はその row を無視します。Future bookmark sync は `package_comics:true` で newly downloaded manga を自動 package できます。
 
 Kavita V2 は series ごとに一つの directory を使います。Pixiv one-shot は unique series identity を持ち、real Pixiv series metadata のある works は同じ directory を共有し、normalized comic contract の `Series`、`Number`、optional `Volume`、optional `Count` を使います。
 

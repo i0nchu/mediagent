@@ -1,16 +1,15 @@
 # Mediagent 目前狀態
 
-## 2026-08-27 全域內容識別與 Library 操作
+## 2026-08-28 全域內容識別與 Managed Trash
 
 - Schema v10 與 commit `340b406` 已部署到 Production，所有 Mediagent timers 目前停止。遷移前 schema-v9 備份是 `/data/services/mediagent/data/backups/mediagent.sqlite3.pre-v10.20260827T141834Z.bak`；遷移保留 2,817 個 media items 與 91,455 個 media files，SQLite integrity check 通過。
-- 開發位於 `codex/global-content-dedup-library-ops`；本節只代表本機實作與離線測試，尚未部署或操作 Production。
 - SQLite schema v10 新增 SHA-256 `content_blobs`、scanner-visible `library_entries`、可稽核的 `library_operations`，以及 `media_files.library_entry_id`。
 - 所有 managed download 成功後都會加入全域內容識別。一般照片／影片／音訊的相同內容會收斂成一個可被掃描的路徑，但 SQLite 仍保留每個來源；漫畫頁與 CBZ 保留不同閱讀脈絡，檔案系統支援時以 hard link 做實體去重。
 - `library.content.deduplicate` 提供完整 tracked-library SHA-256 掃描；dry-run 不修改檔案或 DB，apply 可安全重跑。
-- 第一次 Production dry-run hash 了 90,629 個現存檔案，找到 32 個一般媒體 collapse paths、428 個漫畫 hard-link candidates，約可回收 491 MB。另有 807 筆 downloaded rows 是被 v10 前的 cleanup 搬到 legacy `.trash`；每筆都有精確 recorded path/size 對應，且沒有任何 active checksum identity 衝突。Branch `codex/legacy-trash-reconcile` 新增 `library.trash.reconcile`，可在 dedup apply 前把它們匯入為明確 removed entry；不移檔、保留較舊重複 trash copies、遇 active identity 衝突會阻擋，且可安全重跑。
+- Production legacy-trash reconciliation 已匯入 807 筆 removed entries 並連結全部 807 個來源 rows，過程不搬檔。全域 dedup 隨後 adoption 90,629 rows、collapse 32 paths、建立 428 個漫畫 hard links、回收 491,170,708 bytes，且通過 idempotent rerun、SQLite quick/FK 與 missing-file 驗證。
 - 已實作一次性的 `mediagent library remove|restore|rename`。Remove 移到 `.trash/mediagent/<removal-id>/` 並抑制 repair/redownload；restore 驗證 checksum；rename 更新名稱，CBZ 也會原子改寫 `ComicInfo.xml`。
-- Remove/restore/rename 不支援 dry-run；planned remove/rename 可在中斷後恢復。尚未實作 trash 到期或 purge。
-- Immich cleanup systemd script 位於本 repo 之外，依使用者指示延後處理。
+- `library.trash.status` 與 `library.trash.prepare` 會檢查或建立 symlink-safe 的 `.trash/mediagent` namespace；既有 legacy trash 保持原位，Mediagent 不會改整棵 `.trash` 的 owner。Remove/restore/rename 不支援 dry-run；planned operation 可在中斷後安全恢復。尚未實作 trash 到期或 purge。
+- `deploy/integrations/immich/` 提供替代 delete-candidate script 與 systemd drop-in；它以 `server` 帳號執行、共用 `/run/lock/mediagent-sync.lock`，並以 Immich audit reference 呼叫 `mediagent library remove`，不再直接搬檔。
 
 ## 2026-08-14 漫畫來源更新
 
@@ -71,7 +70,7 @@
 - 平台專屬 root 會被視為已經屬於該平台，因此預設會省略額外 platform directory。
 - Pixiv bookmark sync 已支援 collect -> upsert -> status filter -> storage path plan -> partial download finalization -> file record -> item status update。
 - Pixiv artwork normalization 會保存 `work_type: illustration|comic|animation`；官方 `type:manga` 原始頁面存入 `pixiv/comic-pages/...`、deterministic CBZ 存入 `pixiv/comic/...`，`illust` 即使多頁仍存入 `pixiv/photo/...`。
-- `pixiv.comics.package` 會把完整下載的漫畫頁面原子封裝為含 `ComicInfo.xml` 的 deterministic Kavita-oriented CBZ；單篇有唯一 series identity，真正系列共用資料夾，而 `migrate_legacy:true` 會重建 V1 archives，再把舊副本移到 `.trash/mediagent-comic-v1`。`pixiv.bookmarks.sync` 可用 `package_comics:true` opt in。
+- `pixiv.comics.package` 會把完整下載的漫畫頁面原子封裝為含 `ComicInfo.xml` 的 deterministic Kavita-oriented CBZ；單篇有唯一 series identity，真正系列共用資料夾。`migrate_legacy:true` 現在會透過 audited managed-trash lifecycle 退役 V1 archive，保留其 DB/source identity 為 removed，重跑時忽略該 retired row，不再刪除 DB row。`pixiv.bookmarks.sync` 可用 `package_comics:true` opt in。
 - Pixiv invisible stubs 與只包含 `s.pximg.net/.../limit_*.png` 的 placeholder response 會標記為 unavailable，不會下載。
 - `pixiv.bookmarks.sync` 支援明確的 `repair_missing_files:true`；預設重跑仍會跳過 DB 中的 downloaded items，即使外部清理已把檔案移到 `.trash`。
 - Pixiv bookmark sync 使用 `media_types` filtering 時會存入 scoped cursor，例如 `bookmarks:public:photo`。
@@ -205,7 +204,7 @@
 - Pixiv 現在有離線 `pixiv.library.reconcile` plan/apply 流程，可更新舊 work-type metadata、以原子搬移將既有漫畫原始頁面從 `photo` 或舊 `comic` 移到 `comic-pages`、同步搬移 sidecars、quarantine 已知 placeholder downloads、更新 DB paths；apply 必須傳入 `confirm:true`。
 - 本機 development DB 的 plan 驗證找到 309 個 Pixiv items：26 comic、280 illustration、3 animation、17 unavailable placeholder records，blocked actions 為 0。本機 library 中有 245 個 legacy comic source files 已不在 DB 記錄路徑，因此這些應使用 opt-in repair，而不是原地搬移。
 - `.trash` 內的檔案會視為 library 缺檔，永遠不自動搬回；`repair_missing_files:true` 會下載新副本到規劃路徑，並保留 `.trash` 原狀。
-- Locked offline suite 通過 271 tests，包含 Pixiv work classification、unavailable placeholder rejection、reconciliation plan/apply/confirmation、comic-page/sidecar 原子搬移、placeholder quarantine、missing-file repair、Kavita one-shot/series CBZ metadata/layout、V1 quarantine migration、long-Unicode path safety、missing-source refusal、DB 記錄、重跑重用與 bookmark-sync packaging integration。
+- Locked offline suite 通過 400 tests，包含 managed-trash safety/readiness、audited V1 CBZ retirement 與重跑、fail-closed Immich CLI bridge/systemd policy、Pixiv/JMComic reconciliation、全域 identity、link/inbox dispatch、auth redaction 及 download/repair paths。
 
 - `link.media.sync` 支援明確的 file-health-aware repair：`repair_missing_files: true`。
 - `telegram.inbox.sync_links` 與 `telegram.messages.sync` 也暴露相同選項，作為既有 sync logic 上的 compatibility paths。

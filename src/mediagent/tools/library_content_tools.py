@@ -55,6 +55,34 @@ def definitions() -> list[ToolDefinition]:
         ),
         ToolDefinition(
             spec=ToolSpec(
+                name="library.trash.status",
+                description="Inspect Mediagent managed-trash ownership, permissions, and retention behavior.",
+                input_schema={
+                    "type": "object",
+                    "properties": {"library_root": {"type": "string"}},
+                },
+                output_schema={"type": "object"},
+                permissions=(Permission.READ_FILES,),
+                dry_run_supported=True,
+            ),
+            handler=managed_trash_status,
+        ),
+        ToolDefinition(
+            spec=ToolSpec(
+                name="library.trash.prepare",
+                description="Create and validate the .trash/mediagent namespace for the service account.",
+                input_schema={
+                    "type": "object",
+                    "properties": {"library_root": {"type": "string"}},
+                },
+                output_schema={"type": "object"},
+                permissions=(Permission.READ_FILES, Permission.WRITE_FILES),
+                dry_run_supported=True,
+            ),
+            handler=prepare_managed_trash,
+        ),
+        ToolDefinition(
+            spec=ToolSpec(
                 name="library.entry.remove",
                 description="Move one managed scanner-visible library entry to Mediagent trash and suppress resync.",
                 input_schema={
@@ -169,6 +197,30 @@ def reconcile_legacy_trash(context: ToolContext, input_data: dict[str, Any]) -> 
     except (OSError, ValueError) as exc:
         return ToolResult.failure(
             "legacy_trash_reconcile_failed",
+            str(exc),
+            details={"exception_type": type(exc).__name__},
+            category=ErrorCategory.FILESYSTEM,
+        )
+
+
+def managed_trash_status(context: ToolContext, input_data: dict[str, Any]) -> ToolResult:
+    resolved = _trash_library_root(context, input_data)
+    if isinstance(resolved, ToolResult):
+        return resolved
+    return ToolResult.success({"dry_run": context.dry_run, **library_content.managed_trash_status(resolved)})
+
+
+def prepare_managed_trash(context: ToolContext, input_data: dict[str, Any]) -> ToolResult:
+    resolved = _trash_library_root(context, input_data)
+    if isinstance(resolved, ToolResult):
+        return resolved
+    if context.dry_run:
+        return ToolResult.success({"dry_run": True, **library_content.managed_trash_status(resolved)})
+    try:
+        return ToolResult.success({"dry_run": False, **library_content.prepare_managed_trash(resolved)})
+    except (OSError, ValueError) as exc:
+        return ToolResult.failure(
+            "managed_trash_unavailable",
             str(exc),
             details={"exception_type": type(exc).__name__},
             category=ErrorCategory.FILESYSTEM,
@@ -341,6 +393,19 @@ def _paths(context: ToolContext, input_data: dict[str, Any], *, require_library_
             default_root = default_library_root(data_dir=context.data_dir, library_dir=context.library_dir)
             ensure_inside(default_root, context.allowed_write_roots())
         return db_path, root
+    except (PathSafetyError, ValueError) as exc:
+        return ToolResult.failure("unsafe_path", str(exc), category=ErrorCategory.FILESYSTEM)
+
+
+def _trash_library_root(context: ToolContext, input_data: dict[str, Any]) -> Path | ToolResult:
+    try:
+        root = (
+            normalize_path(str(input_data["library_root"]), env=context.env, cwd=context.cwd)
+            if input_data.get("library_root")
+            else default_library_root(data_dir=context.data_dir, library_dir=context.library_dir)
+        )
+        ensure_inside(root, context.allowed_write_roots())
+        return root
     except (PathSafetyError, ValueError) as exc:
         return ToolResult.failure("unsafe_path", str(exc), category=ErrorCategory.FILESYSTEM)
 

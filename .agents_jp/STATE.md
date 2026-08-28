@@ -1,15 +1,15 @@
 # Mediagent 現在の状態
 
-## 2026-08-27 Global content identity と library operations
+## 2026-08-28 Global content identity と managed trash
 
 - Schema v10 と commit `340b406` は Production に deploy 済みで、全 Mediagent timers は停止中。Migration 前 schema-v9 backup は `/data/services/mediagent/data/backups/mediagent.sqlite3.pre-v10.20260827T141834Z.bak`。Migration は 2,817 media items と 91,455 media files を保持し、SQLite integrity check に通過した。
 - SQLite schema v10 は SHA-256 `content_blobs`、scanner-visible `library_entries`、audit 用 `library_operations`、`media_files.library_entry_id` を追加する。
 - Managed download 成功後は global content identity に adoption する。一般 photo/video/audio の同一内容は一つの scanner-visible path に集約しつつ、SQLite は全 source references を保持する。Comic pages/CBZ は reading context を分離し、filesystem 対応時は hard link で physical dedup する。
 - `library.content.deduplicate` は tracked library 全体の SHA-256 scan を提供する。Dry-run は file/DB を変更せず、apply は rerunnable/idempotent。
-- 最初の Production dry-run は existing 90,629 files を hash し、ordinary collapse paths 32、comic hard-link candidates 428、約 491 MB reclaimable を検出した。さらに pre-v10 cleanup が legacy `.trash` へ移動した downloaded rows 807 件を検出した。全件に exact recorded path/size match があり、active checksum identity conflict は 0。Branch `codex/legacy-trash-reconcile` は dedup apply 前に明示的 removed entry として import する `library.trash.reconcile` を追加する。Files は移動せず、old duplicate trash copies を保持し、active identity conflict を block し、rerunnable である。
+- Production legacy-trash reconciliation は removed entries 807 件を import し、全 807 source rows を file move なしで link した。Global dedup は 90,629 rows を adopt、32 paths を collapse、428 comic hard links を作成し、491,170,708 bytes を reclaim した。Idempotent rerun、SQLite quick/FK、missing-file verification はすべて通過した。
 - One-shot `mediagent library remove|restore|rename` を実装済み。Remove は `.trash/mediagent/<removal-id>/` へ移動して repair/redownload を抑止、restore は checksum validation、rename は path/title を更新し CBZ の `ComicInfo.xml` も atomic rewrite する。
-- Remove/restore/rename は dry-run 非対応。Interrupted planned remove/rename は再実行で recovery できる。Trash expiry/purge は未実装。
-- Immich cleanup systemd script は repo 外にあり、user 指示により repo 機能/test 完了後まで延期。
+- `library.trash.status` と `library.trash.prepare` は symlink-safe な `.trash/mediagent` namespace を inspect/create する。Legacy trash はそのまま保持し、Mediagent は `.trash` tree 全体の owner を変更しない。Remove/restore/rename は dry-run 非対応で、interrupted planned operation は再実行で recovery できる。Trash expiry/purge は未実装。
+- `deploy/integrations/immich/` は replacement delete-candidate script と systemd drop-in を提供する。`server` account と共通 `/run/lock/mediagent-sync.lock` を使い、direct file move ではなく Immich audit reference 付き `mediagent library remove` を呼ぶ。
 
 ## 2026-08-14 コミックソース更新
 
@@ -70,7 +70,7 @@
 - Platform-specific roots はすでにその platform に scoped されているものとして扱うため、default では追加の platform directory を省略します。
 - Pixiv bookmark sync は collect -> upsert -> status filter -> storage path plan -> partial download finalization -> file record -> item status update に対応しています。
 - Pixiv artwork normalization は `work_type: illustration|comic|animation` を保持します。Official `type:manga` source pages は `pixiv/comic-pages/...`、deterministic CBZ は `pixiv/comic/...`、`illust` は multi-page でも `pixiv/photo/...` に保存します。
-- `pixiv.comics.package` は complete downloaded manga pages を `ComicInfo.xml` 付きの atomic deterministic Kavita-oriented CBZ に package します。One-shot は unique series identity、real series は shared directory を使い、`migrate_legacy:true` は V1 archive を rebuild して old copy を `.trash/mediagent-comic-v1` に移します。`pixiv.bookmarks.sync` は `package_comics:true` で opt in できます。
+- `pixiv.comics.package` は complete downloaded manga pages を `ComicInfo.xml` 付きの atomic deterministic Kavita-oriented CBZ に package します。One-shot は unique series identity、real series は shared directory を使います。`migrate_legacy:true` は audited managed-trash lifecycle で V1 archive を retire し、DB/source identity を removed のまま保持して rerun 時に無視します。Stale DB row は削除しません。`pixiv.bookmarks.sync` は `package_comics:true` で opt in できます。
 - Pixiv invisible stubs と `s.pximg.net/.../limit_*.png` だけを返す placeholder responses は unavailable として扱い、download しません。
 - `pixiv.bookmarks.sync` は明示的な `repair_missing_files:true` に対応します。Default reruns は external cleanup が files を `.trash` に移しても、DB の downloaded items を引き続き skip します。
 - Pixiv bookmark sync は `media_types` filtering 使用時に、`bookmarks:public:photo` のような scoped cursor を保存します。
@@ -204,7 +204,7 @@
 - Pixiv には offline `pixiv.library.reconcile` plan/apply flow があります。Legacy work-type metadata を更新し、existing manga source pages を `photo` または legacy `comic` から `comic-pages` へ atomic move し、sidecars も同時に移動し、known placeholder downloads を quarantine し、DB paths を更新します。Apply には `confirm:true` が必要です。
 - Local development DB の plan verification では Pixiv items 309 件: comic 26、illustration 280、animation 3、unavailable placeholder records 17、blocked actions 0 でした。Local library では legacy comic source files 245 件が記録 path に存在しないため、in-place move ではなく opt-in repair が必要です。
 - `.trash` 内の files は missing library files として扱い、自動では戻しません。`repair_missing_files:true` は planned library path に新しい copy を download し、`.trash` は変更しません。
-- Locked offline suite は 271 tests に成功しています。Pixiv work classification、unavailable placeholder rejection、reconciliation plan/apply/confirmation、comic-page/sidecar atomic moves、placeholder quarantine、missing-file repair、Kavita one-shot/series CBZ metadata/layout、V1 quarantine migration、long-Unicode path safety、missing-source refusal、DB recording、rerun reuse、bookmark-sync packaging integration を含みます。
+- Locked offline suite は 400 tests に成功しています。Managed-trash safety/readiness、audited V1 CBZ retirement と rerun、fail-closed Immich CLI bridge/systemd policy、Pixiv/JMComic reconciliation、global identity、link/inbox dispatch、auth redaction、download/repair paths を含みます。
 
 - `link.media.sync` は `repair_missing_files: true` による明示的 file-health-aware repair をサポートします。
 - `telegram.inbox.sync_links` と `telegram.messages.sync` も、既存 sync logic 上の compatibility paths として同じ option を公開します。

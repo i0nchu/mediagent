@@ -261,7 +261,7 @@ class PixivLibraryToolTests(unittest.TestCase):
             self.assertEqual(result.data["summary"]["failed"], 1)
             self.assertEqual(cbz_files, [])
 
-    def test_comics_package_rebuilds_and_quarantines_legacy_v1_cbz(self) -> None:
+    def test_comics_package_rebuilds_and_retires_legacy_v1_cbz(self) -> None:
         registry = create_default_registry()
         with TemporaryDirectory() as temp_dir:
             data_dir, db_path, context = _context(temp_dir)
@@ -305,8 +305,9 @@ class PixivLibraryToolTests(unittest.TestCase):
                 / "Legacy Comic [pixiv-legacy-1]"
                 / "Legacy Comic [pixiv-legacy-1].cbz"
             )
-            quarantined = list((data_dir / "library" / ".trash" / "mediagent-comic-v1").rglob("*.cbz"))
+            quarantined = list((data_dir / "library" / ".trash" / "mediagent").rglob("*.cbz"))
             files = db.list_media_files(db_path, platform="pixiv", remote_id="legacy-1")
+            repeated = asyncio.run(registry.run("pixiv.comics.package", {}, context))
 
             self.assertTrue(blocked.is_success)
             self.assertEqual(blocked.data["summary"]["blocked"], 1)
@@ -317,8 +318,16 @@ class PixivLibraryToolTests(unittest.TestCase):
             self.assertFalse(legacy_path.exists())
             self.assertTrue(new_path.exists())
             self.assertEqual(len(quarantined), 1)
-            self.assertEqual(len(files), 2)
-            self.assertEqual(sum(file["mime_type"] == "application/vnd.comicbook+zip" for file in files), 1)
+            self.assertEqual(len(files), 3)
+            cbz_files = [file for file in files if file["mime_type"] == "application/vnd.comicbook+zip"]
+            self.assertEqual(len(cbz_files), 2)
+            self.assertEqual(sum(file["library_state"] == "active" for file in cbz_files), 1)
+            self.assertEqual(sum(file["library_state"] == "removed" for file in cbz_files), 1)
+            removed_cbz = next(file for file in cbz_files if file["library_state"] == "removed")
+            self.assertEqual(Path(removed_cbz["local_path"]), quarantined[0])
+            self.assertTrue(repeated.is_success)
+            self.assertEqual(repeated.data["summary"]["existing"], 1)
+            self.assertEqual(repeated.data["summary"]["failed"], 0)
 
 
 def _context(temp_dir: str) -> tuple[Path, Path, ToolContext]:

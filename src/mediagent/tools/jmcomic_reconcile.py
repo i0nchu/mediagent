@@ -268,8 +268,14 @@ def _build_item_action(
                 action["current_path"] = str(current_path)
                 action["archive_present"] = current_path.is_file()
 
+    package_item = desired_item
+    if action.get("archive_in_trash"):
+        package_item = {
+            **desired_item,
+            "files": [record for record in desired_item["files"] if not _is_cbz(record)],
+        }
     package_plan = _comic_package_plan(
-        item=desired_item,
+        item=package_item,
         library_root=library_root,
         include_platform_layer=include_platform_layer,
         overwrite=True,

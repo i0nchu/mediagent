@@ -113,6 +113,21 @@ Fallback during local development:
 PYTHONPATH=src python3 -m mediagent ...
 ```
 
+## Managed Trash And Immich Cleanup
+
+Inspect or prepare the namespace as the same account that runs Mediagent:
+
+```bash
+uv run --locked mediagent library trash status --library-root /data/nas/mediagent --json
+uv run --locked mediagent library trash prepare --library-root /data/nas/mediagent --json
+```
+
+If the legacy `.trash` parent is not writable, an administrator must pre-create only
+`.trash/mediagent` for the service account; do not recursively change legacy-trash ownership.
+The reviewed Immich bridge lives in `deploy/integrations/immich/`. It must run under the
+same shared flock as sync services and calls `mediagent library remove`; it must never move
+files directly. Trash has no automatic purge in v1.
+
 ## Run Tests
 
 ```bash
@@ -423,7 +438,7 @@ uv run --locked mediagent tools run pixiv.comics.package \
   --input examples/tools/pixiv.comics.package.json --dry-run --json
 ```
 
-Remove `--dry-run` to create CBZ files. The committed example sets `migrate_legacy:true`: the tool reads only complete, healthy source pages, writes each Kavita V2 archive through a `.partial` file plus atomic replacement, records it in SQLite, and keeps source pages. After a V2 archive succeeds, an older V1 date-layout CBZ is moved to `library/.trash/mediagent-comic-v1` and its stale DB row is removed. Future bookmark syncs can set `package_comics:true` to package newly downloaded manga automatically.
+Remove `--dry-run` to create CBZ files. The committed example sets `migrate_legacy:true`: the tool reads only complete, healthy source pages, writes each Kavita V2 archive through a `.partial` file plus atomic replacement, records it in SQLite, and keeps source pages. After V2 succeeds, an older V1 archive is retired through the audited `.trash/mediagent/<removal-id>/` lifecycle; its source row remains linked to removed state and reruns ignore it. Future bookmark syncs can set `package_comics:true` to package newly downloaded manga automatically.
 
 Kavita V2 uses one directory per series. A Pixiv one-shot receives its own unique series identity; works with real Pixiv series metadata share one directory and use `Series`, `Number`, optional `Volume`, and optional `Count` from the normalized comic contract.
 

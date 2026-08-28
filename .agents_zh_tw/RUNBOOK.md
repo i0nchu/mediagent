@@ -98,6 +98,20 @@ uv run --locked ...
 PYTHONPATH=src python3 -m mediagent ...
 ```
 
+## Managed Trash 與 Immich Cleanup
+
+請用與 Mediagent service 相同的帳號檢查或建立 namespace：
+
+```bash
+uv run --locked mediagent library trash status --library-root /data/nas/mediagent --json
+uv run --locked mediagent library trash prepare --library-root /data/nas/mediagent --json
+```
+
+若 legacy `.trash` parent 不可寫，管理員只需為 service account 預建
+`.trash/mediagent`；不要遞迴變更 legacy trash owner。已審查的 Immich bridge 位於
+`deploy/integrations/immich/`，必須和 sync services 共用 flock 並呼叫
+`mediagent library remove`，不可直接搬檔。V1 沒有自動 purge。
+
 ## 跑測試
 
 ```bash
@@ -402,7 +416,7 @@ uv run --locked mediagent tools run pixiv.comics.package \
   --input examples/tools/pixiv.comics.package.json --dry-run --json
 ```
 
-移除 `--dry-run` 才會建立 CBZ。Committed example 設定了 `migrate_legacy:true`：工具只讀取完整且健康的原始頁面，透過 `.partial` 與 atomic replacement 寫入 Kavita V2 archive、記錄 SQLite，並保留原始頁面。V2 成功後，舊 V1 date-layout CBZ 會移到 `library/.trash/mediagent-comic-v1`，stale DB row 才會刪除。未來 bookmark sync 可設定 `package_comics:true`，自動封裝新下載的漫畫。
+移除 `--dry-run` 才會建立 CBZ。Committed example 設定了 `migrate_legacy:true`：工具只讀取完整且健康的原始頁面，透過 `.partial` 與 atomic replacement 寫入 Kavita V2 archive、記錄 SQLite，並保留原始頁面。V2 成功後，舊 V1 archive 會透過 audited `.trash/mediagent/<removal-id>/` lifecycle 退役；source row 保留並連結 removed state，重跑會忽略它。未來 bookmark sync 可設定 `package_comics:true`，自動封裝新下載的漫畫。
 
 Kavita V2 每個系列使用一個資料夾。Pixiv 單篇會取得自己的唯一 series identity；有真正 Pixiv series metadata 的作品會共用同一資料夾，並從 normalized comic contract 使用 `Series`、`Number`、optional `Volume` 與 optional `Count`。
 

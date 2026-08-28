@@ -14,9 +14,9 @@ When updating this TODO, update the Traditional Chinese and Japanese copies in t
 - [x] Add schema-v10 global SHA-256 blob identity, ordinary-media path collapse, comic-context hard links, and download-time adoption across managed Pixiv, Telegram, generic link, Instagram/comic delegation, and CBZ paths.
 - [x] Add full tracked-library dedup dry-run/apply plus one-shot remove, restore, and rename commands with audit operations, checksum conflicts, removed-state suppression, and interruption recovery.
 - [x] Merge/push schema v10, stop Production timers, back up and migrate the Production DB, and run the first global dedup dry-run.
-- [ ] Complete, test, and deploy `library.trash.reconcile`; import the 807 verified pre-v10 trash rows as removed before global dedup apply.
-- [ ] Apply global dedup under the shared deployment lock, verify the rerun is idempotent, then restore and monitor Production timers.
-- [ ] After repository work is complete, separately inspect and update the external systemd Immich cleanup script to call `mediagent library remove` instead of moving files directly. It is outside this repository and intentionally skipped for now.
+- [x] Complete/deploy `library.trash.reconcile`, import all 807 verified rows, apply global dedup, and verify the idempotent Production result.
+- [ ] Deploy managed trash and audited Pixiv legacy-CBZ retirement, then complete the 16 pending cleanup packages.
+- [ ] Install and verify the reviewed Immich bridge/systemd drop-in so it calls `mediagent library remove` under the shared lock, then restore and monitor Production timers.
 - [ ] Keep trash expiry/purge deferred; do not add automatic deletion in this phase.
 
 ## Comic Source Follow-up

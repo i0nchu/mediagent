@@ -10,7 +10,7 @@ JMComic album-scoped resolution では album episode list が chapter number を
 
 Schema v8 は `source_collections` と `source_collection_memberships`、v9 は account-scoped human name と remote collection scope を結ぶ `source_collection_scope_aliases`、v10 は `content_blobs`、`library_entries`、`library_operations`、`media_files.library_entry_id` を追加する。
 
-`content_blobs` が checksum identity を所有し、provider `media_items` / `media_files` は全 source references を保持する。一般 media の同一 checksum は一つの scanner-visible entry だけを投影し、Immich の cross-provider duplicate を防ぐ。Comic pages/CBZ は context-specific presentation key で path を分離し、可能なら hard link を使う。Remove は source metadata を削除せず、repair/verify は explicit restore まで removed entry を skip する。Raw `download.http` は DB media identity を持たない unmanaged transport primitive であり、managed sync tools は file upsert 直後に adoption する。
+`content_blobs` が checksum identity を所有し、provider `media_items` / `media_files` は全 source references を保持する。一般 media の同一 checksum は一つの scanner-visible entry だけを投影し、Immich の cross-provider duplicate を防ぐ。Comic pages/CBZ は context-specific presentation key で path を分離し、可能なら hard link を使う。Remove は planned/completed operation を記録し、source metadata を削除せず projection を symlink-safe な `.trash/mediagent/<removal-id>/` へ移す。Status/prepare はこの namespace だけを管理し legacy trash tree は変更しない。Repair/verify は explicit restore まで removed entry を skip する。Raw `download.http` は DB media identity を持たない unmanaged transport primitive であり、managed sync tools は file upsert 直後に adoption する。
 
 安定した page file key により CDN URL のローテーションで重複 row を作らない。cookie、token、機密 header、JM runtime decode は永続 metadata に保存しない。
 

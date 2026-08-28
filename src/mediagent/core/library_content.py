@@ -20,6 +20,80 @@ from mediagent.core import db
 
 
 GENERAL_PRESENTATION_KEY = "media"
+MANAGED_TRASH_DIRECTORY = Path(".trash") / "mediagent"
+MANAGED_TRASH_MODE = 0o750
+
+
+def managed_trash_path(library_root: Path) -> Path:
+    """Return the only trash namespace written by Mediagent."""
+
+    return library_root.expanduser().resolve() / MANAGED_TRASH_DIRECTORY
+
+
+def managed_trash_status(library_root: Path) -> dict[str, Any]:
+    """Describe whether the current process can safely use managed trash."""
+
+    root = library_root.expanduser().resolve()
+    namespace = managed_trash_path(root)
+    trash_root = namespace.parent
+    root_status = _directory_status(root)
+    trash_status = _directory_status(trash_root)
+    namespace_status = _directory_status(namespace)
+    namespace_safe = False
+    if namespace_status["exists"] and namespace_status["is_directory"] and not namespace_status["is_symlink"]:
+        try:
+            namespace.resolve().relative_to(root)
+            namespace_safe = True
+        except ValueError:
+            namespace_safe = False
+    operational = bool(
+        namespace_safe
+        and namespace_status["writable"]
+        and namespace_status["searchable"]
+    )
+    return {
+        "library_root": str(root),
+        "trash_root": str(trash_root),
+        "managed_path": str(namespace),
+        "operational": operational,
+        "library": root_status,
+        "trash": trash_status,
+        "managed": {**namespace_status, "safe": namespace_safe},
+        "retention": {
+            "automatic_purge": False,
+            "policy": "retained_until_explicit_restore_or_external_retention_policy",
+        },
+    }
+
+
+def prepare_managed_trash(library_root: Path) -> dict[str, Any]:
+    """Create the Mediagent namespace without changing an existing trash root."""
+
+    root = library_root.expanduser().resolve()
+    if not root.is_dir():
+        raise FileNotFoundError(f"Library root does not exist: {root}")
+    namespace = managed_trash_path(root)
+    trash_root = namespace.parent
+    for path, label in ((trash_root, "trash root"), (namespace, "managed trash namespace")):
+        if path.is_symlink():
+            raise ValueError(f"Refusing to use a symbolic link as the {label}: {path}")
+        if path.exists() and not path.is_dir():
+            raise ValueError(f"The {label} is not a directory: {path}")
+    try:
+        trash_root.mkdir(mode=MANAGED_TRASH_MODE, exist_ok=True)
+        namespace.mkdir(mode=MANAGED_TRASH_MODE, exist_ok=True)
+    except PermissionError as exc:
+        raise PermissionError(
+            "Mediagent cannot create its managed trash namespace. "
+            f"Pre-create {namespace} for the service account."
+        ) from exc
+    status = managed_trash_status(root)
+    if not status["operational"]:
+        raise PermissionError(
+            "Mediagent managed trash exists but is not writable by the current process: "
+            f"{namespace}"
+        )
+    return status
 
 
 def sha256_checksum(path: Path) -> tuple[str, int]:
@@ -1044,9 +1118,14 @@ def remove_entry(
             }
     if not source.is_file():
         raise FileNotFoundError(str(source))
+    trash_namespace = Path(str(prepare_managed_trash(library_root)["managed_path"]))
     operation_id = f"rmv_{uuid.uuid4().hex}"
     relative = _safe_relative_path(entry, source=source, library_root=library_root)
-    trash = (library_root / ".trash" / "mediagent" / operation_id / relative).resolve()
+    trash = (trash_namespace / operation_id / relative).resolve()
+    try:
+        trash.relative_to(trash_namespace.resolve())
+    except ValueError as exc:
+        raise ValueError("Managed trash target escaped its configured namespace.") from exc
     now = datetime.now(UTC).isoformat()
     with db.connect(db_path) as connection:
         connection.execute(
@@ -1498,6 +1577,30 @@ def _move_file(source: Path, target: Path) -> None:
         shutil.copy2(source, temporary)
         os.replace(temporary, target)
         source.unlink()
+
+
+def _directory_status(path: Path) -> dict[str, Any]:
+    exists = path.exists() or path.is_symlink()
+    result: dict[str, Any] = {
+        "exists": exists,
+        "is_directory": path.is_dir() if exists else False,
+        "is_symlink": path.is_symlink(),
+        "writable": os.access(path, os.W_OK) if exists else False,
+        "searchable": os.access(path, os.X_OK) if exists else False,
+        "uid": None,
+        "gid": None,
+        "mode": None,
+    }
+    if exists:
+        metadata = path.lstat()
+        result.update(
+            {
+                "uid": metadata.st_uid,
+                "gid": metadata.st_gid,
+                "mode": f"{stat.S_IMODE(metadata.st_mode):04o}",
+            }
+        )
+    return result
 
 
 def _safe_relative_path(entry: dict[str, Any], *, source: Path, library_root: Path) -> Path:

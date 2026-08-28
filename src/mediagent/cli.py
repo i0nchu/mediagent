@@ -97,6 +97,19 @@ def build_parser() -> argparse.ArgumentParser:
     library_reconcile_trash.add_argument("--json", action="store_true", help="Emit machine-readable JSON.")
     library_reconcile_trash.set_defaults(handler=handle_library_reconcile_trash)
 
+    library_trash = library_commands.add_parser("trash", help="Inspect or prepare Mediagent managed trash.")
+    library_trash_commands = library_trash.add_subparsers(dest="library_trash_command")
+    for command, help_text, handler in (
+        ("status", "Inspect managed-trash ownership and permissions.", handle_library_trash_status),
+        ("prepare", "Create and validate the .trash/mediagent namespace.", handle_library_trash_prepare),
+    ):
+        trash_command = library_trash_commands.add_parser(command, help=help_text)
+        trash_command.add_argument("--library-root", default=None, help="Managed library root.")
+        trash_command.add_argument("--json", action="store_true", help="Emit machine-readable JSON.")
+        if command == "prepare":
+            trash_command.add_argument("--dry-run", action="store_true", help="Inspect without creating directories.")
+        trash_command.set_defaults(handler=handler)
+
     library_remove = library_commands.add_parser("remove", help="Move one managed library entry to Mediagent trash.")
     _add_library_selector_arguments(library_remove)
     library_remove.add_argument("--reason", default=None, help="Optional audit reason.")
@@ -285,6 +298,26 @@ def handle_library_reconcile_trash(args: argparse.Namespace) -> int:
     return run_tool_command(
         tool="library.trash.reconcile",
         input_data=_library_input(args, "db_path", "library_root"),
+        json_output=args.json,
+        summary_json=False,
+        dry_run=args.dry_run,
+    )
+
+
+def handle_library_trash_status(args: argparse.Namespace) -> int:
+    return run_tool_command(
+        tool="library.trash.status",
+        input_data=_library_input(args, "library_root"),
+        json_output=args.json,
+        summary_json=False,
+        dry_run=False,
+    )
+
+
+def handle_library_trash_prepare(args: argparse.Namespace) -> int:
+    return run_tool_command(
+        tool="library.trash.prepare",
+        input_data=_library_input(args, "library_root"),
         json_output=args.json,
         summary_json=False,
         dry_run=args.dry_run,

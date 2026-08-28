@@ -61,9 +61,13 @@ uv run --locked mediagent tools inspect jmcomic.library.reconcile --json
 uv run --locked mediagent tools inspect core.cleanup.media_state --json
 uv run --locked mediagent tools inspect library.content.deduplicate --json
 uv run --locked mediagent tools inspect library.trash.reconcile --json
+uv run --locked mediagent tools inspect library.trash.status --json
+uv run --locked mediagent tools inspect library.trash.prepare --json
 uv run --locked mediagent tools inspect library.entry.remove --json
 uv run --locked mediagent library reconcile-trash --dry-run --json
 uv run --locked mediagent library deduplicate --dry-run --json
+uv run --locked mediagent library trash status --json
+uv run --locked mediagent library trash prepare --json
 uv run --locked mediagent tools inspect telegram.auth.login --json
 uv run --locked mediagent tools inspect telegram.messages.sync --json
 uv run --locked mediagent tools inspect link.queue.upsert --json

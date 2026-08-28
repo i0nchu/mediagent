@@ -18,7 +18,7 @@ from mediagent.core.comics import (
     comic_archive_relative_path,
 )
 from mediagent.core.filesystem import PathSafetyError, ensure_inside, normalize_path, resolve_placeholders
-from mediagent.core.storage import default_library_root, platform_library_env_name, safe_storage_segment, source_datetime
+from mediagent.core.storage import default_library_root, platform_library_env_name, source_datetime
 from mediagent.core.tooling import (
     ErrorCategory,
     Permission,
@@ -169,6 +169,7 @@ async def package_pixiv_comics(context: ToolContext, input_data: dict[str, Any])
                 {
                     **_public_package_plan(plan),
                     "status": "failed",
+                    "reason": f"CBZ packaging failed: {exc}",
                     "error": {"code": "comic_package_failed", "exception_type": type(exc).__name__},
                 }
             )
@@ -557,10 +558,7 @@ def _comic_package_plan(
     refresh_tracked: bool = False,
 ) -> dict[str, Any]:
     cbz_records = [record for record in item["files"] if _is_cbz_file(record)]
-    removed_cbz = next(
-        (record for record in cbz_records if record.get("library_state") == "removed"),
-        None,
-    )
+    removed_cbz = [record for record in cbz_records if record.get("library_state") == "removed"]
     renamed_cbz = next(
         (
             record
@@ -608,21 +606,24 @@ def _comic_package_plan(
         plan["status"] = "incomplete"
         plan["reason"] = f"item_status:{item.get('status')}"
         return plan
-    if removed_cbz is not None:
-        plan["status"] = "skipped"
-        plan["reason"] = "comic archive was explicitly removed"
-        return plan
-
     existing_cbz = next(
         (
             record
             for record in cbz_records
-            if Path(str(record.get("local_path") or "")).expanduser().resolve() == target_path
+            if record.get("library_state") != "removed"
+            and record.get("local_path")
+            and Path(str(record["local_path"])).expanduser().resolve() == target_path
         ),
         None,
     )
+    if removed_cbz and existing_cbz is None:
+        plan["status"] = "skipped"
+        plan["reason"] = "comic archive was explicitly removed"
+        return plan
     legacy_cbz: list[dict[str, Any]] = []
     for record in cbz_records:
+        if record.get("library_state") == "removed":
+            continue
         try:
             legacy_path = _source_path(record, library_root)
             ensure_inside(legacy_path, [library_root])
@@ -632,29 +633,15 @@ def _comic_package_plan(
             return plan
         if legacy_path == target_path:
             continue
-        if _path_is_in_trash(legacy_path, library_root) or not legacy_path.exists():
-            legacy_cbz.append(
-                {
-                    "record": record,
-                    "source": None,
-                    "quarantine": legacy_path if legacy_path.exists() else None,
-                }
-            )
-            continue
-        quarantine = (
-            library_root
-            / ".trash"
-            / "mediagent-comic-v1"
-            / safe_storage_segment(item.get("platform") or "pixiv")
-            / safe_storage_segment(item["remote_id"], max_length=64)
-            / f"{record['id']}__{legacy_path.name}"
-        ).resolve()
-        ensure_inside(quarantine, [library_root])
-        if quarantine.exists():
+        if _path_is_in_trash(legacy_path, library_root):
             plan["status"] = "blocked"
-            plan["reason"] = "legacy CBZ quarantine target already exists"
+            plan["reason"] = "active legacy CBZ already points inside trash; reconcile its library state first"
             return plan
-        legacy_cbz.append({"record": record, "source": legacy_path, "quarantine": quarantine})
+        if not legacy_path.is_file():
+            plan["status"] = "incomplete"
+            plan["reason"] = "tracked legacy CBZ is missing from the library"
+            return plan
+        legacy_cbz.append({"record": record, "source": legacy_path})
     plan["legacy_cbz"] = legacy_cbz
     if legacy_cbz and not migrate_legacy:
         plan["status"] = "blocked"
@@ -825,7 +812,12 @@ def _apply_comic_package(
             package["target_path"] = adoption["target_path"]
             package["deduplicated"] = adoption.get("deduplicated", False)
             package["hardlinked"] = adoption.get("hardlinked", False)
-    quarantined = _quarantine_legacy_cbz(db_path=db_path, entries=plan.get("legacy_cbz", []))
+    quarantined = _retire_legacy_cbz(
+        db_path=db_path,
+        library_root=library_root,
+        item=item,
+        entries=plan.get("legacy_cbz", []),
+    )
     package["legacy_cbz_retired"] = len(plan.get("legacy_cbz", []))
     package["legacy_cbz_quarantined"] = len(quarantined)
     package["legacy_quarantine_paths"] = quarantined
@@ -845,35 +837,30 @@ def _item_with_display_override(item: dict[str, Any], display_name: Any) -> dict
     return overridden
 
 
-def _quarantine_legacy_cbz(*, db_path: Path, entries: list[dict[str, Any]]) -> list[str]:
-    moved: list[tuple[Path, Path]] = []
-    try:
-        for entry in entries:
-            if entry["source"] is None:
-                continue
-            source = Path(entry["source"])
-            target = Path(entry["quarantine"])
-            target.parent.mkdir(parents=True, exist_ok=True)
-            os.replace(source, target)
-            moved.append((target, source))
-        if entries:
-            with db.connect(db_path) as connection:
-                connection.executemany(
-                    "DELETE FROM media_files WHERE id = ?",
-                    [(int(entry["record"]["id"]),) for entry in entries],
-                )
-    except Exception:
-        for current, original in reversed(moved):
-            if current.exists():
-                original.parent.mkdir(parents=True, exist_ok=True)
-                os.replace(current, original)
-        raise
-    retained_paths = [
-        str(entry["quarantine"])
-        for entry in entries
-        if entry["source"] is None and entry.get("quarantine") is not None
-    ]
-    return [str(current) for current, _ in moved] + retained_paths
+def _retire_legacy_cbz(
+    *,
+    db_path: Path,
+    library_root: Path,
+    item: dict[str, Any],
+    entries: list[dict[str, Any]],
+) -> list[str]:
+    retired_paths: list[str] = []
+    for legacy in entries:
+        source = Path(legacy["source"])
+        managed_entry = library_content.resolve_entry(db_path, path=source)
+        if managed_entry is None:
+            raise ValueError(f"Legacy CBZ is not a managed library entry: {source}")
+        removal = library_content.remove_entry(
+            db_path,
+            entry_id=str(managed_entry["id"]),
+            library_root=library_root,
+            reason="retire legacy comic archive layout",
+            external_ref=f"{item['platform']}:{item['remote_id']}:media_file:{legacy['record']['id']}",
+        )
+        trash_path = removal.get("trash_path") or removal.get("entry", {}).get("trash_path")
+        if trash_path:
+            retired_paths.append(str(trash_path))
+    return retired_paths
 
 
 def _placeholder_action(
@@ -1038,7 +1025,7 @@ def package_one_comic(
         return {
             **public,
             "status": "failed",
-            "reason": "CBZ packaging failed",
+            "reason": f"CBZ packaging failed: {exc}",
             "error": {"code": "comic_package_failed", "exception_type": type(exc).__name__},
         }
     status = "packaged" if plan["status"] == "ready" else "legacy_migrated"

@@ -1,15 +1,15 @@
 # Mediagent Current State
 
-## 2026-08-27 Global Content Identity And Library Operations
+## 2026-08-28 Global Content Identity And Managed Trash
 
 - Schema v10 and commit `340b406` are deployed to Production with all Mediagent timers stopped. The pre-migration schema-v9 backup is `/data/services/mediagent/data/backups/mediagent.sqlite3.pre-v10.20260827T141834Z.bak`; the migration preserved 2,817 media items and 91,455 media files and passed SQLite integrity checks.
 - SQLite schema v10 adds SHA-256 `content_blobs`, scanner-visible `library_entries`, auditable `library_operations`, and `media_files.library_entry_id`.
 - Managed download paths now adopt every successful media file into global content identity. Ordinary photo/video/audio duplicates collapse to one scanner-visible path while all provider/media-item references remain in SQLite. Comic pages and CBZ files retain separate reading contexts and use hard links for physical deduplication when the filesystem supports them.
 - `library.content.deduplicate` provides a full tracked-library SHA-256 scan. Dry-run hashes and reports duplicate paths, hard-link candidates, missing files, and reclaimable bytes without changing SQLite or files; apply is rerunnable and idempotent.
-- The first Production dry-run hashed 90,629 existing files and found 32 ordinary collapse paths, 428 comic hard-link candidates, and about 491 MB reclaimable. It also found 807 downloaded rows whose files had been moved by pre-v10 cleanup jobs. Every one has an exact recorded path/size match in legacy `.trash`, and none collides with an active checksum identity. Branch `codex/legacy-trash-reconcile` adds `library.trash.reconcile` so those files can become explicit removed entries before dedup apply; it never moves files, retains older duplicate trash copies, blocks active-identity conflicts, and is rerunnable.
+- Production legacy-trash reconciliation imported 807 removed entries and linked all 807 source rows without moving files. Global dedup then adopted 90,629 rows, collapsed 32 paths, created 428 comic hard links, reclaimed 491,170,708 bytes, and passed the idempotent rerun, SQLite quick/FK checks, and missing-file verification.
 - One-shot `mediagent library remove|restore|rename` commands and matching tools are implemented. Remove moves one logical entry under `.trash/mediagent/<removal-id>/`, updates every attached source reference, and suppresses repair/redownload. Restore checksum-validates and returns to the exact path. Rename updates paths and title override; CBZ rename also rewrites root `ComicInfo.xml` atomically.
-- Remove/restore/rename intentionally do not support dry-run. Planned remove/rename operations can recover safely after an interruption between the filesystem move and SQLite completion. No trash expiry or purge policy is implemented.
-- The external Immich cleanup systemd script is outside this repository and is intentionally deferred until repository implementation and tests are complete.
+- `library.trash.status` and `library.trash.prepare` inspect or create the symlink-safe `.trash/mediagent` namespace. Existing legacy trash stays in place; Mediagent never changes ownership of the whole `.trash` tree. Remove/restore/rename intentionally do not support dry-run. Planned remove/rename operations recover safely after an interruption. No trash expiry or purge policy is implemented.
+- `deploy/integrations/immich/` contains the replacement delete-candidate script and systemd drop-in. It runs as the `server` account, shares `/run/lock/mediagent-sync.lock`, and invokes `mediagent library remove` with an Immich audit reference instead of moving files directly.
 
 ## 2026-08-14 Comic Source Update
 
@@ -71,7 +71,7 @@
 - Platform-specific roots are treated as already scoped to that platform, so they omit the extra platform directory by default.
 - Pixiv bookmark sync now performs collect -> upsert -> status filter -> storage path plan -> partial download finalization -> file record -> item status update.
 - Pixiv artwork normalization preserves `work_type: illustration|comic|animation`; official `type:manga` source pages store under `pixiv/comic-pages/...`, deterministic CBZ packages under `pixiv/comic/...`, and `illust` remains under `pixiv/photo/...` even when multi-page.
-- `pixiv.comics.package` packages complete downloaded manga pages into atomic, deterministic Kavita-oriented CBZ archives with `ComicInfo.xml`; one-shots have unique series identities, real series share a directory, and `migrate_legacy:true` rebuilds V1 archives then moves old copies to `.trash/mediagent-comic-v1`. `pixiv.bookmarks.sync` can opt in through `package_comics:true`.
+- `pixiv.comics.package` packages complete downloaded manga pages into atomic, deterministic Kavita-oriented CBZ archives with `ComicInfo.xml`; one-shots have unique series identities and real series share a directory. `migrate_legacy:true` now retires V1 archives through the audited managed-trash lifecycle, retains their DB/source identity as removed, and ignores those retired rows on rerun instead of deleting DB rows. `pixiv.bookmarks.sync` can opt in through `package_comics:true`.
 - Pixiv invisible stubs and `s.pximg.net/.../limit_*.png` placeholder-only responses are marked unavailable and are not downloaded.
 - `pixiv.bookmarks.sync` supports explicit `repair_missing_files:true`; default reruns still skip downloaded DB items even if external cleanup moved their files to `.trash`.
 - Pixiv bookmark sync stores scoped cursors when `media_types` filtering is used, such as `bookmarks:public:photo`.
@@ -205,7 +205,7 @@
 - Pixiv now has an offline `pixiv.library.reconcile` plan/apply flow. It updates legacy work-type metadata, atomically moves existing manga source pages from `photo` or legacy `comic` to `comic-pages`, moves sidecars with their media, quarantines known placeholder downloads, updates DB paths, and requires `confirm:true` for apply.
 - Local development DB plan verification found 309 Pixiv items: 26 comic, 280 illustration, 3 animation, and 17 unavailable placeholder records, with 0 blocked actions. The local library no longer contained 245 legacy comic source files at their recorded paths, so those require opt-in repair rather than an in-place move.
 - Files under `.trash` are treated as missing library files and are never moved back automatically. `repair_missing_files:true` downloads a new copy to the planned library path while leaving `.trash` untouched.
-- The locked offline suite passes 271 tests, including Pixiv work classification, unavailable placeholder rejection, reconciliation plan/apply/confirmation, atomic comic-page/sidecar moves, placeholder quarantine, missing-file repair, Kavita one-shot/series CBZ metadata and layout, V1 quarantine migration, long-Unicode path safety, missing-source refusal, DB recording, rerun reuse, and bookmark-sync packaging integration.
+- The locked offline suite passes 400 tests, including managed-trash safety/readiness, audited V1 CBZ retirement and rerun behavior, the fail-closed Immich CLI bridge/systemd policy, Pixiv/JMComic reconciliation, global identity, link/inbox dispatch, auth redaction, and download/repair paths.
 
 - `link.media.sync` supports explicit file-health-aware repair with `repair_missing_files: true`.
 - `telegram.inbox.sync_links` and `telegram.messages.sync` expose the same option as compatibility paths over their existing sync logic.

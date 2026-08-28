@@ -1,11 +1,11 @@
 # 実装上の注意点
 
-## Production global identity migration には legacy-trash reconcile が必要
+## Managed-trash deployment と Pixiv legacy retirement が未完了
 
-- **状態:** Schema/code deploy と Production dry-run は完了。Reconcile helper の開発/test 中は timers を停止したままにする。
+- **状態:** Global identity reconciliation/dedup は完了。Managed-trash/CBZ retirement は local 実装/test 済みで、Production timers は deployment verification 完了まで停止する。
 - **現在:** Managed sync は SHA-256 identity を採用し、full scan は non-mutating dry-run 対応。一般 media は一つの scanner-visible entry を共有し、comic context は分離して hard link を利用可能。Remove/restore/rename は audited one-shot operations。Raw transport tools は DB media identity がないため unmanaged のまま。Removed entry は repair/redownload を抑止する。Multiple sources が共有する ordinary-media path の in-place overwrite は mutation 前に拒否し、自動 source separation/COW は deferred。Trash auto-expiry はない。
-- **Production evidence:** 2026-08-27 dry-run は 90,629 files を hash し、ordinary collapse 32、comic hard links 428、491,170,708 reclaimable bytes を計画した。Missing rows 807 件は全て legacy trash path/size に一致（Pixiv 795、Instagram 12、約 1.46 GB）し、active checksum/identity conflicts は 0。一部 content は old cleanup/redownload cycle により 2～3 copies が trash に残る。
-- **次:** Verified/all-or-nothing `library.trash.reconcile` dry-run/apply を完成し、files を移動せず 807 rows を removed state に import する。その後 global dedup apply/rerun と timer restore を行う。Repo 外の Immich systemd cleanup script は最後に remove command へ変更する。この phase では trash purge を追加しない。
+- **Production evidence:** Reconciliation は 807 removed entries/source links を import。Dedup は 90,629 rows adoption、32 paths collapse、428 paths hard-link、491,170,708 bytes reclaim を完了し、integrity/idempotence を通過した。Pixiv V1 archives 16 件が retirement 待ちで、old code は root-owned `.trash` により `server` が別 quarantine directory を作れず失敗した。
+- **次:** Managed-trash branch を deploy、`server` 用に `.trash/mediagent` だけを pre-create、Pixiv cleanup 16 件を完了し、review 済み Immich script/drop-in を install、verify 後 timers を戻す。この phase では trash purge を追加しない。
 
 ## nhentai browser cookie renewal の live re-verification が未完了
 

@@ -719,6 +719,38 @@ class LibraryContentToolTests(unittest.TestCase):
             self.assertTrue(first.is_file())
             self.assertFalse(reserved.exists())
 
+    def test_managed_trash_prepare_reports_namespace_and_retention(self) -> None:
+        registry = create_default_registry()
+        with TemporaryDirectory() as temp_dir:
+            root, db_path = self._workspace(temp_dir)
+            context = self._context(temp_dir, root, db_path)
+
+            before = asyncio.run(registry.run("library.trash.status", {}, context))
+            prepared = asyncio.run(registry.run("library.trash.prepare", {}, context))
+            after = asyncio.run(registry.run("library.trash.status", {}, context))
+
+            self.assertTrue(before.is_success)
+            self.assertFalse(before.data["operational"])
+            self.assertTrue(prepared.is_success)
+            self.assertTrue(prepared.data["operational"])
+            self.assertEqual(Path(prepared.data["managed_path"]), root / ".trash/mediagent")
+            self.assertFalse(prepared.data["retention"]["automatic_purge"])
+            self.assertTrue(after.data["managed"]["writable"])
+
+    def test_managed_trash_prepare_rejects_symlinked_trash_root(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            root, _ = self._workspace(temp_dir)
+            outside = Path(temp_dir) / "outside"
+            outside.mkdir()
+            (root / ".trash").symlink_to(outside, target_is_directory=True)
+
+            with self.assertRaisesRegex(ValueError, "symbolic link"):
+                library_content.prepare_managed_trash(root)
+
+            status = library_content.managed_trash_status(root)
+            self.assertFalse(status["operational"])
+            self.assertTrue(status["trash"]["is_symlink"])
+
     @staticmethod
     def _workspace(temp_dir: str) -> tuple[Path, Path]:
         root = Path(temp_dir) / "library"
