@@ -149,7 +149,7 @@ async def package_pixiv_comics(context: ToolContext, input_data: dict[str, Any])
         "failed": 0,
     }
     for plan in plans:
-        if plan["status"] == "existing":
+        if plan["status"] in {"existing", "skipped"}:
             results.append(_public_package_plan(plan))
             continue
         if plan["status"] not in {"ready", "cleanup"}:

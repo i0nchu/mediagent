@@ -204,6 +204,31 @@ class PixivLibraryToolTests(unittest.TestCase):
                 self.assertIn(b"<Count>1</Count>", comic_info)
                 self.assertIn(b"<Format>One-Shot</Format>", comic_info)
 
+    def test_comics_package_does_not_fail_for_explicitly_removed_archive(self) -> None:
+        registry = create_default_registry()
+        with TemporaryDirectory() as temp_dir:
+            data_dir, db_path, context = _context(temp_dir)
+            _seed_file(
+                db_path,
+                data_dir,
+                remote_id="removed-comic",
+                pixiv_type="manga",
+                relative_path="pixiv/comic-pages/2026/01/removed-comic_p0.jpg",
+                remote_url="https://i.pximg.net/removed-comic_p0.jpg",
+            )
+            packaged = asyncio.run(registry.run("pixiv.comics.package", {}, context))
+            archive = Path(packaged.data["packages"][0]["target_path"])
+            removed = asyncio.run(
+                registry.run("library.entry.remove", {"path": str(archive)}, context)
+            )
+
+            rerun = asyncio.run(registry.run("pixiv.comics.package", {}, context))
+
+            self.assertTrue(removed.is_success)
+            self.assertTrue(rerun.is_success)
+            self.assertEqual(rerun.data["summary"]["skipped"], 1)
+            self.assertEqual(rerun.data["summary"]["failed"], 0)
+
     def test_comics_package_groups_real_series_in_one_kavita_folder(self) -> None:
         registry = create_default_registry()
         with TemporaryDirectory() as temp_dir:

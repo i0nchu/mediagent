@@ -204,7 +204,7 @@
 - Pixiv には offline `pixiv.library.reconcile` plan/apply flow があります。Legacy work-type metadata を更新し、existing manga source pages を `photo` または legacy `comic` から `comic-pages` へ atomic move し、sidecars も同時に移動し、known placeholder downloads を quarantine し、DB paths を更新します。Apply には `confirm:true` が必要です。
 - Local development DB の plan verification では Pixiv items 309 件: comic 26、illustration 280、animation 3、unavailable placeholder records 17、blocked actions 0 でした。Local library では legacy comic source files 245 件が記録 path に存在しないため、in-place move ではなく opt-in repair が必要です。
 - `.trash` 内の files は missing library files として扱い、自動では戻しません。`repair_missing_files:true` は planned library path に新しい copy を download し、`.trash` は変更しません。
-- Locked offline suite は 400 tests に成功しています。Managed-trash safety/readiness、audited V1 CBZ retirement と rerun、fail-closed Immich CLI bridge/systemd policy、Pixiv/JMComic reconciliation、global identity、link/inbox dispatch、auth redaction、download/repair paths を含みます。
+- Locked offline suite は 401 tests に成功しています。Managed-trash safety/readiness、audited V1 CBZ retirement と rerun/skip semantics、fail-closed Immich CLI bridge/systemd policy、Pixiv/JMComic reconciliation、global identity、link/inbox dispatch、auth redaction、download/repair paths を含みます。
 
 - `link.media.sync` は `repair_missing_files: true` による明示的 file-health-aware repair をサポートします。
 - `telegram.inbox.sync_links` と `telegram.messages.sync` も、既存 sync logic 上の compatibility paths として同じ option を公開します。

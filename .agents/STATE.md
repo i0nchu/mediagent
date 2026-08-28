@@ -205,7 +205,7 @@
 - Pixiv now has an offline `pixiv.library.reconcile` plan/apply flow. It updates legacy work-type metadata, atomically moves existing manga source pages from `photo` or legacy `comic` to `comic-pages`, moves sidecars with their media, quarantines known placeholder downloads, updates DB paths, and requires `confirm:true` for apply.
 - Local development DB plan verification found 309 Pixiv items: 26 comic, 280 illustration, 3 animation, and 17 unavailable placeholder records, with 0 blocked actions. The local library no longer contained 245 legacy comic source files at their recorded paths, so those require opt-in repair rather than an in-place move.
 - Files under `.trash` are treated as missing library files and are never moved back automatically. `repair_missing_files:true` downloads a new copy to the planned library path while leaving `.trash` untouched.
-- The locked offline suite passes 400 tests, including managed-trash safety/readiness, audited V1 CBZ retirement and rerun behavior, the fail-closed Immich CLI bridge/systemd policy, Pixiv/JMComic reconciliation, global identity, link/inbox dispatch, auth redaction, and download/repair paths.
+- The locked offline suite passes 401 tests, including managed-trash safety/readiness, audited V1 CBZ retirement and rerun/skip semantics, the fail-closed Immich CLI bridge/systemd policy, Pixiv/JMComic reconciliation, global identity, link/inbox dispatch, auth redaction, and download/repair paths.
 
 - `link.media.sync` supports explicit file-health-aware repair with `repair_missing_files: true`.
 - `telegram.inbox.sync_links` and `telegram.messages.sync` expose the same option as compatibility paths over their existing sync logic.

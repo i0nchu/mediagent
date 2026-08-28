@@ -204,7 +204,7 @@
 - Pixiv 現在有離線 `pixiv.library.reconcile` plan/apply 流程，可更新舊 work-type metadata、以原子搬移將既有漫畫原始頁面從 `photo` 或舊 `comic` 移到 `comic-pages`、同步搬移 sidecars、quarantine 已知 placeholder downloads、更新 DB paths；apply 必須傳入 `confirm:true`。
 - 本機 development DB 的 plan 驗證找到 309 個 Pixiv items：26 comic、280 illustration、3 animation、17 unavailable placeholder records，blocked actions 為 0。本機 library 中有 245 個 legacy comic source files 已不在 DB 記錄路徑，因此這些應使用 opt-in repair，而不是原地搬移。
 - `.trash` 內的檔案會視為 library 缺檔，永遠不自動搬回；`repair_missing_files:true` 會下載新副本到規劃路徑，並保留 `.trash` 原狀。
-- Locked offline suite 通過 400 tests，包含 managed-trash safety/readiness、audited V1 CBZ retirement 與重跑、fail-closed Immich CLI bridge/systemd policy、Pixiv/JMComic reconciliation、全域 identity、link/inbox dispatch、auth redaction 及 download/repair paths。
+- Locked offline suite 通過 401 tests，包含 managed-trash safety/readiness、audited V1 CBZ retirement 與重跑/skip 語意、fail-closed Immich CLI bridge/systemd policy、Pixiv/JMComic reconciliation、全域 identity、link/inbox dispatch、auth redaction 及 download/repair paths。
 
 - `link.media.sync` 支援明確的 file-health-aware repair：`repair_missing_files: true`。
 - `telegram.inbox.sync_links` 與 `telegram.messages.sync` 也暴露相同選項，作為既有 sync logic 上的 compatibility paths。
