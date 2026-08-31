@@ -333,6 +333,29 @@ class AssetIdentityTests(unittest.TestCase):
                     1,
                 )
 
+    def test_current_schema_init_repairs_interrupted_asset_attachment(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            db_path = root / "mediagent.sqlite3"
+            source = root / "pixiv" / "repair.jpg"
+            source.parent.mkdir(parents=True)
+            source.write_bytes(b"repair-content")
+            adoption = self._adopt(db_path, source, platform="pixiv", remote_id="repair")
+            with db.connect(db_path) as connection:
+                connection.execute(
+                    "DELETE FROM asset_sources WHERE asset_id = ?",
+                    (adoption["asset_id"],),
+                )
+
+            result = db.initialize_database(db_path)
+            asset = assets.load_asset(db_path, adoption["asset_id"])
+
+            self.assertFalse(result["migrated"])
+            self.assertTrue(result["asset_reconciled"])
+            self.assertEqual(result["asset_backfill"]["sources_linked"], 1)
+            self.assertEqual(asset["source_count"], 1)
+            self.assertEqual(asset["representation_count"], 1)
+
     def _adopt(
         self,
         db_path: Path,

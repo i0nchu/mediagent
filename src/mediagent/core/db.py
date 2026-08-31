@@ -33,7 +33,12 @@ def initialize_database(db_path: Path) -> dict[str, Any]:
         from mediagent.core import assets
 
         assets.ensure_schema(connection)
-        if previous_version != SCHEMA_VERSION or not assets_existed:
+        asset_reconciliation_required = (
+            previous_version != SCHEMA_VERSION
+            or not assets_existed
+            or assets.needs_backfill(connection)
+        )
+        if asset_reconciliation_required:
             asset_backfill = assets.backfill(connection)
         connection.execute(
             """
@@ -47,6 +52,7 @@ def initialize_database(db_path: Path) -> dict[str, Any]:
         "previous_schema_version": previous_version,
         "schema_version": SCHEMA_VERSION,
         "migrated": previous_version != SCHEMA_VERSION or not assets_existed,
+        "asset_reconciled": asset_reconciliation_required,
         "asset_backfill": asset_backfill,
     }
 

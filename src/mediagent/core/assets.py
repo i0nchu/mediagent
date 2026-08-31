@@ -90,6 +90,28 @@ def backfill(connection: sqlite3.Connection) -> dict[str, int]:
     return _backfill_rows(connection, rows)
 
 
+def needs_backfill(connection: sqlite3.Connection) -> bool:
+    """Return whether an adopted file lacks a coherent Asset relationship."""
+
+    row = connection.execute(
+        """
+        SELECT 1
+        FROM media_files mf
+        LEFT JOIN asset_sources source ON source.media_item_id = mf.media_item_id
+        LEFT JOIN asset_representations representation
+               ON representation.library_entry_id = mf.library_entry_id
+        WHERE mf.library_entry_id IS NOT NULL
+          AND (
+              source.asset_id IS NULL
+              OR representation.asset_id IS NULL
+              OR source.asset_id != representation.asset_id
+          )
+        LIMIT 1
+        """
+    ).fetchone()
+    return row is not None
+
+
 def _backfill_rows(
     connection: sqlite3.Connection,
     rows: list[sqlite3.Row],
