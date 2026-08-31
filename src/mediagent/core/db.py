@@ -10,18 +10,31 @@ from pathlib import Path
 from typing import Any
 
 
-SCHEMA_VERSION = "10"
+SCHEMA_VERSION = "11"
 SQLITE_BUSY_TIMEOUT_MILLISECONDS = 30_000
 
 
-def initialize_database(db_path: Path) -> None:
+def initialize_database(db_path: Path) -> dict[str, Any]:
     db_path.parent.mkdir(parents=True, exist_ok=True)
+    asset_backfill = {
+        "assets_created": 0,
+        "assets_merged": 0,
+        "sources_linked": 0,
+        "representations_linked": 0,
+    }
     with connect(db_path) as connection:
+        previous_version = _schema_version(connection)
+        assets_existed = _table_exists(connection, "assets")
         connection.executescript(SCHEMA_SQL)
         _ensure_media_items_schema(connection)
         _ensure_media_files_schema(connection)
         _ensure_link_queue_schema(connection)
         _ensure_library_content_schema(connection)
+        from mediagent.core import assets
+
+        assets.ensure_schema(connection)
+        if previous_version != SCHEMA_VERSION or not assets_existed:
+            asset_backfill = assets.backfill(connection)
         connection.execute(
             """
             INSERT INTO schema_meta (key, value)
@@ -30,6 +43,29 @@ def initialize_database(db_path: Path) -> None:
             """,
             (SCHEMA_VERSION,),
         )
+    return {
+        "previous_schema_version": previous_version,
+        "schema_version": SCHEMA_VERSION,
+        "migrated": previous_version != SCHEMA_VERSION or not assets_existed,
+        "asset_backfill": asset_backfill,
+    }
+
+
+def _schema_version(connection: sqlite3.Connection) -> str | None:
+    if not _table_exists(connection, "schema_meta"):
+        return None
+    row = connection.execute(
+        "SELECT value FROM schema_meta WHERE key = 'schema_version'"
+    ).fetchone()
+    return str(row["value"]) if row else None
+
+
+def _table_exists(connection: sqlite3.Connection, table: str) -> bool:
+    row = connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (table,),
+    ).fetchone()
+    return row is not None
 
 
 def connect(db_path: Path) -> sqlite3.Connection:
@@ -735,10 +771,12 @@ def list_media_files(
                    mf.file_health, mf.source_timestamp, mf.verified_at,
                    mf.library_entry_id, le.state AS library_state,
                    le.trash_path AS library_trash_path,
-                   le.display_name_override
+                   le.display_name_override,
+                   ar.asset_id
             FROM media_files mf
             JOIN media_items mi ON mi.id = mf.media_item_id
             LEFT JOIN library_entries le ON le.id = mf.library_entry_id
+            LEFT JOIN asset_representations ar ON ar.library_entry_id = le.id
             {where}
             ORDER BY mf.id
             {limit_sql}

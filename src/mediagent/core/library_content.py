@@ -307,7 +307,7 @@ def adopt_media_file(db_path: Path, *, file_id: int) -> dict[str, Any]:
                     """,
                     (entry_id, stored_path, stored_relative, checksum, now, file_id),
                 )
-            return {
+            return _asset_adoption_result(db_path, file_id=file_id, result={
                 "adopted": True,
                 "file_id": file_id,
                 "blob_id": blob_id,
@@ -319,7 +319,7 @@ def adopt_media_file(db_path: Path, *, file_id: int) -> dict[str, Any]:
                 "deduplicated": False,
                 "hardlinked": hardlinked,
                 "bytes_reclaimed": bytes_reclaimed,
-            }
+            })
 
     if entry is not None:
         canonical_path = Path(str(entry["local_path"])).resolve()
@@ -372,7 +372,7 @@ def adopt_media_file(db_path: Path, *, file_id: int) -> dict[str, Any]:
             """,
             (entry["id"], stored_path, stored_relative, checksum, now, file_id),
         )
-    return {
+    return _asset_adoption_result(db_path, file_id=file_id, result={
         "adopted": True,
         "file_id": file_id,
         "blob_id": blob_id,
@@ -384,7 +384,19 @@ def adopt_media_file(db_path: Path, *, file_id: int) -> dict[str, Any]:
         "deduplicated": deduplicated,
         "hardlinked": hardlinked,
         "bytes_reclaimed": bytes_reclaimed,
-    }
+    })
+
+
+def _asset_adoption_result(
+    db_path: Path,
+    *,
+    file_id: int,
+    result: dict[str, Any],
+) -> dict[str, Any]:
+    from mediagent.core import assets
+
+    asset = assets.attach_media_file(db_path, file_id=file_id)
+    return {**result, "asset_id": asset["id"]}
 
 
 def scan_plan(db_path: Path) -> dict[str, Any]:
@@ -820,6 +832,7 @@ def apply_legacy_trash_plan(db_path: Path, plan: dict[str, Any]) -> dict[str, An
     now = datetime.now(UTC).isoformat()
     source_rows_linked = 0
     entries_imported = 0
+    linked_file_ids: list[int] = []
     with db.connect(db_path) as connection:
         for action in actions:
             checksum = str(action["checksum"])
@@ -904,6 +917,7 @@ def apply_legacy_trash_plan(db_path: Path, plan: dict[str, Any]) -> dict[str, An
                 ),
             )
             file_ids = [int(value) for value in action["source_file_ids"]]
+            linked_file_ids.extend(file_ids)
             placeholders = ",".join("?" for _ in file_ids)
             connection.execute(
                 f"""
@@ -923,6 +937,10 @@ def apply_legacy_trash_plan(db_path: Path, plan: dict[str, Any]) -> dict[str, An
                 ),
             )
             source_rows_linked += len(file_ids)
+    from mediagent.core import assets
+
+    for file_id in linked_file_ids:
+        assets.attach_media_file(db_path, file_id=file_id)
     return {
         **plan,
         "applied": {
@@ -1226,6 +1244,9 @@ def restore_entry(
             "UPDATE media_files SET local_path = ?, updated_at = ? WHERE library_entry_id = ?",
             (str(target), now, entry_id),
         )
+    from mediagent.core import assets
+
+    assets.refresh_for_library_entry(db_path, entry_id)
     return {
         "changed": True,
         "result": "restored",
@@ -1359,6 +1380,9 @@ def _complete_remove(
             "UPDATE library_operations SET state = 'completed', completed_at = ? WHERE id = ?",
             (completed_at, operation_id),
         )
+    from mediagent.core import assets
+
+    assets.refresh_for_library_entry(db_path, entry_id)
 
 
 def _complete_rename(
@@ -1451,10 +1475,11 @@ def _entry_details(db_path: Path, entry_id: str) -> dict[str, Any] | None:
         row = connection.execute(
             """
             SELECT le.*, cb.checksum, cb.size_bytes, cb.mime_type,
-                   COUNT(mf.id) AS source_file_count
+                   ar.asset_id, COUNT(mf.id) AS source_file_count
             FROM library_entries le
             JOIN content_blobs cb ON cb.id = le.content_blob_id
             LEFT JOIN media_files mf ON mf.library_entry_id = le.id
+            LEFT JOIN asset_representations ar ON ar.library_entry_id = le.id
             WHERE le.id = ?
             GROUP BY le.id
             """,

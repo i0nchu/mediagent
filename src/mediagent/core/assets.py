@@ -1,0 +1,583 @@
+"""Stable user-facing Asset identity over source and library records."""
+
+from __future__ import annotations
+
+import json
+import sqlite3
+import uuid
+from collections import defaultdict
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+
+
+def ensure_schema(connection: sqlite3.Connection) -> None:
+    """Create the Asset identity tables without changing existing content rows."""
+
+    connection.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS assets (
+            id TEXT PRIMARY KEY,
+            media_type TEXT NOT NULL,
+            state TEXT NOT NULL DEFAULT 'active'
+                CHECK(state IN ('active', 'removed', 'purged', 'merged')),
+            metadata_json TEXT NOT NULL DEFAULT '{"tags": []}',
+            primary_library_entry_id TEXT,
+            merged_into_asset_id TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(primary_library_entry_id) REFERENCES library_entries(id),
+            FOREIGN KEY(merged_into_asset_id) REFERENCES assets(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS asset_sources (
+            asset_id TEXT NOT NULL,
+            media_item_id INTEGER NOT NULL UNIQUE,
+            source_role TEXT NOT NULL DEFAULT 'source',
+            first_seen_at TEXT NOT NULL,
+            last_seen_at TEXT NOT NULL,
+            PRIMARY KEY(asset_id, media_item_id),
+            FOREIGN KEY(asset_id) REFERENCES assets(id),
+            FOREIGN KEY(media_item_id) REFERENCES media_items(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS asset_representations (
+            asset_id TEXT NOT NULL,
+            library_entry_id TEXT NOT NULL UNIQUE,
+            representation_role TEXT NOT NULL,
+            active INTEGER NOT NULL DEFAULT 1,
+            first_seen_at TEXT NOT NULL,
+            last_seen_at TEXT NOT NULL,
+            PRIMARY KEY(asset_id, library_entry_id),
+            FOREIGN KEY(asset_id) REFERENCES assets(id),
+            FOREIGN KEY(library_entry_id) REFERENCES library_entries(id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_assets_state
+        ON assets(state);
+
+        CREATE INDEX IF NOT EXISTS idx_assets_merged_into
+        ON assets(merged_into_asset_id);
+
+        CREATE INDEX IF NOT EXISTS idx_asset_sources_asset
+        ON asset_sources(asset_id);
+
+        CREATE INDEX IF NOT EXISTS idx_asset_representations_asset
+        ON asset_representations(asset_id);
+        """
+    )
+
+
+def backfill(connection: sqlite3.Connection) -> dict[str, int]:
+    """Idempotently adopt all existing managed source/file relationships."""
+
+    rows = connection.execute(
+        """
+        SELECT DISTINCT
+               mi.id AS media_item_id,
+               mi.media_type,
+               mf.library_entry_id,
+               le.presentation_key,
+               le.state AS library_state,
+               mf.mime_type
+        FROM media_files mf
+        JOIN media_items mi ON mi.id = mf.media_item_id
+        JOIN library_entries le ON le.id = mf.library_entry_id
+        WHERE mf.library_entry_id IS NOT NULL
+        ORDER BY mi.id, mf.library_entry_id
+        """
+    ).fetchall()
+    return _backfill_rows(connection, rows)
+
+
+def _backfill_rows(
+    connection: sqlite3.Connection,
+    rows: list[sqlite3.Row],
+) -> dict[str, int]:
+    if not rows:
+        return {"assets_created": 0, "assets_merged": 0, "sources_linked": 0, "representations_linked": 0}
+
+    parent: dict[str, str] = {}
+
+    def find(node: str) -> str:
+        parent.setdefault(node, node)
+        while parent[node] != node:
+            parent[node] = parent[parent[node]]
+            node = parent[node]
+        return node
+
+    def union(left: str, right: str) -> None:
+        left_root = find(left)
+        right_root = find(right)
+        if left_root != right_root:
+            parent[right_root] = left_root
+
+    row_by_entry: dict[str, sqlite3.Row] = {}
+    for row in rows:
+        source_node = f"source:{int(row['media_item_id'])}"
+        entry_node = f"entry:{row['library_entry_id']}"
+        union(source_node, entry_node)
+        row_by_entry.setdefault(str(row["library_entry_id"]), row)
+
+    components: dict[str, set[str]] = defaultdict(set)
+    for node in parent:
+        components[find(node)].add(node)
+
+    existing_by_node: dict[str, str] = {}
+    for row in connection.execute("SELECT asset_id, media_item_id FROM asset_sources"):
+        existing_by_node[f"source:{int(row['media_item_id'])}"] = str(row["asset_id"])
+    for row in connection.execute("SELECT asset_id, library_entry_id FROM asset_representations"):
+        existing_by_node[f"entry:{row['library_entry_id']}"] = str(row["asset_id"])
+
+    now = datetime.now(UTC).isoformat()
+    created = 0
+    merged = 0
+    sources_before = int(connection.execute("SELECT COUNT(*) FROM asset_sources").fetchone()[0])
+    representations_before = int(
+        connection.execute("SELECT COUNT(*) FROM asset_representations").fetchone()[0]
+    )
+
+    for nodes in components.values():
+        candidates = {
+            resolve_asset_id(connection, existing_by_node[node])
+            for node in nodes
+            if node in existing_by_node
+        }
+        candidates.discard(None)
+        if candidates:
+            asset_id = _select_canonical_asset(connection, {str(value) for value in candidates})
+            for candidate in sorted(str(value) for value in candidates if value != asset_id):
+                _merge_assets(connection, canonical_id=asset_id, merged_id=candidate, now=now)
+                merged += 1
+        else:
+            asset_id = _new_asset(connection, now=now)
+            created += 1
+
+        source_ids = sorted(int(node.split(":", 1)[1]) for node in nodes if node.startswith("source:"))
+        entry_ids = sorted(node.split(":", 1)[1] for node in nodes if node.startswith("entry:"))
+        for media_item_id in source_ids:
+            connection.execute(
+                """
+                INSERT INTO asset_sources (
+                    asset_id, media_item_id, source_role, first_seen_at, last_seen_at
+                ) VALUES (?, ?, 'source', ?, ?)
+                ON CONFLICT(media_item_id) DO UPDATE SET
+                    asset_id = excluded.asset_id,
+                    last_seen_at = excluded.last_seen_at
+                """,
+                (asset_id, media_item_id, now, now),
+            )
+        for entry_id in entry_ids:
+            row = row_by_entry[entry_id]
+            connection.execute(
+                """
+                INSERT INTO asset_representations (
+                    asset_id, library_entry_id, representation_role,
+                    active, first_seen_at, last_seen_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(library_entry_id) DO UPDATE SET
+                    asset_id = excluded.asset_id,
+                    representation_role = excluded.representation_role,
+                    active = excluded.active,
+                    last_seen_at = excluded.last_seen_at
+                """,
+                (
+                    asset_id,
+                    entry_id,
+                    representation_role(str(row["presentation_key"])),
+                    1 if str(row["library_state"]) == "active" else 0,
+                    now,
+                    now,
+                ),
+            )
+        _refresh_asset(connection, asset_id=asset_id, now=now)
+
+    sources_after = int(connection.execute("SELECT COUNT(*) FROM asset_sources").fetchone()[0])
+    representations_after = int(
+        connection.execute("SELECT COUNT(*) FROM asset_representations").fetchone()[0]
+    )
+    return {
+        "assets_created": created,
+        "assets_merged": merged,
+        "sources_linked": sources_after - sources_before,
+        "representations_linked": representations_after - representations_before,
+    }
+
+
+def attach_media_file(db_path: Path, *, file_id: int) -> dict[str, Any]:
+    """Attach one adopted media file to a stable Asset, merging aliases safely."""
+
+    from mediagent.core import db
+
+    now = datetime.now(UTC).isoformat()
+    with db.connect(db_path) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        row = connection.execute(
+            """
+            SELECT mf.id, mf.media_item_id, mf.library_entry_id,
+                   le.presentation_key, le.state AS library_state
+            FROM media_files mf
+            LEFT JOIN library_entries le ON le.id = mf.library_entry_id
+            WHERE mf.id = ?
+            """,
+            (file_id,),
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"Unknown media file: {file_id}")
+        if row["library_entry_id"] is None:
+            raise ValueError("Media file must be adopted into the library before Asset attachment.")
+
+        candidate_rows = connection.execute(
+            """
+            SELECT asset_id FROM asset_sources WHERE media_item_id = ?
+            UNION
+            SELECT asset_id FROM asset_representations WHERE library_entry_id = ?
+            """,
+            (row["media_item_id"], row["library_entry_id"]),
+        ).fetchall()
+        candidates = {
+            resolved
+            for candidate in candidate_rows
+            if (resolved := resolve_asset_id(connection, str(candidate["asset_id"]))) is not None
+        }
+        if candidates:
+            asset_id = _select_canonical_asset(connection, candidates)
+            for candidate in sorted(candidates - {asset_id}):
+                _merge_assets(connection, canonical_id=asset_id, merged_id=candidate, now=now)
+        else:
+            asset_id = _new_asset(connection, now=now)
+
+        connection.execute(
+            """
+            INSERT INTO asset_sources (
+                asset_id, media_item_id, source_role, first_seen_at, last_seen_at
+            ) VALUES (?, ?, 'source', ?, ?)
+            ON CONFLICT(media_item_id) DO UPDATE SET
+                asset_id = excluded.asset_id,
+                last_seen_at = excluded.last_seen_at
+            """,
+            (asset_id, row["media_item_id"], now, now),
+        )
+        connection.execute(
+            """
+            INSERT INTO asset_representations (
+                asset_id, library_entry_id, representation_role,
+                active, first_seen_at, last_seen_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(library_entry_id) DO UPDATE SET
+                asset_id = excluded.asset_id,
+                representation_role = excluded.representation_role,
+                active = excluded.active,
+                last_seen_at = excluded.last_seen_at
+            """,
+            (
+                asset_id,
+                row["library_entry_id"],
+                representation_role(str(row["presentation_key"])),
+                1 if str(row["library_state"]) == "active" else 0,
+                now,
+                now,
+            ),
+        )
+        _refresh_asset(connection, asset_id=asset_id, now=now)
+        return get_asset(connection, asset_id)
+
+
+def resolve_asset_id(connection: sqlite3.Connection, asset_id: str) -> str | None:
+    """Resolve an Asset alias to its canonical current identifier."""
+
+    current = asset_id
+    seen: set[str] = set()
+    while current not in seen:
+        seen.add(current)
+        row = connection.execute(
+            "SELECT state, merged_into_asset_id FROM assets WHERE id = ?",
+            (current,),
+        ).fetchone()
+        if row is None:
+            return None
+        if row["state"] != "merged" or not row["merged_into_asset_id"]:
+            return current
+        current = str(row["merged_into_asset_id"])
+    raise ValueError("Asset merge aliases contain a cycle.")
+
+
+def get_asset(connection: sqlite3.Connection, asset_id: str) -> dict[str, Any]:
+    canonical_id = resolve_asset_id(connection, asset_id)
+    if canonical_id is None:
+        raise ValueError(f"Unknown Asset: {asset_id}")
+    row = connection.execute(
+        """
+        SELECT id, media_type, state, metadata_json, primary_library_entry_id,
+               merged_into_asset_id, created_at, updated_at
+        FROM assets WHERE id = ?
+        """,
+        (canonical_id,),
+    ).fetchone()
+    if row is None:
+        raise ValueError(f"Unknown Asset: {asset_id}")
+    result = dict(row)
+    result["metadata"] = _metadata(result.pop("metadata_json"))
+    result["source_count"] = int(
+        connection.execute("SELECT COUNT(*) FROM asset_sources WHERE asset_id = ?", (canonical_id,)).fetchone()[0]
+    )
+    result["representation_count"] = int(
+        connection.execute(
+            "SELECT COUNT(*) FROM asset_representations WHERE asset_id = ?", (canonical_id,)
+        ).fetchone()[0]
+    )
+    if canonical_id != asset_id:
+        result["requested_asset_id"] = asset_id
+    return result
+
+
+def load_asset(db_path: Path, asset_id: str) -> dict[str, Any]:
+    """Load one canonical Asset while accepting a previously merged identifier."""
+
+    from mediagent.core import db
+
+    with db.connect(db_path) as connection:
+        return get_asset(connection, asset_id)
+
+
+def asset_for_library_entry(db_path: Path, library_entry_id: str) -> dict[str, Any] | None:
+    """Return the canonical Asset that owns one managed presentation entry."""
+
+    from mediagent.core import db
+
+    with db.connect(db_path) as connection:
+        row = connection.execute(
+            "SELECT asset_id FROM asset_representations WHERE library_entry_id = ?",
+            (library_entry_id,),
+        ).fetchone()
+        return get_asset(connection, str(row["asset_id"])) if row else None
+
+
+def refresh_for_library_entry(db_path: Path, library_entry_id: str) -> dict[str, Any] | None:
+    """Synchronize Asset lifecycle state after a library entry changes state."""
+
+    from mediagent.core import db
+
+    now = datetime.now(UTC).isoformat()
+    with db.connect(db_path) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        row = connection.execute(
+            """
+            SELECT ar.asset_id, le.state
+            FROM asset_representations ar
+            JOIN library_entries le ON le.id = ar.library_entry_id
+            WHERE ar.library_entry_id = ?
+            """,
+            (library_entry_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        asset_id = resolve_asset_id(connection, str(row["asset_id"]))
+        if asset_id is None:
+            return None
+        connection.execute(
+            """
+            UPDATE asset_representations
+            SET active = ?, last_seen_at = ?
+            WHERE library_entry_id = ?
+            """,
+            (1 if row["state"] == "active" else 0, now, library_entry_id),
+        )
+        _refresh_asset(connection, asset_id=asset_id, now=now)
+        return get_asset(connection, asset_id)
+
+
+def representation_role(presentation_key: str) -> str:
+    if presentation_key.startswith("comic-source:"):
+        return "source_page"
+    if presentation_key.startswith("comic:"):
+        return "comic_archive"
+    return "original"
+
+
+def _new_asset(connection: sqlite3.Connection, *, now: str) -> str:
+    asset_id = f"asset_{uuid.uuid4().hex}"
+    connection.execute(
+        """
+        INSERT INTO assets (
+            id, media_type, state, metadata_json, created_at, updated_at
+        ) VALUES (?, 'unknown', 'active', '{"tags": []}', ?, ?)
+        """,
+        (asset_id, now, now),
+    )
+    return asset_id
+
+
+def _select_canonical_asset(connection: sqlite3.Connection, candidates: set[str]) -> str:
+    placeholders = ",".join("?" for _ in candidates)
+    row = connection.execute(
+        f"""
+        SELECT id FROM assets
+        WHERE id IN ({placeholders}) AND state != 'merged'
+        ORDER BY created_at, id
+        LIMIT 1
+        """,
+        tuple(sorted(candidates)),
+    ).fetchone()
+    if row is None:
+        raise ValueError("No canonical Asset is available for the relationship.")
+    return str(row["id"])
+
+
+def _merge_assets(
+    connection: sqlite3.Connection,
+    *,
+    canonical_id: str,
+    merged_id: str,
+    now: str,
+) -> None:
+    if canonical_id == merged_id:
+        return
+    canonical_id = resolve_asset_id(connection, canonical_id) or canonical_id
+    merged_id = resolve_asset_id(connection, merged_id) or merged_id
+    if canonical_id == merged_id:
+        return
+    canonical = connection.execute(
+        "SELECT metadata_json FROM assets WHERE id = ?", (canonical_id,)
+    ).fetchone()
+    merged = connection.execute(
+        "SELECT metadata_json FROM assets WHERE id = ?", (merged_id,)
+    ).fetchone()
+    if canonical is None or merged is None:
+        raise ValueError("Cannot merge an unknown Asset.")
+    connection.execute("UPDATE asset_sources SET asset_id = ? WHERE asset_id = ?", (canonical_id, merged_id))
+    connection.execute(
+        "UPDATE asset_representations SET asset_id = ? WHERE asset_id = ?",
+        (canonical_id, merged_id),
+    )
+    metadata = _merge_metadata(_metadata(canonical["metadata_json"]), _metadata(merged["metadata_json"]))
+    connection.execute(
+        "UPDATE assets SET metadata_json = ?, updated_at = ? WHERE id = ?",
+        (json.dumps(metadata, sort_keys=True), now, canonical_id),
+    )
+    connection.execute(
+        """
+        UPDATE assets
+        SET state = 'merged', merged_into_asset_id = ?, primary_library_entry_id = NULL,
+            updated_at = ?
+        WHERE id = ?
+        """,
+        (canonical_id, now, merged_id),
+    )
+
+
+def _refresh_asset(connection: sqlite3.Connection, *, asset_id: str, now: str) -> None:
+    representation_rows = connection.execute(
+        """
+        SELECT ar.library_entry_id, ar.representation_role, le.state,
+               le.presentation_key, cb.mime_type
+        FROM asset_representations ar
+        JOIN library_entries le ON le.id = ar.library_entry_id
+        JOIN content_blobs cb ON cb.id = le.content_blob_id
+        WHERE ar.asset_id = ?
+        ORDER BY
+            CASE WHEN le.state = 'active' THEN 0 ELSE 1 END,
+            CASE ar.representation_role
+                WHEN 'original' THEN 0
+                WHEN 'comic_archive' THEN 1
+                ELSE 2
+            END,
+            ar.library_entry_id
+        """,
+        (asset_id,),
+    ).fetchall()
+    source_rows = connection.execute(
+        """
+        SELECT mi.platform, mi.media_type, mi.author_name, mi.metadata_json
+        FROM asset_sources source
+        JOIN media_items mi ON mi.id = source.media_item_id
+        WHERE source.asset_id = ?
+        ORDER BY mi.id
+        """,
+        (asset_id,),
+    ).fetchall()
+    if not representation_rows:
+        return
+    active_rows = [row for row in representation_rows if row["state"] == "active"]
+    state = "active" if active_rows else "removed"
+    primary = active_rows[0] if active_rows else representation_rows[0]
+    media_type = _asset_media_type(source_rows, representation_rows)
+    current = connection.execute("SELECT metadata_json FROM assets WHERE id = ?", (asset_id,)).fetchone()
+    metadata = _metadata(current["metadata_json"] if current else None)
+    metadata.setdefault("tags", [])
+    for source in source_rows:
+        source_metadata = _metadata(source["metadata_json"])
+        title = _source_title(source_metadata)
+        if title and not metadata.get("title"):
+            metadata["title"] = title
+        author_name = str(source["author_name"] or "").strip()
+        if author_name and not metadata.get("author_name"):
+            metadata["author_name"] = author_name
+    connection.execute(
+        """
+        UPDATE assets
+        SET media_type = ?, state = ?, primary_library_entry_id = ?,
+            metadata_json = ?, merged_into_asset_id = NULL, updated_at = ?
+        WHERE id = ?
+        """,
+        (
+            media_type,
+            state,
+            primary["library_entry_id"],
+            json.dumps(metadata, sort_keys=True),
+            now,
+            asset_id,
+        ),
+    )
+
+
+def _asset_media_type(
+    source_rows: list[sqlite3.Row],
+    representation_rows: list[sqlite3.Row],
+) -> str:
+    if any(row["representation_role"] in {"source_page", "comic_archive"} for row in representation_rows):
+        return "comic"
+    source_types = [str(row["media_type"] or "").lower() for row in source_rows]
+    normalized = {"photo": "image", "image": "image", "video": "video", "audio": "audio"}
+    for preferred in ("video", "audio", "image"):
+        if any(normalized.get(value) == preferred for value in source_types):
+            return preferred
+    mime_types = [str(row["mime_type"] or "").lower() for row in representation_rows]
+    for prefix, media_type in (("video/", "video"), ("audio/", "audio"), ("image/", "image")):
+        if any(value.startswith(prefix) for value in mime_types):
+            return media_type
+    return source_types[0] if source_types else "unknown"
+
+
+def _metadata(raw: Any) -> dict[str, Any]:
+    if isinstance(raw, dict):
+        return dict(raw)
+    try:
+        parsed = json.loads(str(raw or "{}"))
+    except (TypeError, json.JSONDecodeError):
+        return {"tags": []}
+    return dict(parsed) if isinstance(parsed, dict) else {"tags": []}
+
+
+def _merge_metadata(canonical: dict[str, Any], merged: dict[str, Any]) -> dict[str, Any]:
+    result = dict(merged)
+    result.update(canonical)
+    tags: list[str] = []
+    for value in [*(canonical.get("tags") or []), *(merged.get("tags") or [])]:
+        if isinstance(value, str) and value not in tags:
+            tags.append(value)
+    result["tags"] = tags
+    return result
+
+
+def _source_title(metadata: dict[str, Any]) -> str | None:
+    direct = metadata.get("title")
+    if isinstance(direct, str) and direct.strip():
+        return direct.strip()
+    for namespace in ("comic", "pixiv", "link"):
+        nested = metadata.get(namespace)
+        if isinstance(nested, dict):
+            title = nested.get("title")
+            if isinstance(title, str) and title.strip():
+                return title.strip()
+    return None

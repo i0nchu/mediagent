@@ -208,12 +208,13 @@ async def db_init(context: ToolContext, input_data: dict[str, Any]) -> ToolResul
             }
         )
 
-    db.initialize_database(db_path)
+    migration = db.initialize_database(db_path)
     return ToolResult.success(
         {
             "db_path": str(db_path),
             "initialized": True,
             "schema_version": db.get_schema_version(db_path),
+            "migration": migration,
         }
     )
 
