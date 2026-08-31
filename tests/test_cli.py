@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 from mediagent import cli
 from mediagent.core import db, library_content
+from mediagent.core.tooling import ErrorCategory, ToolResult
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -57,6 +58,11 @@ class CliTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 2)
         payload = json.loads(completed.stdout)
         self.assertEqual(payload["error"]["code"], "experimental_tool_not_allowed")
+        self.assertEqual(payload["tool"], "link.resolve.to_media_item")
+        self.assertTrue(payload["run_id"])
+        self.assertEqual(payload["status"], "failure")
+        self.assertEqual(payload["data"], {})
+        self.assertIn("ERROR link.resolve.to_media_item Failed", completed.stderr)
 
     def test_top_level_help_does_not_expose_experimental_command(self) -> None:
         completed = self.run_cli("--help")
@@ -280,7 +286,7 @@ class CliTests(unittest.TestCase):
         )
 
         self.assertEqual(completed.returncode, 2)
-        self.assertEqual(completed.stderr, "")
+        self.assertIn("ERROR core.env.check Failed", completed.stderr)
         payload = json.loads(completed.stdout)
         self.assertEqual(payload["tool"], "core.env.check")
         self.assertTrue(payload["run_id"])
@@ -305,7 +311,7 @@ class CliTests(unittest.TestCase):
         )
 
         self.assertEqual(completed.returncode, 2)
-        self.assertEqual(completed.stderr, "")
+        self.assertIn("ERROR core.env.check Failed", completed.stderr)
         payload = json.loads(completed.stdout)
         self.assertEqual(payload["tool"], "core.env.check")
         self.assertTrue(payload["run_id"])
@@ -330,12 +336,13 @@ class CliTests(unittest.TestCase):
             )
 
         self.assertEqual(completed.returncode, 2)
-        self.assertEqual(completed.stderr, "")
+        self.assertIn("ERROR core.env.check Failed", completed.stderr)
         payload = json.loads(completed.stdout)
         self.assertEqual(payload["status"], "failure")
         self.assertEqual(payload["error"]["code"], "invalid_input_file")
         self.assertEqual(payload["error"]["details"]["exception_type"], "FileNotFoundError")
         self.assertNotIn("Traceback", completed.stdout)
+        self.assertNotIn(str(missing.parent), completed.stderr)
 
     def test_tools_run_permission_error_is_structured(self) -> None:
         stdout = StringIO()
@@ -357,12 +364,66 @@ class CliTests(unittest.TestCase):
             )
 
         self.assertEqual(exit_code, 2)
-        self.assertEqual(stderr.getvalue(), "")
+        self.assertIn("ERROR core.env.check Failed", stderr.getvalue())
         payload = json.loads(stdout.getvalue())
         self.assertEqual(payload["status"], "failure")
         self.assertEqual(payload["error"]["code"], "invalid_input_file")
         self.assertEqual(payload["error"]["details"]["exception_type"], "PermissionError")
         self.assertNotIn("Traceback", stdout.getvalue())
+
+    def test_compact_human_auth_status_does_not_confuse_tool_success_with_readiness(self) -> None:
+        stdout = StringIO()
+        with redirect_stdout(stdout):
+            cli.print_compact_human_result(
+                {
+                    "tool": "jmcomic.auth.status",
+                    "status": "success",
+                    "data": {
+                        "auth_status": "credentials_available_login_required",
+                        "authenticated": False,
+                        "reusable": False,
+                    },
+                    "warnings": [],
+                    "error": None,
+                }
+            )
+
+        self.assertEqual(stdout.getvalue(), "Credentials are configured, but login is required.\n")
+        self.assertNotIn("status: success", stdout.getvalue())
+        self.assertNotIn("{", stdout.getvalue())
+
+    def test_compact_human_summary_is_concise_english(self) -> None:
+        stdout = StringIO()
+        with redirect_stdout(stdout):
+            cli.print_compact_human_result(
+                {
+                    "tool": "link.media.sync",
+                    "status": "success",
+                    "data": {"summary": {"downloaded": 3, "skipped": 2, "failed": 0, "other": 99}},
+                    "warnings": [],
+                    "error": None,
+                }
+            )
+
+        self.assertEqual(
+            stdout.getvalue(),
+            "The operation completed successfully.\nDownloaded: 3; Skipped: 2; Failed: 0.\n",
+        )
+
+    def test_tool_result_exit_mapping_remains_compatible(self) -> None:
+        self.assertEqual(cli.tool_result_exit_code(ToolResult.success()), 0)
+        self.assertEqual(
+            cli.tool_result_exit_code(
+                ToolResult.failure("bad_input", "Invalid input.", category=ErrorCategory.VALIDATION)
+            ),
+            2,
+        )
+        self.assertEqual(
+            cli.tool_result_exit_code(
+                ToolResult.failure("network_error", "Network failed.", category=ErrorCategory.NETWORK)
+            ),
+            1,
+        )
 
     def test_library_cli_deduplicate_rename_remove_restore_workflow(self) -> None:
         with TemporaryDirectory() as temp_dir:

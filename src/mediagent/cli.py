@@ -656,16 +656,46 @@ def run_tool_command(
             )
         )
     except ToolRegistryError as exc:
-        operation_log.failed(
-            elapsed_seconds=time.monotonic() - started_at,
-            reason=exc.error.message,
+        result = ToolResult.failure(
+            exc.error.code,
+            exc.error.message,
+            category=exc.error.category,
+            details=exc.error.details,
         )
-        return print_error(exc.error.to_dict(), json_output=json_output, exit_code=exc.exit_code)
     payload = {
         "tool": tool,
         "run_id": context.run_id,
         **result.to_dict(),
     }
+    elapsed_seconds = time.monotonic() - started_at
+    if result.is_success:
+        operation_log.completed(
+            elapsed_seconds=elapsed_seconds,
+            warning_count=len(result.warnings),
+        )
+    else:
+        operation_log.failed(
+            elapsed_seconds=elapsed_seconds,
+            reason=result.error.message if result.error else "The operation did not complete.",
+        )
+    present_tool_result(
+        payload,
+        json_output=json_output,
+        summary_json=summary_json,
+        compact_human=compact_human,
+    )
+    return tool_result_exit_code(result)
+
+
+def present_tool_result(
+    payload: dict[str, Any],
+    *,
+    json_output: bool,
+    summary_json: bool,
+    compact_human: bool,
+) -> None:
+    """Render one tool result without changing its outcome semantics."""
+
     if summary_json:
         print_json(_summary_tool_payload(payload))
     elif json_output:
@@ -674,16 +704,13 @@ def run_tool_command(
         print_compact_human_result(payload)
     else:
         print_human_result(payload)
+
+
+def tool_result_exit_code(result: ToolResult) -> int:
+    """Keep the established public exit mapping explicit and testable."""
+
     if result.is_success:
-        operation_log.completed(
-            elapsed_seconds=time.monotonic() - started_at,
-            warning_count=len(result.warnings),
-        )
         return EXIT_SUCCESS
-    operation_log.failed(
-        elapsed_seconds=time.monotonic() - started_at,
-        reason=result.error.message if result.error else "The operation did not complete.",
-    )
     if result.error and result.error.category.value in VALIDATION_ERROR_CATEGORIES:
         return EXIT_VALIDATION_ERROR
     return EXIT_RUNTIME_FAILURE
@@ -752,17 +779,14 @@ def print_tool_input_error(
         "run_id": context.run_id,
         **result.to_dict(),
     }
-    if summary_json:
-        print_json(_summary_tool_payload(payload))
-    elif json_output:
-        print_json(payload)
-    else:
-        print_error(
-            result.error.to_dict() if result.error else {},
-            json_output=False,
-            exit_code=EXIT_VALIDATION_ERROR,
-        )
-    return EXIT_VALIDATION_ERROR
+    OperationLogger.create(tool, env=context.env).failed(elapsed_seconds=0.0, reason=message)
+    present_tool_result(
+        payload,
+        json_output=json_output,
+        summary_json=summary_json,
+        compact_human=False,
+    )
+    return tool_result_exit_code(result)
 
 
 def _load_simple_command_env() -> None:
@@ -866,29 +890,86 @@ def print_human_result(payload: dict[str, Any]) -> None:
 
 
 def print_compact_human_result(payload: dict[str, Any]) -> None:
-    compact = _summary_tool_payload(payload)
     source_data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
-    for key in (
-        "auth_status",
-        "authenticated",
-        "remote_verified",
-        "reusable",
-        "credentials_configured",
-        "session_configured",
-        "session_present",
-        "missing",
-        "paths",
-    ):
-        if key in source_data:
-            compact["data"][key] = source_data[key]
-    print(f"status: {compact['status']}")
-    print(f"operation: {compact['tool']}")
-    if compact["data"]:
-        print(json.dumps(compact["data"], ensure_ascii=False, indent=2, sort_keys=True))
-    for warning in compact["warnings"]:
+    tool = str(payload.get("tool") or "")
+    if payload.get("status") == "success":
+        print(_compact_success_message(tool, source_data))
+        metric_line = _compact_metric_line(source_data)
+        if metric_line:
+            print(metric_line)
+    else:
+        print("The operation did not complete.")
+    for warning in payload.get("warnings") or []:
         print(f"warning: {warning}", file=sys.stderr)
-    if compact["error"]:
-        print(f"error: {compact['error']['message']}", file=sys.stderr)
+    if payload.get("error"):
+        print(f"error: {payload['error']['message']}", file=sys.stderr)
+
+
+def _compact_success_message(tool: str, data: dict[str, Any]) -> str:
+    if tool == "core.db.init":
+        schema = data.get("schema_version")
+        if data.get("would_initialize"):
+            return f"Database initialization is ready to use schema {schema}."
+        return f"Database schema {schema} is ready."
+    if tool == "core.env.check":
+        return "Configuration is ready."
+    if tool.endswith(".auth.status"):
+        return _authentication_status_message(data)
+    return "The operation completed successfully."
+
+
+def _authentication_status_message(data: dict[str, Any]) -> str:
+    status = data.get("auth_status")
+    if isinstance(status, dict):
+        status = status.get("status")
+    if data.get("authenticated") is True or data.get("usable") is True or status == "usable":
+        return "Authentication is ready."
+    if data.get("reusable") is True:
+        if data.get("remote_verified") is False:
+            return "A reusable session is available but has not been verified remotely."
+        return "A reusable authentication session is available."
+    messages = {
+        "credentials_available_login_required": "Credentials are configured, but login is required.",
+        "session_available_unverified": "A session is available but has not been verified remotely.",
+        "session_missing": "Authentication is configured, but the session file is missing.",
+        "unconfigured": "Authentication is not configured.",
+        "expired": "The authentication session has expired.",
+        "invalid": "The authentication session is invalid.",
+    }
+    if isinstance(status, str) and status in messages:
+        return messages[status]
+    session = data.get("session")
+    if isinstance(session, dict):
+        nested_status = session.get("status")
+        if nested_status == "usable":
+            return "Authentication is ready."
+        if isinstance(nested_status, str) and nested_status in messages:
+            return messages[nested_status]
+    return "The authentication check completed, but readiness was not confirmed."
+
+
+def _compact_metric_line(data: dict[str, Any]) -> str | None:
+    summary = data.get("summary")
+    if not isinstance(summary, dict):
+        return None
+    preferred = (
+        "downloaded",
+        "queued",
+        "skipped",
+        "failed",
+        "partial",
+        "repaired",
+        "targets_processed",
+        "targets_failed",
+        "files_moved",
+        "bytes_reclaimed",
+    )
+    metrics = [
+        f"{key.replace('_', ' ').capitalize()}: {summary[key]}"
+        for key in preferred
+        if isinstance(summary.get(key), int | float)
+    ]
+    return "; ".join(metrics) + "." if metrics else None
 
 
 def print_agent_human_result(payload: dict[str, Any]) -> None:
