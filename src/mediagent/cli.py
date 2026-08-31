@@ -7,6 +7,7 @@ import asyncio
 import json
 import os
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -15,7 +16,8 @@ from mediagent.agent.core import LLMClient
 from mediagent.agent.llm import OllamaClient, OpenAICompatibleClient
 from mediagent.agent.skills import default_skill_registry
 from mediagent.core.config import EnvFileError, load_env_file
-from mediagent.core.tooling import ErrorCategory, ToolContext, ToolRegistryError
+from mediagent.core.operational_logging import OperationLogger
+from mediagent.core.tooling import ErrorCategory, ToolContext, ToolRegistryError, ToolResult
 from mediagent.tools.defaults import create_default_registry
 
 
@@ -404,11 +406,14 @@ def handle_tools_inspect(args: argparse.Namespace) -> int:
 def handle_tools_run(args: argparse.Namespace) -> int:
     try:
         input_data = read_input(args.input)
-    except ValueError as exc:
-        return print_error(
-            {"code": "invalid_input_file", "message": str(exc), "details": {}},
+    except (OSError, ValueError) as exc:
+        return print_tool_input_error(
+            tool=args.tool,
+            input_path=args.input,
+            exc=exc,
             json_output=args.json,
-            exit_code=EXIT_VALIDATION_ERROR,
+            summary_json=args.summary_json,
+            dry_run=args.dry_run,
         )
 
     return run_tool_command(
@@ -638,6 +643,9 @@ def run_tool_command(
 ) -> int:
     registry = create_default_registry()
     context = ToolContext.from_env(dry_run=dry_run)
+    operation_log = OperationLogger.create(tool, env=context.env)
+    started_at = time.monotonic()
+    operation_log.started(dry_run=dry_run)
     try:
         result = asyncio.run(
             registry.run(
@@ -648,6 +656,10 @@ def run_tool_command(
             )
         )
     except ToolRegistryError as exc:
+        operation_log.failed(
+            elapsed_seconds=time.monotonic() - started_at,
+            reason=exc.error.message,
+        )
         return print_error(exc.error.to_dict(), json_output=json_output, exit_code=exc.exit_code)
     payload = {
         "tool": tool,
@@ -663,7 +675,15 @@ def run_tool_command(
     else:
         print_human_result(payload)
     if result.is_success:
+        operation_log.completed(
+            elapsed_seconds=time.monotonic() - started_at,
+            warning_count=len(result.warnings),
+        )
         return EXIT_SUCCESS
+    operation_log.failed(
+        elapsed_seconds=time.monotonic() - started_at,
+        reason=result.error.message if result.error else "The operation did not complete.",
+    )
     if result.error and result.error.category.value in VALIDATION_ERROR_CATEGORIES:
         return EXIT_VALIDATION_ERROR
     return EXIT_RUNTIME_FAILURE
@@ -703,6 +723,46 @@ def _summary_tool_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "rate_limit": payload.get("rate_limit"),
         "error": payload.get("error"),
     }
+
+
+def print_tool_input_error(
+    *,
+    tool: str,
+    input_path: str | None,
+    exc: OSError | ValueError,
+    json_output: bool,
+    summary_json: bool,
+    dry_run: bool,
+) -> int:
+    message = str(exc)
+    if isinstance(exc, OSError):
+        message = f"Could not read tool input: {message}"
+    result = ToolResult.failure(
+        "invalid_input_file",
+        message,
+        category=ErrorCategory.VALIDATION,
+        details={
+            "exception_type": type(exc).__name__,
+            "input": input_path,
+        },
+    )
+    context = ToolContext.from_env(dry_run=dry_run)
+    payload = {
+        "tool": tool,
+        "run_id": context.run_id,
+        **result.to_dict(),
+    }
+    if summary_json:
+        print_json(_summary_tool_payload(payload))
+    elif json_output:
+        print_json(payload)
+    else:
+        print_error(
+            result.error.to_dict() if result.error else {},
+            json_output=False,
+            exit_code=EXIT_VALIDATION_ERROR,
+        )
+    return EXIT_VALIDATION_ERROR
 
 
 def _load_simple_command_env() -> None:

@@ -3,6 +3,8 @@ import os
 import subprocess
 import sys
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
+from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
@@ -265,6 +267,102 @@ class CliTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 0)
         payload = json.loads(completed.stdout)
         self.assertEqual(payload["status"], "success")
+
+    def test_tools_run_invalid_json_emits_full_failure_payload(self) -> None:
+        completed = self.run_cli(
+            "tools",
+            "run",
+            "core.env.check",
+            "--json",
+            "--input",
+            "-",
+            input_text="{not-json",
+        )
+
+        self.assertEqual(completed.returncode, 2)
+        self.assertEqual(completed.stderr, "")
+        payload = json.loads(completed.stdout)
+        self.assertEqual(payload["tool"], "core.env.check")
+        self.assertTrue(payload["run_id"])
+        self.assertEqual(payload["status"], "failure")
+        self.assertEqual(payload["data"], {})
+        self.assertEqual(payload["artifacts"], [])
+        self.assertEqual(payload["warnings"], [])
+        self.assertIsNone(payload["rate_limit"])
+        self.assertEqual(payload["error"]["code"], "invalid_input_file")
+        self.assertEqual(payload["error"]["category"], "validation")
+        self.assertEqual(payload["error"]["details"]["exception_type"], "ValueError")
+
+    def test_tools_run_invalid_json_emits_summary_failure_payload(self) -> None:
+        completed = self.run_cli(
+            "tools",
+            "run",
+            "core.env.check",
+            "--summary-json",
+            "--input",
+            "-",
+            input_text="[]",
+        )
+
+        self.assertEqual(completed.returncode, 2)
+        self.assertEqual(completed.stderr, "")
+        payload = json.loads(completed.stdout)
+        self.assertEqual(payload["tool"], "core.env.check")
+        self.assertTrue(payload["run_id"])
+        self.assertEqual(payload["status"], "failure")
+        self.assertEqual(payload["data"], {})
+        self.assertEqual(payload["artifact_count"], 0)
+        self.assertEqual(payload["warnings"], [])
+        self.assertIsNone(payload["rate_limit"])
+        self.assertEqual(payload["error"]["code"], "invalid_input_file")
+        self.assertEqual(payload["error"]["category"], "validation")
+
+    def test_tools_run_missing_input_file_is_structured(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            missing = Path(temp_dir) / "missing.json"
+            completed = self.run_cli(
+                "tools",
+                "run",
+                "core.env.check",
+                "--json",
+                "--input",
+                str(missing),
+            )
+
+        self.assertEqual(completed.returncode, 2)
+        self.assertEqual(completed.stderr, "")
+        payload = json.loads(completed.stdout)
+        self.assertEqual(payload["status"], "failure")
+        self.assertEqual(payload["error"]["code"], "invalid_input_file")
+        self.assertEqual(payload["error"]["details"]["exception_type"], "FileNotFoundError")
+        self.assertNotIn("Traceback", completed.stdout)
+
+    def test_tools_run_permission_error_is_structured(self) -> None:
+        stdout = StringIO()
+        stderr = StringIO()
+        with (
+            patch.object(Path, "read_text", side_effect=PermissionError("permission denied")),
+            redirect_stdout(stdout),
+            redirect_stderr(stderr),
+        ):
+            exit_code = cli.run(
+                [
+                    "tools",
+                    "run",
+                    "core.env.check",
+                    "--summary-json",
+                    "--input",
+                    "private.json",
+                ]
+            )
+
+        self.assertEqual(exit_code, 2)
+        self.assertEqual(stderr.getvalue(), "")
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(payload["status"], "failure")
+        self.assertEqual(payload["error"]["code"], "invalid_input_file")
+        self.assertEqual(payload["error"]["details"]["exception_type"], "PermissionError")
+        self.assertNotIn("Traceback", stdout.getvalue())
 
     def test_library_cli_deduplicate_rename_remove_restore_workflow(self) -> None:
         with TemporaryDirectory() as temp_dir:
