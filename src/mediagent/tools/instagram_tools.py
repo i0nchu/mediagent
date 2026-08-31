@@ -14,6 +14,7 @@ from mediagent.core.links import (
     default_link_resolver_registry,
     sanitize_link_resolution_for_output,
 )
+from mediagent.core.operational_logging import ProgressLogger
 from mediagent.core.tooling import ErrorCategory, Permission, ToolContext, ToolDefinition, ToolResult, ToolSpec
 from mediagent.platforms.instagram import auth as instagram_auth
 from mediagent.platforms.instagram import client as instagram_client
@@ -343,7 +344,9 @@ async def saved_sync(context: ToolContext, input_data: dict[str, Any]) -> ToolRe
     item_results = []
     artifacts = []
     warnings = []
-    for item in candidates:
+    progress = ProgressLogger(context.operation_log)
+    candidate_count = len(candidates)
+    for completed, item in enumerate(candidates, start=1):
         result = await link_tools._sync_one_link_item(context, db_path, item, input_data)
         item_results.append(result)
         summary[result["status"]] += 1
@@ -351,6 +354,11 @@ async def saved_sync(context: ToolContext, input_data: dict[str, Any]) -> ToolRe
         summary["bytes"] += result["bytes_written"]
         artifacts.extend({"type": "file", "path": path} for path in result["artifacts"])
         warnings.extend(result["warnings"])
+        progress.report(
+            completed=completed,
+            pending=candidate_count - completed,
+            failed=summary["failed"] + summary["partial"],
+        )
     run_status = (
         "success"
         if not summary["failed"] and not summary["partial"]

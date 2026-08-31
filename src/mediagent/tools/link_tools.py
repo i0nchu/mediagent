@@ -27,6 +27,7 @@ from mediagent.core.links import (
     resolution_to_media_item,
     sanitize_link_resolution_for_output,
 )
+from mediagent.core.operational_logging import ProgressLogger
 from mediagent.core.storage import default_library_root, plan_storage_path, platform_library_env_name
 from mediagent.core.sync import TERMINAL_ITEM_STATUSES, item_status_from_file_counts
 from mediagent.core.tooling import ErrorCategory, Permission, ToolContext, ToolDefinition, ToolResult, ToolSpec
@@ -393,7 +394,9 @@ async def media_sync(context: ToolContext, input_data: dict[str, Any]) -> ToolRe
 
     item_results: list[dict[str, Any]] = list(comic_route["items"])
     artifacts: list[dict[str, str]] = list(comic_route["artifacts"])
-    for item in items_to_sync:
+    progress = ProgressLogger(context.operation_log)
+    failed_items = 0
+    for completed_items, item in enumerate(items_to_sync, start=1):
         result = await _sync_one_link_item(context, db_path, item, input_data)
         item_results.append(result)
         summary[result["status"]] += 1
@@ -408,6 +411,13 @@ async def media_sync(context: ToolContext, input_data: dict[str, Any]) -> ToolRe
             summary["still_missing_files"] += result["files_failed"]
         artifacts.extend({"type": "file", "path": path} for path in result["artifacts"])
         warnings.extend(result["warnings"])
+        if result["status"] in {"failed", "partial"}:
+            failed_items += 1
+        progress.report(
+            completed=completed_items,
+            pending=len(items_to_sync) - completed_items,
+            failed=failed_items,
+        )
 
     run_status = "success"
     if summary["failed"] or summary["partial"] or comic_route["failed"]:

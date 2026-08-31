@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from mediagent.core.filesystem import resolve_placeholders
+from mediagent.core.operational_logging import NullOperationLogger, OperationReporter
 from mediagent.core.redaction import redact_secrets, redact_text
 from mediagent.core.schema import validate_input
 
@@ -162,6 +163,7 @@ class ToolContext:
     db_path: Path | None = None
     log_path: Path | None = None
     http_client: Any | None = None
+    operation_log: OperationReporter = field(default_factory=NullOperationLogger)
 
     @classmethod
     def from_env(
@@ -171,6 +173,7 @@ class ToolContext:
         cwd: Path | None = None,
         env: Mapping[str, str] | None = None,
         http_client: Any | None = None,
+        operation_log: OperationReporter | None = None,
     ) -> "ToolContext":
         source_env = os.environ if env is None else env
         current_dir = (cwd or Path.cwd()).resolve()
@@ -184,6 +187,7 @@ class ToolContext:
             db_path=_path_from_env(source_env, "MEDIAGENT_DB_PATH"),
             log_path=_path_from_env(source_env, "MEDIAGENT_LOG_PATH"),
             http_client=http_client,
+            operation_log=operation_log if operation_log is not None else NullOperationLogger(),
         )
 
     def allowed_write_roots(self) -> list[Path]:

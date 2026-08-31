@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
+from unittest.mock import patch
 
 from mediagent.core import db
 from mediagent.core.tooling import ToolContext
@@ -1002,6 +1003,33 @@ class TelegramToolTests(unittest.TestCase):
         self.assertEqual(len(written_media), 3)
         self.assertTrue(str(written_media[0]).endswith(".jpg"))
         self.assertIn("/library/telegram/photo/2026/07/", str(written_media[0]))
+
+    def test_messages_sync_reports_aggregate_item_progress(self) -> None:
+        registry = create_default_registry()
+        fake = FakeTelegramClient(
+            messages={"saved_messages": _telegram_messages_fixture()[:1]},
+            downloads={
+                "saved_messages:10:photo-10": {"content": b"photo-one", "mime_type": "image/jpeg"},
+            },
+        )
+        with TemporaryDirectory() as temp_dir, patch(
+            "mediagent.tools.telegram_tools.ProgressLogger"
+        ) as progress_factory:
+            context, _data_dir, db_path = _telegram_context(temp_dir, fake)
+            result = asyncio.run(
+                registry.run(
+                    "telegram.messages.sync",
+                    {"db_path": str(db_path), "chat": "saved_messages", "limit": 1},
+                    context,
+                )
+            )
+
+        self.assertTrue(result.is_success)
+        progress_factory.return_value.report.assert_called_once_with(
+            completed=1,
+            pending=0,
+            failed=0,
+        )
 
     def test_messages_sync_downloads_all_album_media_from_message_link(self) -> None:
         registry = create_default_registry()

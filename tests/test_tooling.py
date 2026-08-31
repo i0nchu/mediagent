@@ -79,6 +79,7 @@ class ToolingTests(unittest.TestCase):
 
         self.assertIsNone(context.data_dir)
         self.assertIsNone(context.db_path)
+        context.operation_log.info("This remains silent in library use.")
 
     def test_invalid_input_returns_validation_error(self) -> None:
         registry = create_default_registry()

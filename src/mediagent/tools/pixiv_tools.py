@@ -14,6 +14,7 @@ from mediagent.core.auth import CredentialRef, resolve_credential, resolve_crede
 from mediagent.core.comics import CBZ_STORAGE_LAYOUT, comic_archive_relative_path
 from mediagent.core.filesystem import PathSafetyError, ensure_inside, normalize_path, resolve_placeholders
 from mediagent.core.links import LinkSafetyPolicy, ResolveRequest, default_link_resolver_registry, sanitize_link_resolution_for_output
+from mediagent.core.operational_logging import ProgressLogger
 from mediagent.core.storage import default_library_root, plan_storage_path, platform_library_env_name
 from mediagent.core.sync import (
     TERMINAL_ITEM_STATUSES,
@@ -659,8 +660,10 @@ async def bookmarks_sync(context: ToolContext, input_data: dict[str, Any]) -> To
     artifacts = []
     warnings = []
     comic_package_results = []
+    progress = ProgressLogger(context.operation_log)
+    queued_items = len(items_to_sync)
 
-    for item in items_to_sync:
+    for completed, item in enumerate(items_to_sync, start=1):
         result = await _sync_one_pixiv_item(
             context,
             db_path,
@@ -680,6 +683,11 @@ async def bookmarks_sync(context: ToolContext, input_data: dict[str, Any]) -> To
             summary["repaired"] += 1
         artifacts.extend({"type": "file", "path": path} for path in result["artifacts"])
         warnings.extend(result["warnings"])
+        progress.report(
+            completed=completed,
+            pending=queued_items - completed,
+            failed=summary["failed"] + summary["partial"],
+        )
 
     if input_data.get("package_comics"):
         current_statuses = db.get_media_statuses(db_path, items)

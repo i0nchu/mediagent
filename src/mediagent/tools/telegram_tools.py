@@ -27,6 +27,7 @@ from mediagent.core.links import (
     resolution_to_media_item,
     sanitize_link_resolution_for_output,
 )
+from mediagent.core.operational_logging import ProgressLogger
 from mediagent.core.storage import default_library_root, plan_storage_path, platform_library_env_name, safe_storage_segment
 from mediagent.core.sync import TERMINAL_ITEM_STATUSES, item_status_from_file_counts
 from mediagent.core.tooling import (
@@ -685,7 +686,9 @@ async def messages_sync(context: ToolContext, input_data: dict[str, Any]) -> Too
     item_results: list[dict[str, Any]] = []
     artifacts: list[dict[str, str]] = []
     warnings: list[str] = []
-    for item in items_to_sync:
+    progress = ProgressLogger(context.operation_log)
+    queued_count = len(items_to_sync)
+    for completed, item in enumerate(items_to_sync, start=1):
         result = await _sync_one_telegram_item(
             context,
             db_path,
@@ -707,6 +710,11 @@ async def messages_sync(context: ToolContext, input_data: dict[str, Any]) -> Too
             summary["still_missing_files"] += result["files_failed"]
         artifacts.extend({"type": "file", "path": path} for path in result["artifacts"])
         warnings.extend(result["warnings"])
+        progress.report(
+            completed=completed,
+            pending=queued_count - completed,
+            failed=summary["failed"] + summary["partial"],
+        )
         if result.get("cancelled"):
             summary["cancelled"] = True
             break
@@ -971,7 +979,9 @@ async def inbox_sync_links(context: ToolContext, input_data: dict[str, Any]) -> 
 
     item_results: list[dict[str, Any]] = [*comic_route["items"], *telegram_item_results]
     artifacts: list[dict[str, str]] = [*comic_route["artifacts"], *telegram_artifacts]
-    for item in items_to_sync:
+    progress = ProgressLogger(context.operation_log)
+    queued_count = len(items_to_sync)
+    for completed, item in enumerate(items_to_sync, start=1):
         result = await _sync_one_link_item(context, db_path, item, input_data)
         item_results.append(result)
         summary[result["status"]] += 1
@@ -986,6 +996,11 @@ async def inbox_sync_links(context: ToolContext, input_data: dict[str, Any]) -> 
             summary["still_missing_files"] += result["files_failed"]
         artifacts.extend({"type": "file", "path": path} for path in result["artifacts"])
         warnings.extend(result["warnings"])
+        progress.report(
+            completed=completed,
+            pending=queued_count - completed,
+            failed=summary["failed"] + summary["partial"],
+        )
 
     run_status = "success"
     if summary["failed"] or summary["partial"] or comic_route["failed"]:

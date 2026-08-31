@@ -2471,6 +2471,84 @@ class LinkQueueAndSyncTests(unittest.TestCase):
         self.assertTrue(all(file_info["required"] for file_info in metadata["files"]))
         self.assertEqual({file["status"] for file in files}, {"downloaded", "failed"})
 
+    def test_link_media_sync_reports_bounded_aggregate_item_progress(self) -> None:
+        registry = create_default_registry()
+        first_url = f"https://{PUBLIC_TEST_IP}/progress-a.jpg"
+        second_url = f"https://{PUBLIC_TEST_IP}/progress-b.jpg"
+        http = FakeLinkHttpClient()
+        for url in (first_url, second_url):
+            http.heads[url] = HttpResponse(
+                200,
+                {"Content-Type": "image/jpeg", "Content-Length": "4"},
+                b"",
+            )
+        reports: list[dict[str, int]] = []
+        progress_loggers: list[Any] = []
+
+        class FakeProgressLogger:
+            def __init__(self, operation_log: Any) -> None:
+                progress_loggers.append(operation_log)
+
+            def report(self, **counts: int) -> bool:
+                reports.append(counts)
+                return True
+
+        sync_results = [
+            {
+                "status": "downloaded",
+                "files_downloaded": 1,
+                "files_failed": 0,
+                "bytes_written": 4,
+                "artifacts": [],
+                "warnings": [],
+            },
+            {
+                "status": "partial",
+                "files_downloaded": 1,
+                "files_failed": 1,
+                "bytes_written": 4,
+                "artifacts": [],
+                "warnings": [],
+            },
+        ]
+        operation_log = object()
+        with TemporaryDirectory() as temp_dir:
+            data_dir = Path(temp_dir) / "data"
+            db_path = data_dir / "mediagent.sqlite3"
+            context = ToolContext.from_env(
+                env={"MEDIAGENT_DATA_DIR": str(data_dir), "MEDIAGENT_DB_PATH": str(db_path)},
+                cwd=Path(temp_dir),
+                http_client=http,
+                operation_log=operation_log,
+            )
+
+            with (
+                patch("mediagent.tools.link_tools.ProgressLogger", FakeProgressLogger),
+                patch(
+                    "mediagent.tools.link_tools._sync_one_link_item",
+                    new=AsyncMock(side_effect=sync_results),
+                ),
+            ):
+                result = asyncio.run(
+                    registry.run(
+                        "link.media.sync",
+                        {"db_path": str(db_path), "urls": [first_url, second_url]},
+                        context,
+                    )
+                )
+
+        self.assertFalse(result.is_success)
+        self.assertEqual(progress_loggers, [operation_log])
+        self.assertEqual(
+            reports,
+            [
+                {"completed": 1, "pending": 1, "failed": 0},
+                {"completed": 2, "pending": 0, "failed": 1},
+            ],
+        )
+        self.assertTrue(all("force" not in report for report in reports))
+        self.assertEqual(http.calls, [("HEAD", first_url), ("HEAD", second_url)])
+
     def test_link_resolution_storage_removes_credential_bearing_headers(self) -> None:
         with TemporaryDirectory() as temp_dir:
             db_path = Path(temp_dir) / "mediagent.sqlite3"

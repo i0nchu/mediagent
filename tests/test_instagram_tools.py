@@ -250,6 +250,26 @@ class InstagramToolTests(unittest.TestCase):
         self.assertTrue(second.is_success); self.assertEqual(second.data["summary"]["queued"], 0)
         self.assertEqual([call[0] for call in fake.calls].count("GET_LIMITED"), 3)
 
+    def test_saved_sync_reports_aggregate_item_progress(self) -> None:
+        registry = create_default_registry()
+        fake = FakeInstagramClient()
+        fake.saved_pages = {None: {"items": [_saved_post("Progress", resources=1)], "next_cursor": None}}
+        url = f"https://{PUBLIC_TEST_IP}/0.jpg"
+        fake.gets[url] = HttpResponse(200, {"Content-Type": "image/jpeg"}, b"media", url)
+        with TemporaryDirectory() as temp_dir, patch(
+            "mediagent.tools.instagram_tools.ProgressLogger"
+        ) as progress_factory:
+            result = asyncio.run(
+                registry.run("instagram.saved.sync", {}, _ready_saved_context(temp_dir, fake))
+            )
+
+        self.assertTrue(result.is_success)
+        progress_factory.return_value.report.assert_called_once_with(
+            completed=1,
+            pending=0,
+            failed=0,
+        )
+
     def test_saved_sync_stops_on_known_but_full_sync_scans_past_it(self) -> None:
         registry = create_default_registry(); fake = FakeInstagramClient()
         fake.saved_pages = {None: {"items": [_saved_post("Known", resources=1)], "next_cursor": "page-2"},

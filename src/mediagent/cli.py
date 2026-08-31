@@ -642,8 +642,8 @@ def run_tool_command(
     compact_human: bool = False,
 ) -> int:
     registry = create_default_registry()
-    context = ToolContext.from_env(dry_run=dry_run)
-    operation_log = OperationLogger.create(tool, env=context.env)
+    operation_log = OperationLogger.create(tool, env=os.environ)
+    context = ToolContext.from_env(dry_run=dry_run, operation_log=operation_log)
     started_at = time.monotonic()
     operation_log.started(dry_run=dry_run)
     try:

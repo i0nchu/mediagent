@@ -1017,6 +1017,44 @@ class ComicToolTests(unittest.TestCase):
         self.assertTrue(result.is_success, result.to_dict())
         self.assertEqual(result.data["summary"]["resolved_items"], 1_100)
 
+    def test_sync_items_reports_aggregate_item_progress_and_failures(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            context = ToolContext.from_env(
+                cwd=root,
+                env={
+                    "MEDIAGENT_DATA_DIR": str(root),
+                    "MEDIAGENT_LIBRARY_DIR": str(root / "library"),
+                    "MEDIAGENT_DB_PATH": str(root / "state.sqlite3"),
+                },
+            )
+            first = _comic_item()
+            second = json.loads(json.dumps(first))
+            second["remote_id"] = "gallery:456"
+            second["metadata"]["comic"]["provider_work_id"] = "gallery:456"
+            progress = MagicMock()
+            item_results = [
+                {"status": "downloaded", "artifacts": [], "files_skipped": 0},
+                {"status": "partial", "artifacts": [], "files_skipped": 0},
+            ]
+
+            with patch.object(comic_tools, "ProgressLogger", return_value=progress) as progress_logger, patch.object(
+                comic_tools.link_tools,
+                "_sync_one_link_item",
+                new=AsyncMock(side_effect=item_results),
+            ), patch.object(comic_tools, "_load_comic_items", return_value=[]):
+                result = asyncio.run(comic_tools._sync_items(context, {}, [first, second]))
+
+        self.assertFalse(result.is_success)
+        progress_logger.assert_called_once_with(context.operation_log)
+        self.assertEqual(
+            progress.report.call_args_list,
+            [
+                unittest.mock.call(completed=1, pending=1, failed=0),
+                unittest.mock.call(completed=2, pending=0, failed=1),
+            ],
+        )
+
     def test_favorite_sync_continues_after_one_target_resolution_failure(self) -> None:
         context = ToolContext.from_env(
             dry_run=True,

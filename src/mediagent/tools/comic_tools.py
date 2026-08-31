@@ -9,6 +9,7 @@ from typing import Any
 
 from mediagent.core import db
 from mediagent.core.filesystem import PathSafetyError, ensure_inside, normalize_path, resolve_placeholders
+from mediagent.core.operational_logging import ProgressLogger
 from mediagent.core.storage import default_library_root
 from mediagent.core.tooling import (
     ErrorCategory,
@@ -1079,10 +1080,19 @@ async def _sync_items(context: ToolContext, input_data: dict[str, Any], items: l
         db.upsert_media_item(db_path, item)
     item_results = []
     artifacts: list[dict[str, str]] = []
+    progress = ProgressLogger(context.operation_log)
+    failed_items = 0
     for item in candidates:
         item_result = await link_tools._sync_one_link_item(context, db_path, item, input_data)
         item_results.append(item_result)
         artifacts.extend({"type": "file", "path": path} for path in item_result["artifacts"])
+        if item_result["status"] in {"failed", "partial"}:
+            failed_items += 1
+        progress.report(
+            completed=len(item_results),
+            pending=len(candidates) - len(item_results),
+            failed=failed_items,
+        )
     packages = []
     refreshed_identities = {(item["platform"], item["remote_id"]) for item in candidates}
     for item in _load_comic_items(db_path, {(item["platform"], item["remote_id"]) for item in items}):

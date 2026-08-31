@@ -54,16 +54,18 @@ class OperationalLoggingTests(unittest.TestCase):
             clock=lambda: current[0],
         )
 
-        self.assertTrue(progress.report(completed=1, pending=9))
+        self.assertFalse(progress.report(completed=1, pending=9))
         current[0] += 59.0
         self.assertFalse(progress.report(completed=2, pending=8))
         current[0] += 1.0
         self.assertTrue(progress.report(completed=3, pending=7, failed=1))
+        current[0] += 1.0
+        self.assertTrue(progress.report(completed=4, pending=6, failed=1, force=True))
 
         lines = output.getvalue().splitlines()
         self.assertEqual(len(lines), 2)
-        self.assertIn("1 completed, 9 pending, 0 failed", lines[0])
-        self.assertIn("3 completed, 7 pending, 1 failed", lines[1])
+        self.assertIn("3 completed, 7 pending, 1 failed", lines[0])
+        self.assertIn("4 completed, 6 pending, 1 failed", lines[1])
 
     def test_json_stdout_stays_machine_readable_while_logs_use_stderr(self) -> None:
         env = os.environ.copy()

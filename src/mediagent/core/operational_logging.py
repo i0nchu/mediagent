@@ -9,7 +9,7 @@ import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import TextIO
+from typing import Protocol, TextIO
 from urllib.parse import urlsplit, urlunsplit
 
 from mediagent.core.redaction import redact_text
@@ -116,6 +116,34 @@ class OperationalLogFormatter(logging.Formatter):
         return f"{timestamp} {level:<5} {component} {message}"
 
 
+class OperationReporter(Protocol):
+    """Logging surface available to tools without configuring output sinks."""
+
+    def debug(self, message: str) -> None: ...
+
+    def info(self, message: str) -> None: ...
+
+    def warning(self, message: str) -> None: ...
+
+    def error(self, message: str) -> None: ...
+
+
+class NullOperationLogger:
+    """Silent default for library use and offline tests."""
+
+    def debug(self, message: str) -> None:
+        pass
+
+    def info(self, message: str) -> None:
+        pass
+
+    def warning(self, message: str) -> None:
+        pass
+
+    def error(self, message: str) -> None:
+        pass
+
+
 @dataclass
 class OperationLogger:
     """Small facade that keeps command logs consistent and low-noise."""
@@ -171,10 +199,13 @@ class OperationLogger:
 class ProgressLogger:
     """Emit aggregate progress at a bounded time interval."""
 
-    operation_log: OperationLogger
+    operation_log: OperationReporter
     interval_seconds: float = DEFAULT_PROGRESS_INTERVAL_SECONDS
     clock: Callable[[], float] = time.monotonic
     _last_emitted_at: float | None = field(default=None, init=False)
+
+    def __post_init__(self) -> None:
+        self._last_emitted_at = self.clock()
 
     def report(
         self,
