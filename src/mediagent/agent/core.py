@@ -167,6 +167,7 @@ class AgentRunner:
                 cwd=context.cwd,
                 env=context.env,
                 http_client=context.http_client,
+                operation_log=context.operation_log,
             )
             try:
                 result = await self.tool_registry.run(

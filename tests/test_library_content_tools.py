@@ -43,6 +43,50 @@ class LibraryContentToolTests(unittest.TestCase):
             self.assertTrue({"content_blobs", "library_entries", "library_operations"} <= tables)
             self.assertIn("library_entry_id", media_file_columns)
 
+    def test_phase2_baseline_reinitialization_preserves_managed_file_relationships(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            root, db_path = self._workspace(temp_dir)
+            source = root / "pixiv/photo/baseline.jpg"
+            source.parent.mkdir(parents=True)
+            source.write_bytes(b"phase-two-baseline")
+            file_record = self._record(
+                db_path,
+                source,
+                platform="pixiv",
+                remote_id="phase-two-baseline",
+            )
+            adoption = library_content.adopt_media_file(db_path, file_id=file_record["id"])
+            before = db.list_media_files(
+                db_path,
+                platform="pixiv",
+                remote_id="phase-two-baseline",
+            )[0]
+
+            db.initialize_database(db_path)
+            db.initialize_database(db_path)
+
+            after = db.list_media_files(
+                db_path,
+                platform="pixiv",
+                remote_id="phase-two-baseline",
+            )[0]
+            with db.connect(db_path) as connection:
+                entry = connection.execute(
+                    "SELECT state, local_path, content_blob_id FROM library_entries WHERE id = ?",
+                    (adoption["entry_id"],),
+                ).fetchone()
+                blob_count = connection.execute("SELECT COUNT(*) FROM content_blobs").fetchone()[0]
+
+            self.assertEqual(db.get_schema_version(db_path), "10")
+            self.assertEqual(after["id"], before["id"])
+            self.assertEqual(after["library_entry_id"], adoption["entry_id"])
+            self.assertEqual(after["checksum"], before["checksum"])
+            self.assertEqual(entry["state"], "active")
+            self.assertEqual(entry["local_path"], str(source.resolve()))
+            self.assertIsNotNone(entry["content_blob_id"])
+            self.assertEqual(blob_count, 1)
+            self.assertTrue(source.is_file())
+
     def test_general_media_duplicate_collapses_to_one_visible_path(self) -> None:
         with TemporaryDirectory() as temp_dir:
             root, db_path = self._workspace(temp_dir)

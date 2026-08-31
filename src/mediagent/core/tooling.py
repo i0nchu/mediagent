@@ -122,7 +122,7 @@ class ToolResult:
             "status": self.status.value,
             "data": self.data,
             "artifacts": self.artifacts,
-            "warnings": self.warnings,
+            "warnings": [redact_text(warning) for warning in self.warnings],
             "rate_limit": self.rate_limit,
             "error": self.error.to_dict() if self.error else None,
         }

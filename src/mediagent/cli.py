@@ -16,7 +16,8 @@ from mediagent.agent.core import LLMClient
 from mediagent.agent.llm import OllamaClient, OpenAICompatibleClient
 from mediagent.agent.skills import default_skill_registry
 from mediagent.core.config import EnvFileError, load_env_file
-from mediagent.core.operational_logging import OperationLogger
+from mediagent.core.operational_logging import OperationLogger, await_with_heartbeat, sanitize_log_text
+from mediagent.core.redaction import redact_secrets
 from mediagent.core.tooling import ErrorCategory, ToolContext, ToolRegistryError, ToolResult
 from mediagent.tools.defaults import create_default_registry
 
@@ -24,6 +25,7 @@ from mediagent.tools.defaults import create_default_registry
 EXIT_SUCCESS = 0
 EXIT_RUNTIME_FAILURE = 1
 EXIT_VALIDATION_ERROR = 2
+MAX_LOGGED_WARNINGS = 3
 
 VALIDATION_ERROR_CATEGORIES = {
     ErrorCategory.VALIDATION.value,
@@ -65,10 +67,12 @@ def run(argv: list[str] | None = None) -> int:
         try:
             _load_simple_command_env()
         except EnvFileError as exc:
-            return print_error(
-                {"code": "invalid_env_file", "message": str(exc), "details": {}},
+            return emit_tool_failure(
+                tool=argv[0],
+                code="invalid_env_file",
+                message=str(exc),
                 json_output="--json" in argv or "--summary-json" in argv,
-                exit_code=EXIT_VALIDATION_ERROR,
+                compact_human=True,
             )
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -333,14 +337,15 @@ def handle_add(args: argparse.Namespace) -> int:
 
 def handle_source_sync(args: argparse.Namespace) -> int:
     if args.folder and args.source != "jmcomic":
-        return print_error(
-            {
-                "code": "unsupported_source_option",
-                "message": "--folder is only supported for the jmcomic source.",
-                "details": {"source": args.source},
-            },
+        return emit_tool_failure(
+            tool=SOURCE_SYNC_TOOLS[args.source],
+            code="unsupported_source_option",
+            message="--folder is only supported for the jmcomic source.",
+            details={"source": args.source},
             json_output=args.json or args.summary_json,
-            exit_code=EXIT_VALIDATION_ERROR,
+            summary_json=args.summary_json,
+            dry_run=args.dry_run,
+            compact_human=True,
         )
     input_data: dict[str, Any] = {
         "overwrite": args.overwrite,
@@ -605,20 +610,35 @@ def handle_agent_run(args: argparse.Namespace) -> int:
             exit_code=EXIT_VALIDATION_ERROR,
         )
     execute = not args.dry_run
-    context = ToolContext.from_env(dry_run=args.dry_run)
+    operation_log = OperationLogger.create("agent.run", env=os.environ)
+    context = ToolContext.from_env(dry_run=args.dry_run, operation_log=operation_log)
     runner = AgentRunner.default(
         llm_client,
         max_steps=args.max_steps,
         allow_experimental=args.allow_experimental,
     )
+    operation_log.started(dry_run=args.dry_run)
+    started_at = time.monotonic()
     result = asyncio.run(
-        runner.run(
-            task=args.task,
-            context=context,
-            skill_name=args.skill,
-            execute=execute,
+        await_with_heartbeat(
+            runner.run(
+                task=args.task,
+                context=context,
+                skill_name=args.skill,
+                execute=execute,
+            ),
+            operation_log,
         )
     )
+    elapsed_seconds = time.monotonic() - started_at
+    if result.is_success:
+        operation_log.completed(elapsed_seconds=elapsed_seconds)
+    else:
+        operation_log.failed(
+            elapsed_seconds=elapsed_seconds,
+            reason=result.error.message if result.error else "The agent operation did not complete.",
+            next_action="Review the command result and try again.",
+        )
     payload = result.to_dict()
     if args.json:
         print_json(payload)
@@ -648,11 +668,14 @@ def run_tool_command(
     operation_log.started(dry_run=dry_run)
     try:
         result = asyncio.run(
-            registry.run(
-                tool,
-                input_data,
-                context,
-                allow_experimental=allow_experimental,
+            await_with_heartbeat(
+                registry.run(
+                    tool,
+                    input_data,
+                    context,
+                    allow_experimental=allow_experimental,
+                ),
+                operation_log,
             )
         )
     except ToolRegistryError as exc:
@@ -668,6 +691,7 @@ def run_tool_command(
         **result.to_dict(),
     }
     elapsed_seconds = time.monotonic() - started_at
+    log_tool_warnings(operation_log, result.warnings)
     if result.is_success:
         operation_log.completed(
             elapsed_seconds=elapsed_seconds,
@@ -677,6 +701,7 @@ def run_tool_command(
         operation_log.failed(
             elapsed_seconds=elapsed_seconds,
             reason=result.error.message if result.error else "The operation did not complete.",
+            next_action=_failure_next_action(result.error.category if result.error else ErrorCategory.RUNTIME),
         )
     present_tool_result(
         payload,
@@ -685,6 +710,17 @@ def run_tool_command(
         compact_human=compact_human,
     )
     return tool_result_exit_code(result)
+
+
+def log_tool_warnings(operation_log: OperationLogger, warnings: list[str]) -> None:
+    for warning in warnings[:MAX_LOGGED_WARNINGS]:
+        operation_log.warning(warning)
+    remaining = len(warnings) - MAX_LOGGED_WARNINGS
+    if remaining > 0:
+        operation_log.warning(
+            f"{remaining} additional warning{'s were' if remaining != 1 else ' was'} omitted from the log. "
+            "Use JSON output to inspect the complete result."
+        )
 
 
 def present_tool_result(
@@ -714,6 +750,19 @@ def tool_result_exit_code(result: ToolResult) -> int:
     if result.error and result.error.category.value in VALIDATION_ERROR_CATEGORIES:
         return EXIT_VALIDATION_ERROR
     return EXIT_RUNTIME_FAILURE
+
+
+def _failure_next_action(category: ErrorCategory) -> str:
+    return {
+        ErrorCategory.VALIDATION: "Correct the command input and try again.",
+        ErrorCategory.AUTH: "Check the configured credentials or session and try again.",
+        ErrorCategory.PERMISSION: "Check file ownership and permissions, then try again.",
+        ErrorCategory.NETWORK: "Check network access and try again.",
+        ErrorCategory.RATE_LIMIT: "Wait before trying the command again.",
+        ErrorCategory.FILESYSTEM: "Check the configured paths and permissions, then try again.",
+        ErrorCategory.DATABASE: "Check database availability and try again.",
+        ErrorCategory.RUNTIME: "Review the command result and try again.",
+    }[category]
 
 
 def _summary_tool_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -764,27 +813,57 @@ def print_tool_input_error(
     message = str(exc)
     if isinstance(exc, OSError):
         message = f"Could not read tool input: {message}"
-    result = ToolResult.failure(
-        "invalid_input_file",
-        message,
-        category=ErrorCategory.VALIDATION,
+    return emit_tool_failure(
+        tool=tool,
+        code="invalid_input_file",
+        message=message,
         details={
             "exception_type": type(exc).__name__,
             "input": input_path,
         },
+        json_output=json_output,
+        summary_json=summary_json,
+        dry_run=dry_run,
     )
-    context = ToolContext.from_env(dry_run=dry_run)
+
+
+def emit_tool_failure(
+    *,
+    tool: str,
+    code: str,
+    message: str,
+    details: dict[str, Any] | None = None,
+    category: ErrorCategory = ErrorCategory.VALIDATION,
+    json_output: bool,
+    summary_json: bool = False,
+    dry_run: bool = False,
+    compact_human: bool = False,
+) -> int:
+    """Emit one structured preflight failure through the normal result boundary."""
+
+    result = ToolResult.failure(
+        code,
+        message,
+        category=category,
+        details=details,
+    )
+    operation_log = OperationLogger.create(tool, env=os.environ)
+    context = ToolContext.from_env(dry_run=dry_run, operation_log=operation_log)
     payload = {
         "tool": tool,
         "run_id": context.run_id,
         **result.to_dict(),
     }
-    OperationLogger.create(tool, env=context.env).failed(elapsed_seconds=0.0, reason=message)
+    operation_log.failed(
+        elapsed_seconds=0.0,
+        reason=message,
+        next_action=_failure_next_action(category),
+    )
     present_tool_result(
         payload,
         json_output=json_output,
         summary_json=summary_json,
-        compact_human=False,
+        compact_human=compact_human,
     )
     return tool_result_exit_code(result)
 
@@ -872,9 +951,9 @@ def print_json(payload: dict[str, Any]) -> None:
 
 def print_error(error: dict[str, Any], *, json_output: bool, exit_code: int) -> int:
     if json_output:
-        print_json({"status": "failure", "error": error})
+        print_json({"status": "failure", "error": redact_secrets(error)})
     else:
-        print(f"error: {error['message']}", file=sys.stderr)
+        print(f"error: {sanitize_log_text(error['message'])}", file=sys.stderr)
     return exit_code
 
 
@@ -882,11 +961,6 @@ def print_human_result(payload: dict[str, Any]) -> None:
     print(f"status: {payload['status']}")
     if payload.get("data"):
         print(json.dumps(payload["data"], ensure_ascii=False, indent=2, sort_keys=True))
-    if payload.get("warnings"):
-        for warning in payload["warnings"]:
-            print(f"warning: {warning}", file=sys.stderr)
-    if payload.get("error"):
-        print(f"error: {payload['error']['message']}", file=sys.stderr)
 
 
 def print_compact_human_result(payload: dict[str, Any]) -> None:
@@ -899,10 +973,6 @@ def print_compact_human_result(payload: dict[str, Any]) -> None:
             print(metric_line)
     else:
         print("The operation did not complete.")
-    for warning in payload.get("warnings") or []:
-        print(f"warning: {warning}", file=sys.stderr)
-    if payload.get("error"):
-        print(f"error: {payload['error']['message']}", file=sys.stderr)
 
 
 def _compact_success_message(tool: str, data: dict[str, Any]) -> str:
@@ -985,7 +1055,3 @@ def print_agent_human_result(payload: dict[str, Any]) -> None:
             print(f"  tool: {action['tool']}")
         if step.get("tool_result"):
             print(json.dumps(step["tool_result"], ensure_ascii=False, indent=2, sort_keys=True))
-        if step.get("error"):
-            print(f"  error: {step['error']['message']}", file=sys.stderr)
-    if payload.get("error"):
-        print(f"error: {payload['error']['message']}", file=sys.stderr)

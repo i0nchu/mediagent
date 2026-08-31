@@ -145,6 +145,35 @@ class CliTests(unittest.TestCase):
             json.loads(completed.stdout)["error"]["code"],
             "unsupported_source_option",
         )
+        payload = json.loads(completed.stdout)
+        self.assertEqual(payload["tool"], "pixiv.bookmarks.sync")
+        self.assertTrue(payload["run_id"])
+        self.assertEqual(payload["data"], {})
+        self.assertEqual(payload["warnings"], [])
+        self.assertIn("ERROR pixiv.bookmarks.sync Failed", completed.stderr)
+
+    def test_invalid_env_file_uses_standard_failure_boundary(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            env_file = Path(temp_dir) / ".env"
+            env_file.write_text("INVALID ENV LINE\n", encoding="utf-8")
+            completed = self.run_cli(
+                "status",
+                "--json",
+                env_updates={"MEDIAGENT_ENV_FILE": str(env_file)},
+            )
+
+        self.assertEqual(completed.returncode, 2)
+        payload = json.loads(completed.stdout)
+        self.assertEqual(payload["tool"], "status")
+        self.assertTrue(payload["run_id"])
+        self.assertEqual(payload["status"], "failure")
+        self.assertEqual(payload["data"], {})
+        self.assertEqual(payload["artifacts"], [])
+        self.assertEqual(payload["warnings"], [])
+        self.assertIsNone(payload["rate_limit"])
+        self.assertEqual(payload["error"]["code"], "invalid_env_file")
+        self.assertIn("ERROR status Failed", completed.stderr)
+        self.assertIn("Next action: Correct the command input and try again.", completed.stderr)
 
     def test_short_status_loads_local_env_without_shell_source(self) -> None:
         with TemporaryDirectory() as temp_dir:

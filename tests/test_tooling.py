@@ -12,6 +12,7 @@ from mediagent.core.tooling import (
     ToolResult,
     ToolSpec,
 )
+from mediagent.core.redaction import redact_secrets
 from mediagent.tools.defaults import create_default_registry
 
 
@@ -136,3 +137,39 @@ class ToolingTests(unittest.TestCase):
 
         self.assertEqual(payload["error"]["category"], "auth")
         self.assertNotIn("super-secret", str(payload))
+
+    def test_result_warning_redaction_preserves_diagnostics_but_removes_credentials(self) -> None:
+        warning = (
+            "Authorization: Bearer secret-value at "
+            "https://user:pass@example.com/file?signature=secret&width=100 "
+            "for /home/user/My File.jpg 🚀"
+        )
+
+        rendered = ToolResult.success(warnings=[warning]).to_dict()["warnings"][0]
+
+        self.assertNotIn("secret-value", rendered)
+        self.assertNotIn("user:pass", rendered)
+        self.assertNotIn("signature=secret", rendered)
+        self.assertIn("signature=redacted", rendered)
+        self.assertIn("width=100", rendered)
+        self.assertIn("/home/user/My File.jpg", rendered)
+        self.assertIn("🚀", rendered)
+
+    def test_structured_redaction_keeps_status_and_identity_keys(self) -> None:
+        rendered = redact_secrets(
+            {
+                "collection_key": "favorites:account",
+                "session_present": True,
+                "session_checkpointed": True,
+                "access_token": "secret-access",
+                "authorization_code": "secret-code",
+                "cookies": {"identity": "secret-cookie"},
+            }
+        )
+
+        self.assertEqual(rendered["collection_key"], "favorites:account")
+        self.assertIs(rendered["session_present"], True)
+        self.assertIs(rendered["session_checkpointed"], True)
+        self.assertEqual(rendered["access_token"], "<redacted>")
+        self.assertEqual(rendered["authorization_code"], "<redacted>")
+        self.assertEqual(rendered["cookies"], "<redacted>")

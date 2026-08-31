@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import logging
 import re
 import sys
 import time
-from collections.abc import Callable, Mapping
+import unicodedata
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Protocol, TextIO
+from typing import Protocol, TextIO, TypeVar
 from urllib.parse import urlsplit, urlunsplit
 
 from mediagent.core.redaction import redact_text
@@ -17,21 +20,25 @@ from mediagent.core.redaction import redact_text
 
 DEFAULT_PROGRESS_INTERVAL_SECONDS = 60.0
 MAX_LOG_MESSAGE_CHARS = 2_000
+T = TypeVar("T")
 
 _URL_PATTERN = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)
-_AUTHORIZATION_PATTERN = re.compile(
-    r"(?i)\b(authorization|proxy-authorization)\b\s*[:=]\s*"
-    r"(?:(?:bearer|basic)\s+)?[^\s,;]+"
-)
-_COOKIE_PATTERN = re.compile(r"(?i)\b(cookie|set-cookie)\b\s*[:=]\s*[^\s,;]+")
+_FILE_URL_PATTERN = re.compile(r"file://[^\r\n,;]+", re.IGNORECASE)
+_WINDOWS_PATH_PATTERN = re.compile(r"(?i)(?<!\w)(?:[a-z]:\\|\\\\)[^\r\n,;]+")
+_SPACED_POSIX_PATH_PATTERN = re.compile(r"(?<![\w:])/(?:[^/\s]+/)+[^\r\n,;]+")
 _ABSOLUTE_PATH_PATTERN = re.compile(r"(?<![\w:])/(?:[^/\s]+/)*[^/\s,;]+")
 _CONTROL_PATTERN = re.compile(r"[\x00-\x1f\x7f]+")
 _EMOJI_PATTERN = re.compile(
     "["
+    "\u00A9\u00AE"
+    "\u203C\u2049\u20E3\u2122\u2139"
+    "\u2190-\u21FF"
     "\U0001F1E6-\U0001F1FF"
     "\U0001F300-\U0001FAFF"
     "\u2300-\u23FF"
     "\u2600-\u27BF"
+    "\u2B00-\u2BFF"
+    "\u3030\u303D\u3297\u3299"
     "\uFE0E-\uFE0F"
     "\u200D"
     "]+"
@@ -50,13 +57,15 @@ def sanitize_log_text(value: object) -> str:
         return f"MEDIAGENTURLPLACEHOLDER{len(sanitized_urls) - 1}"
 
     text = _URL_PATTERN.sub(hold_url, text)
-    text = _AUTHORIZATION_PATTERN.sub(lambda match: f"{match.group(1)}=<redacted>", text)
-    text = _COOKIE_PATTERN.sub(lambda match: f"{match.group(1)}=<redacted>", text)
+    text = _FILE_URL_PATTERN.sub("<path>", text)
     text = redact_text(text)
+    text = _WINDOWS_PATH_PATTERN.sub("<path>", text)
+    text = _SPACED_POSIX_PATH_PATTERN.sub("<path>", text)
     text = _ABSOLUTE_PATH_PATTERN.sub(_sanitize_path_match, text)
     for index, sanitized_url in enumerate(sanitized_urls):
         text = text.replace(f"MEDIAGENTURLPLACEHOLDER{index}", sanitized_url)
     text = _EMOJI_PATTERN.sub("", text)
+    text = "".join(character for character in text if unicodedata.category(character) != "Cf")
     text = _CONTROL_PATTERN.sub(" ", text)
     text = " ".join(text.split())
     if len(text) > MAX_LOG_MESSAGE_CHARS:
@@ -150,6 +159,11 @@ class OperationLogger:
 
     operation: str
     logger: logging.Logger
+    clock: Callable[[], float] = time.monotonic
+    _last_emitted_at: float = field(default=0.0, init=False)
+
+    def __post_init__(self) -> None:
+        self._last_emitted_at = self.clock()
 
     @classmethod
     def create(
@@ -158,6 +172,7 @@ class OperationLogger:
         *,
         env: Mapping[str, str],
         stream: TextIO | None = None,
+        clock: Callable[[], float] = time.monotonic,
     ) -> "OperationLogger":
         component = _component_name(operation)
         logger = logging.Logger(f"mediagent.operation.{component}", level=_level_from_env(env))
@@ -165,7 +180,7 @@ class OperationLogger:
         handler = logging.StreamHandler(stream or sys.stderr)
         handler.setFormatter(OperationalLogFormatter())
         logger.addHandler(handler)
-        return cls(operation=component, logger=logger)
+        return cls(operation=component, logger=logger, clock=clock)
 
     def debug(self, message: str) -> None:
         self._write(logging.DEBUG, message)
@@ -188,11 +203,58 @@ class OperationLogger:
             message = f"{message} The result contains {warning_count} warning{'s' if warning_count != 1 else ''}."
         self.info(message)
 
-    def failed(self, *, elapsed_seconds: float, reason: str) -> None:
-        self.error(f"Failed after {elapsed_seconds:.1f} seconds: {reason}")
+    def failed(self, *, elapsed_seconds: float, reason: str, next_action: str) -> None:
+        self.error(
+            f"Failed after {elapsed_seconds:.1f} seconds: {reason} "
+            f"Next action: {next_action}"
+        )
 
     def _write(self, level: int, message: str) -> None:
         self.logger.log(level, message, extra={"operation": self.operation})
+        if self.logger.isEnabledFor(level):
+            self._last_emitted_at = self.clock()
+
+    def seconds_since_output(self) -> float:
+        return max(0.0, self.clock() - self._last_emitted_at)
+
+
+async def await_with_heartbeat(
+    awaitable: Awaitable[T],
+    operation_log: OperationLogger,
+    *,
+    interval_seconds: float = DEFAULT_PROGRESS_INTERVAL_SECONDS,
+    clock: Callable[[], float] = time.monotonic,
+) -> T:
+    """Await one operation and report only when all other output stays silent."""
+
+    started_at = clock()
+    last_heartbeat_at = started_at
+    task = asyncio.ensure_future(awaitable)
+    try:
+        while True:
+            quiet_for = operation_log.seconds_since_output()
+            heartbeat_quiet_for = max(0.0, clock() - last_heartbeat_at)
+            wait_seconds = max(
+                0.01,
+                interval_seconds - min(quiet_for, heartbeat_quiet_for),
+            )
+            done, _pending = await asyncio.wait({task}, timeout=wait_seconds)
+            if task in done:
+                return await task
+            if (
+                operation_log.seconds_since_output() >= interval_seconds
+                and clock() - last_heartbeat_at >= interval_seconds
+            ):
+                last_heartbeat_at = clock()
+                operation_log.info(
+                    f"Still working; {_format_elapsed(clock() - started_at)} elapsed."
+                )
+    except BaseException:
+        if not task.done():
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+        raise
 
 
 @dataclass
@@ -202,10 +264,12 @@ class ProgressLogger:
     operation_log: OperationReporter
     interval_seconds: float = DEFAULT_PROGRESS_INTERVAL_SECONDS
     clock: Callable[[], float] = time.monotonic
+    _started_at: float = field(default=0.0, init=False)
     _last_emitted_at: float | None = field(default=None, init=False)
 
     def __post_init__(self) -> None:
-        self._last_emitted_at = self.clock()
+        self._started_at = self.clock()
+        self._last_emitted_at = self._started_at
 
     def report(
         self,
@@ -226,6 +290,18 @@ class ProgressLogger:
         if pending is not None:
             parts.append(f"{pending} pending")
         parts.append(f"{failed} failed")
+        parts.append(f"{_format_elapsed(now - self._started_at)} elapsed")
         self.operation_log.info(f"Progress: {', '.join(parts)}.")
         self._last_emitted_at = now
         return True
+
+
+def _format_elapsed(seconds: float) -> str:
+    total_seconds = max(0, int(seconds))
+    hours, remainder = divmod(total_seconds, 3_600)
+    minutes, seconds = divmod(remainder, 60)
+    if hours:
+        return f"{hours}h {minutes}m {seconds}s"
+    if minutes:
+        return f"{minutes}m {seconds}s"
+    return f"{seconds}s"
