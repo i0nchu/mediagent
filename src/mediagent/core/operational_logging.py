@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-import asyncio
-import contextlib
 import logging
 import re
 import sys
+import threading
 import time
 import unicodedata
 from collections.abc import Awaitable, Callable, Mapping
@@ -225,12 +224,13 @@ async def await_with_heartbeat(
     interval_seconds: float = DEFAULT_PROGRESS_INTERVAL_SECONDS,
     clock: Callable[[], float] = time.monotonic,
 ) -> T:
-    """Await one operation and report only when all other output stays silent."""
+    """Await one operation while a background heartbeat survives blocking work."""
 
     started_at = clock()
-    last_heartbeat_at = started_at
-    task = asyncio.ensure_future(awaitable)
-    try:
+    stop = threading.Event()
+
+    def heartbeat() -> None:
+        last_heartbeat_at = started_at
         while True:
             quiet_for = operation_log.seconds_since_output()
             heartbeat_quiet_for = max(0.0, clock() - last_heartbeat_at)
@@ -238,9 +238,8 @@ async def await_with_heartbeat(
                 0.01,
                 interval_seconds - min(quiet_for, heartbeat_quiet_for),
             )
-            done, _pending = await asyncio.wait({task}, timeout=wait_seconds)
-            if task in done:
-                return await task
+            if stop.wait(wait_seconds):
+                return
             if (
                 operation_log.seconds_since_output() >= interval_seconds
                 and clock() - last_heartbeat_at >= interval_seconds
@@ -249,12 +248,18 @@ async def await_with_heartbeat(
                 operation_log.info(
                     f"Still working; {_format_elapsed(clock() - started_at)} elapsed."
                 )
-    except BaseException:
-        if not task.done():
-            task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
-        raise
+
+    worker = threading.Thread(
+        target=heartbeat,
+        name=f"mediagent-heartbeat-{operation_log.operation}",
+        daemon=True,
+    )
+    worker.start()
+    try:
+        return await awaitable
+    finally:
+        stop.set()
+        worker.join(timeout=max(0.1, min(interval_seconds, 1.0)))
 
 
 @dataclass

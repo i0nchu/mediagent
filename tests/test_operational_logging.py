@@ -5,6 +5,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -228,6 +229,25 @@ class OperationalLoggingTests(unittest.TestCase):
         self.assertGreaterEqual(len(lines), 2)
         self.assertTrue(all("Still working;" in line for line in lines))
         self.assertTrue(all("elapsed." in line for line in lines))
+
+    def test_blocking_operation_still_emits_heartbeat(self) -> None:
+        output = io.StringIO()
+        operation_log = OperationLogger.create("migration", env={}, stream=output)
+
+        async def blocking_operation() -> str:
+            time.sleep(0.035)
+            return "complete"
+
+        result = asyncio.run(
+            await_with_heartbeat(
+                blocking_operation(),
+                operation_log,
+                interval_seconds=0.01,
+            )
+        )
+
+        self.assertEqual(result, "complete")
+        self.assertGreaterEqual(output.getvalue().count("Still working;"), 2)
 
     def test_recent_provider_progress_suppresses_redundant_heartbeat(self) -> None:
         output = io.StringIO()
