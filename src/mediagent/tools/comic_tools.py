@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from mediagent.core import db
+from mediagent.core import assets, db
 from mediagent.core.filesystem import PathSafetyError, ensure_inside, normalize_path, resolve_placeholders
 from mediagent.core.operational_logging import ProgressLogger
 from mediagent.core.storage import default_library_root
@@ -1066,6 +1066,7 @@ async def _sync_items(context: ToolContext, input_data: dict[str, Any], items: l
                 "dry_run": True,
                 "db_path": str(db_path),
                 "library_root": str(library_root),
+                "asset_ids": [],
                 "summary": {
                     "resolved_items": len(items),
                     "queued": len(candidates),
@@ -1132,7 +1133,15 @@ async def _sync_items(context: ToolContext, input_data: dict[str, Any], items: l
     }
     run_status = "success" if not (failed or partial or package_failed) else "partial"
     db.insert_run(db_path, run_type="tool", name="comic.sync", status=run_status, summary=summary, error=None, dry_run=False)
-    data = {"dry_run": False, "db_path": str(db_path), "library_root": str(library_root), "summary": summary, "items": item_results, "packages": packages}
+    data = {
+        "dry_run": False,
+        "db_path": str(db_path),
+        "library_root": str(library_root),
+        "asset_ids": assets.asset_ids_for_media_items(db_path, items),
+        "summary": summary,
+        "items": item_results,
+        "packages": packages,
+    }
     if run_status == "success":
         return ToolResult.success(data, artifacts=artifacts)
     return ToolResult.failure("comic_sync_partial", "Comic sync completed with incomplete downloads or packages.", data=data, category=ErrorCategory.NETWORK)

@@ -35,6 +35,8 @@ timeout, and maximum output tokens shown in `.env.example`.
 
 ```bash
 uv run mediagent add 'https://example.com/media-or-post'
+uv run mediagent add /path/to/media-file
+uv run mediagent add /path/to/media-directory
 uv run mediagent sync SOURCE
 uv run mediagent status
 uv run mediagent status SOURCE
@@ -43,6 +45,9 @@ uv run mediagent status SOURCE
 Commands read `.env` from the current directory; existing environment variables
 take precedence. Use `--dry-run` to preview supported operations and `--json`
 for complete machine-readable output.
+
+Local files are copied into the managed library. Directories are scanned
+recursively without following symbolic links; original files are left unchanged.
 
 ```bash
 uv run mediagent library remove --path /absolute/path/to/file --reason 'not wanted'

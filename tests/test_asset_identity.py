@@ -36,7 +36,10 @@ class AssetIdentityTests(unittest.TestCase):
             self.assertEqual(asset["representation_count"], 1)
             self.assertEqual(asset["metadata"]["title"], "Canonical title")
             self.assertEqual(asset["metadata"]["author_name"], "Artist")
-            self.assertEqual(asset["metadata"]["tags"], [])
+            self.assertEqual(
+                asset["metadata"]["tags"],
+                ["source:pixiv", "source:telegram", "type:image"],
+            )
 
     def test_comic_pages_and_archive_from_one_source_share_one_asset(self) -> None:
         with TemporaryDirectory() as temp_dir:
@@ -156,7 +159,7 @@ class AssetIdentityTests(unittest.TestCase):
                     connection.execute("SELECT COUNT(*) FROM asset_representations").fetchone()[0],
                 )
 
-            self.assertEqual(db.get_schema_version(db_path), "11")
+            self.assertEqual(db.get_schema_version(db_path), "12")
             self.assertTrue(migration["migrated"])
             self.assertEqual(migration["previous_schema_version"], "10")
             self.assertEqual(migration["asset_backfill"]["assets_created"], 1)
@@ -355,6 +358,28 @@ class AssetIdentityTests(unittest.TestCase):
             self.assertEqual(result["asset_backfill"]["sources_linked"], 1)
             self.assertEqual(asset["source_count"], 1)
             self.assertEqual(asset["representation_count"], 1)
+
+    def test_v11_metadata_migration_adds_baseline_source_and_type_tags(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            db_path = root / "mediagent.sqlite3"
+            source = root / "pixiv" / "tag-migration.jpg"
+            source.parent.mkdir(parents=True)
+            source.write_bytes(b"tag-migration")
+            adoption = self._adopt(db_path, source, platform="pixiv", remote_id="tag-migration")
+            with db.connect(db_path) as connection:
+                connection.execute(
+                    "UPDATE assets SET metadata_json = '{\"tags\": []}' WHERE id = ?",
+                    (adoption["asset_id"],),
+                )
+                connection.execute("UPDATE schema_meta SET value = '11' WHERE key = 'schema_version'")
+
+            migration = db.initialize_database(db_path)
+            asset = assets.load_asset(db_path, adoption["asset_id"])
+
+            self.assertTrue(migration["migrated"])
+            self.assertEqual(migration["previous_schema_version"], "11")
+            self.assertEqual(asset["metadata"]["tags"], ["source:pixiv", "type:image"])
 
     def _adopt(
         self,

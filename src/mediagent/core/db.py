@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 
-SCHEMA_VERSION = "11"
+SCHEMA_VERSION = "12"
 SQLITE_BUSY_TIMEOUT_MILLISECONDS = 30_000
 
 

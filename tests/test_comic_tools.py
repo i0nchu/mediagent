@@ -148,7 +148,9 @@ class ComicToolTests(unittest.TestCase):
             )
 
         self.assertTrue(first.is_success, first.to_dict())
+        self.assertEqual(len(first.data["asset_ids"]), 1)
         self.assertTrue(second.is_success, second.to_dict())
+        self.assertEqual(second.data["asset_ids"], first.data["asset_ids"])
         self.assertEqual(second.data["summary"]["queued"], 1)
         self.assertEqual(second.data["summary"]["downloaded"], 1)
         self.assertEqual(second.data["summary"]["cbz_packaged"], 1)

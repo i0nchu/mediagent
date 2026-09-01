@@ -10,7 +10,7 @@ from collections.abc import Callable
 from typing import Any
 from urllib.parse import urlparse
 
-from mediagent.core import db, library_content
+from mediagent.core import assets, db, library_content
 from mediagent.core.comics import IGNORED_COMIC_SPACER_HEALTH
 from mediagent.core.filesystem import PathSafetyError, ensure_inside, normalize_path, resolve_placeholders
 from mediagent.core.links import (
@@ -375,6 +375,7 @@ async def media_sync(context: ToolContext, input_data: dict[str, Any]) -> ToolRe
         data = {
             "db_path": str(db_path),
             "summary": summary,
+            "asset_ids": [],
             "links": resolutions,
             "planned_downloads": planned_downloads,
         }
@@ -434,6 +435,12 @@ async def media_sync(context: ToolContext, input_data: dict[str, Any]) -> ToolRe
     data = {
         "db_path": str(db_path),
         "summary": summary,
+        "asset_ids": _unique_strings(
+            [
+                *comic_route["asset_ids"],
+                *assets.asset_ids_for_media_items(db_path, resolved_items),
+            ]
+        ),
         "links": resolutions,
         "items": item_results,
         "packages": comic_route["packages"],
@@ -499,6 +506,7 @@ async def sync_dedicated_comic_links(
     planned_downloads: list[dict[str, Any]] = []
     artifacts: list[dict[str, Any]] = []
     warnings: list[str] = []
+    asset_ids: list[str] = []
     route_failed = False
 
     for link, provider in comic_links:
@@ -576,6 +584,7 @@ async def sync_dedicated_comic_links(
             summary["files_failed"] += int(item_result.get("files_failed", 0) or 0)
             summary["bytes_written"] += int(item_result.get("bytes_written", 0) or 0)
         packages.extend(result.data.get("packages", []) if isinstance(result.data, dict) else [])
+        asset_ids.extend(result.data.get("asset_ids", []) if isinstance(result.data, dict) else [])
         planned_downloads.extend(result.data.get("planned_downloads", []) if isinstance(result.data, dict) else [])
         artifacts.extend(result.artifacts)
         warnings.extend(result.warnings)
@@ -586,11 +595,16 @@ async def sync_dedicated_comic_links(
         "links": output_links,
         "items": item_results,
         "packages": packages,
+        "asset_ids": _unique_strings(asset_ids),
         "planned_downloads": planned_downloads,
         "artifacts": artifacts,
         "warnings": warnings,
         "failed": route_failed,
     }
+
+
+def _unique_strings(values: list[Any]) -> list[str]:
+    return list(dict.fromkeys(str(value) for value in values if str(value or "").strip()))
 
 
 def merge_comic_route_summary(summary: dict[str, Any], comic_summary: dict[str, Any]) -> None:

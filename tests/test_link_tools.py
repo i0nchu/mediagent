@@ -2166,6 +2166,8 @@ class LinkQueueAndSyncTests(unittest.TestCase):
 
         self.assertTrue(first.is_success)
         self.assertTrue(rerun.is_success)
+        self.assertEqual(len(first.data["asset_ids"]), 1)
+        self.assertEqual(rerun.data["asset_ids"], first.data["asset_ids"])
         self.assertEqual(rerun.data["summary"]["queued"], 0)
         self.assertEqual(rerun.data["summary"]["skipped_items"], 1)
         self.assertEqual(rerun.data["summary"]["files_downloaded"], 0)
@@ -2209,6 +2211,7 @@ class LinkQueueAndSyncTests(unittest.TestCase):
         self.assertTrue(result.is_success, result.to_dict())
         self.assertEqual(result.data["summary"]["files_downloaded"], 2)
         self.assertEqual(result.data["summary"]["files_deduplicated"], 1)
+        self.assertEqual(len(result.data["asset_ids"]), 1)
         self.assertEqual(len(records), 2)
         self.assertEqual(len({record["library_entry_id"] for record in records}), 1)
         self.assertEqual(len({record["local_path"] for record in records}), 1)

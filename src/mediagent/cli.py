@@ -97,8 +97,8 @@ def build_parser() -> argparse.ArgumentParser:
     initialize.add_argument("--json", action="store_true", help="Emit complete machine-readable JSON.")
     initialize.set_defaults(handler=handle_init)
 
-    add = subcommands.add_parser("add", help="Download one explicit media or post URL.")
-    add.add_argument("url", help="Explicit URL to resolve and download.")
+    add = subcommands.add_parser("add", help="Add a URL, local media file, or directory.")
+    add.add_argument("input", help="URL, local media file, or directory to add.")
     add.add_argument("--overwrite", action="store_true", help="Replace an existing target file.")
     add.add_argument(
         "--repair",
@@ -316,9 +316,18 @@ def handle_init(args: argparse.Namespace) -> int:
 
 
 def handle_add(args: argparse.Namespace) -> int:
-    comic_link = _is_comic_link(args.url)
+    if not _is_http_url(args.input):
+        return run_tool_command(
+            tool="media.local.import",
+            input_data={"path": args.input},
+            json_output=args.json,
+            summary_json=False,
+            dry_run=args.dry_run,
+            compact_human=True,
+        )
+    comic_link = _is_comic_link(args.input)
     input_data: dict[str, Any] = {
-        "url": args.url,
+        "url": args.input,
         "overwrite": args.overwrite,
         "retry_failed": args.repair,
         "repair_missing_files": args.repair,
@@ -548,6 +557,12 @@ def _is_comic_link(url: str) -> bool:
     from mediagent.tools.comic_tools import comic_link_provider
 
     return comic_link_provider(url) is not None
+
+
+def _is_http_url(value: str) -> bool:
+    from urllib.parse import urlsplit
+
+    return urlsplit(value).scheme.lower() in {"http", "https"}
 
 
 def handle_agent_skills_list(args: argparse.Namespace) -> int:
@@ -1023,6 +1038,12 @@ def _compact_metric_line(data: dict[str, Any]) -> str | None:
     if not isinstance(summary, dict):
         return None
     preferred = (
+        "imported",
+        "adopted",
+        "existing",
+        "repaired",
+        "blocked",
+        "unsupported",
         "downloaded",
         "queued",
         "skipped",

@@ -108,6 +108,19 @@ class CliTests(unittest.TestCase):
         )
         self.assertTrue(run_tool.call_args.kwargs["compact_human"])
 
+    def test_short_add_routes_local_input_to_copy_only_import(self) -> None:
+        with (
+            patch.dict(os.environ, {"MEDIAGENT_ENV_FILE": ""}),
+            patch("mediagent.cli.run_tool_command", return_value=0) as run_tool,
+        ):
+            result = cli.run(["add", "./incoming", "--dry-run"])
+
+        self.assertEqual(result, 0)
+        self.assertEqual(run_tool.call_args.kwargs["tool"], "media.local.import")
+        self.assertEqual(run_tool.call_args.kwargs["input_data"], {"path": "./incoming"})
+        self.assertTrue(run_tool.call_args.kwargs["dry_run"])
+        self.assertTrue(run_tool.call_args.kwargs["compact_human"])
+
     def test_short_source_sync_applies_provider_defaults(self) -> None:
         with (
             patch.dict(os.environ, {"MEDIAGENT_ENV_FILE": ""}),

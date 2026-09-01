@@ -305,6 +305,95 @@ def attach_media_file(db_path: Path, *, file_id: int) -> dict[str, Any]:
         return get_asset(connection, asset_id)
 
 
+def attach_media_item(
+    db_path: Path,
+    *,
+    media_item_id: int,
+    asset_id: str,
+) -> dict[str, Any]:
+    """Attach source-only provenance to an existing exact-content Asset."""
+
+    from mediagent.core import db
+
+    now = datetime.now(UTC).isoformat()
+    with db.connect(db_path) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        requested_asset_id = resolve_asset_id(connection, asset_id)
+        if requested_asset_id is None:
+            raise ValueError(f"Unknown Asset: {asset_id}")
+        existing = connection.execute(
+            "SELECT asset_id FROM asset_sources WHERE media_item_id = ?",
+            (media_item_id,),
+        ).fetchone()
+        candidates = {requested_asset_id}
+        if existing is not None:
+            current = resolve_asset_id(connection, str(existing["asset_id"]))
+            if current is not None:
+                candidates.add(current)
+        canonical_id = _select_canonical_asset(connection, candidates)
+        for candidate in sorted(candidates - {canonical_id}):
+            _merge_assets(connection, canonical_id=canonical_id, merged_id=candidate, now=now)
+        connection.execute(
+            """
+            INSERT INTO asset_sources (
+                asset_id, media_item_id, source_role, first_seen_at, last_seen_at
+            ) VALUES (?, ?, 'source', ?, ?)
+            ON CONFLICT(media_item_id) DO UPDATE SET
+                asset_id = excluded.asset_id,
+                last_seen_at = excluded.last_seen_at
+            """,
+            (canonical_id, media_item_id, now, now),
+        )
+        _refresh_asset(connection, asset_id=canonical_id, now=now)
+        return get_asset(connection, canonical_id)
+
+
+def asset_ids_for_media_items(
+    db_path: Path,
+    items: list[dict[str, Any]],
+) -> list[str]:
+    """Return canonical Asset IDs for source items in input order."""
+
+    if not items or not db_path.exists():
+        return []
+    identities = [
+        (str(item.get("platform") or ""), str(item.get("remote_id") or ""))
+        for item in items
+    ]
+    identities = [identity for identity in identities if all(identity)]
+    if not identities:
+        return []
+    found: dict[tuple[str, str], str] = {}
+    from mediagent.core import db
+
+    with db.connect(db_path) as connection:
+        for offset in range(0, len(identities), 400):
+            batch = identities[offset : offset + 400]
+            placeholders = ",".join("(?, ?)" for _ in batch)
+            parameters = [value for identity in batch for value in identity]
+            rows = connection.execute(
+                f"""
+                SELECT mi.platform, mi.remote_id, source.asset_id
+                FROM media_items mi
+                JOIN asset_sources source ON source.media_item_id = mi.id
+                WHERE (mi.platform, mi.remote_id) IN ({placeholders})
+                """,
+                parameters,
+            ).fetchall()
+            for row in rows:
+                canonical = resolve_asset_id(connection, str(row["asset_id"]))
+                if canonical is not None:
+                    found[(str(row["platform"]), str(row["remote_id"]))] = canonical
+    output: list[str] = []
+    seen: set[str] = set()
+    for identity in identities:
+        asset_id = found.get(identity)
+        if asset_id is not None and asset_id not in seen:
+            output.append(asset_id)
+            seen.add(asset_id)
+    return output
+
+
 def resolve_asset_id(connection: sqlite3.Connection, asset_id: str) -> str | None:
     """Resolve an Asset alias to its canonical current identifier."""
 
@@ -526,7 +615,12 @@ def _refresh_asset(connection: sqlite3.Connection, *, asset_id: str, now: str) -
     media_type = _asset_media_type(source_rows, representation_rows)
     current = connection.execute("SELECT metadata_json FROM assets WHERE id = ?", (asset_id,)).fetchone()
     metadata = _metadata(current["metadata_json"] if current else None)
-    metadata.setdefault("tags", [])
+    tags = [
+        value
+        for value in metadata.get("tags", [])
+        if isinstance(value, str) and not value.startswith(("source:", "type:"))
+    ]
+    source_tags: list[str] = []
     for source in source_rows:
         source_metadata = _metadata(source["metadata_json"])
         title = _source_title(source_metadata)
@@ -535,6 +629,11 @@ def _refresh_asset(connection: sqlite3.Connection, *, asset_id: str, now: str) -
         author_name = str(source["author_name"] or "").strip()
         if author_name and not metadata.get("author_name"):
             metadata["author_name"] = author_name
+        source_tag = _baseline_tag("source", str(source["platform"] or ""))
+        if source_tag and source_tag not in source_tags:
+            source_tags.append(source_tag)
+    type_tag = _baseline_tag("type", media_type)
+    metadata["tags"] = [*tags, *source_tags, *([type_tag] if type_tag else [])]
     connection.execute(
         """
         UPDATE assets
@@ -603,3 +702,9 @@ def _source_title(metadata: dict[str, Any]) -> str | None:
             if isinstance(title, str) and title.strip():
                 return title.strip()
     return None
+
+
+def _baseline_tag(namespace: str, value: str) -> str | None:
+    normalized = "-".join(value.strip().lower().split())
+    normalized = "".join(character for character in normalized if character.isalnum() or character in "._-")
+    return f"{namespace}:{normalized}" if normalized else None
