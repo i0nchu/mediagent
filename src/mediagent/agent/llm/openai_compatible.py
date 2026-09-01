@@ -74,14 +74,17 @@ class OpenAICompatibleClient:
     def _post_json(self, endpoint: str, payload: dict[str, Any]) -> dict[str, Any]:
         url = self.base_url + endpoint
         headers = {"Content-Type": "application/json", "Accept": "application/json"}
-        if self.api_key:
-            headers["Authorization"] = f"Bearer {self.api_key}"
         req = request.Request(
             url,
             data=json.dumps(payload).encode("utf-8"),
             headers=headers,
             method="POST",
         )
+        if self.api_key:
+            # urllib copies ordinary headers while following redirects.  Keep
+            # credentials on the original request only so a redirected
+            # endpoint can never receive the configured API key.
+            req.add_unredirected_header("Authorization", f"Bearer {self.api_key}")
         try:
             with request.urlopen(req, timeout=self.timeout) as response:
                 raw = response.read(_MAX_RESPONSE_BYTES + 1)

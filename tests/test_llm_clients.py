@@ -6,7 +6,7 @@ import socket
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from urllib import error
+from urllib import error, request
 from unittest.mock import patch
 
 from mediagent import cli
@@ -203,6 +203,31 @@ class LLMClientTests(unittest.TestCase):
                 client.generate("prompt")
 
         self.assertNotIn("super-secret", str(raised.exception))
+
+    def test_api_key_is_not_forwarded_to_redirected_endpoint(self) -> None:
+        client = OpenAICompatibleClient(
+            base_url="http://127.0.0.1:11435/v1",
+            model="qwen3-8b",
+            api_key="super-secret",
+        )
+        with patch(
+            "mediagent.agent.llm.openai_compatible.request.urlopen",
+            return_value=FakeResponse({"choices": [{"message": {"content": "result"}}]}),
+        ) as urlopen:
+            client.generate("prompt")
+
+        original = urlopen.call_args.args[0]
+        redirected = request.HTTPRedirectHandler().redirect_request(
+            original,
+            None,
+            302,
+            "Found",
+            {},
+            "https://different.example/v1/chat/completions",
+        )
+        self.assertEqual(original.get_header("Authorization"), "Bearer super-secret")
+        self.assertIsNotNone(redirected)
+        self.assertIsNone(redirected.get_header("Authorization"))
 
     def test_timeout_has_bounded_actionable_error(self) -> None:
         client = OpenAICompatibleClient(
