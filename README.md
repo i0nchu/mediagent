@@ -26,6 +26,11 @@ uv run mediagent init
 uv run mediagent status
 ```
 
+Agent Core defaults to Ollama. To use an OpenAI-compatible local service such
+as llama.cpp, set `MEDIAGENT_LLM_PROVIDER=openai_compatible` and configure
+`MEDIAGENT_OPENAI_BASE_URL`, `MEDIAGENT_OPENAI_MODEL`, and the optional API key,
+timeout, and maximum output tokens shown in `.env.example`.
+
 ## Media operations
 
 ```bash

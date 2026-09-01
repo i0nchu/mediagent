@@ -11,7 +11,8 @@ from pathlib import Path
 from typing import Any
 
 from mediagent.agent import AgentRunner
-from mediagent.agent.llm import OllamaClient
+from mediagent.agent.core import LLMClient
+from mediagent.agent.llm import OllamaClient, OpenAICompatibleClient
 from mediagent.agent.skills import default_skill_registry
 from mediagent.core.config import EnvFileError, load_env_file
 from mediagent.core.tooling import ErrorCategory, ToolContext, ToolRegistryError
@@ -30,7 +31,7 @@ VALIDATION_ERROR_CATEGORIES = {
     ErrorCategory.DATABASE.value,
 }
 
-SIMPLE_COMMANDS = {"init", "add", "sync", "status"}
+SIMPLE_COMMANDS = {"init", "add", "sync", "status", "agent"}
 SOURCE_SYNC_TOOLS = {
     "pixiv": "pixiv.bookmarks.sync",
     "telegram": "telegram.inbox.sync_links",
@@ -714,18 +715,26 @@ def _load_simple_command_env() -> None:
     load_env_file(env_path.resolve())
 
 
-def build_llm_client() -> OllamaClient:
+def build_llm_client() -> LLMClient:
     import os
 
     provider = os.environ.get("MEDIAGENT_LLM_PROVIDER", "ollama").strip().lower()
-    if provider != "ollama":
-        raise ValueError(f"Unsupported LLM provider: {provider}")
-    return OllamaClient(
-        base_url=os.environ.get("MEDIAGENT_OLLAMA_BASE_URL", "http://127.0.0.1:11434"),
-        model=os.environ.get("MEDIAGENT_OLLAMA_MODEL", "qwen3:8b"),
-        timeout=float(os.environ.get("MEDIAGENT_OLLAMA_TIMEOUT_SECONDS", "60")),
-        num_predict=int(os.environ.get("MEDIAGENT_OLLAMA_NUM_PREDICT", "512")),
-    )
+    if provider == "ollama":
+        return OllamaClient(
+            base_url=os.environ.get("MEDIAGENT_OLLAMA_BASE_URL", "http://127.0.0.1:11434"),
+            model=os.environ.get("MEDIAGENT_OLLAMA_MODEL", "qwen3:8b"),
+            timeout=float(os.environ.get("MEDIAGENT_OLLAMA_TIMEOUT_SECONDS", "60")),
+            num_predict=int(os.environ.get("MEDIAGENT_OLLAMA_NUM_PREDICT", "512")),
+        )
+    if provider == "openai_compatible":
+        return OpenAICompatibleClient(
+            base_url=os.environ.get("MEDIAGENT_OPENAI_BASE_URL", "http://127.0.0.1:11435/v1"),
+            model=os.environ.get("MEDIAGENT_OPENAI_MODEL", "qwen3-8b"),
+            api_key=os.environ.get("MEDIAGENT_OPENAI_API_KEY", ""),
+            timeout=float(os.environ.get("MEDIAGENT_OPENAI_TIMEOUT_SECONDS", "60")),
+            max_tokens=int(os.environ.get("MEDIAGENT_OPENAI_MAX_TOKENS", "512")),
+        )
+    raise ValueError(f"Unsupported LLM provider: {provider}")
 
 
 def handle_experimental_telegram_sync_links(args: argparse.Namespace) -> int:
