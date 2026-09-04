@@ -1108,6 +1108,15 @@ async def _sync_items(context: ToolContext, input_data: dict[str, Any], items: l
         if plan["status"] == "ready":
             try:
                 package = _apply_comic_package(db_path=db_path, item=item, plan=plan, library_root=library_root)
+                if package.get("suppressed"):
+                    packages.append(
+                        {
+                            **_public_package_plan(plan),
+                            "status": "skipped",
+                            "reason": package["reason"],
+                        }
+                    )
+                    continue
                 packages.append({**_public_package_plan(plan), "status": "packaged", **package})
                 artifacts.append({"type": "file", "path": package["target_path"]})
             except Exception as exc:
@@ -1115,6 +1124,7 @@ async def _sync_items(context: ToolContext, input_data: dict[str, Any], items: l
         else:
             packages.append(_public_package_plan(plan))
     downloaded = sum(result["status"] == "downloaded" for result in item_results)
+    skipped_items = sum(result["status"] == "skipped" for result in item_results)
     failed = sum(result["status"] == "failed" for result in item_results)
     partial = sum(result["status"] == "partial" for result in item_results)
     files_skipped = sum(int(result.get("files_skipped", 0)) for result in item_results)
@@ -1123,6 +1133,7 @@ async def _sync_items(context: ToolContext, input_data: dict[str, Any], items: l
         "resolved_items": len(items),
         "queued": len(candidates),
         "downloaded": downloaded,
+        "skipped": skipped_items,
         "partial": partial,
         "failed": failed,
         "files_skipped": files_skipped,

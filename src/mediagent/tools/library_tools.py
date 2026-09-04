@@ -74,8 +74,18 @@ async def library_file_verify(context: ToolContext, input_data: dict[str, Any]) 
         status=input_data.get("status", "downloaded"),
         limit=input_data.get("limit"),
     )
-    removed_records = [record for record in records if record.get("library_state") == "removed"]
-    records = [record for record in records if record.get("library_state") != "removed"]
+    removed_records = [
+        record
+        for record in records
+        if record.get("library_state") == "removed" or record.get("file_health") == "removed"
+    ]
+    purged_records = [
+        record
+        for record in records
+        if record.get("library_state") == "purged" or record.get("file_health") == "purged"
+    ]
+    inactive_ids = {int(record["id"]) for record in [*removed_records, *purged_records]}
+    records = [record for record in records if int(record["id"]) not in inactive_ids]
     summary = {value: 0 for value in sorted(FILE_HEALTH_VALUES)}
     checked = []
     for record in records:
@@ -102,7 +112,13 @@ async def library_file_verify(context: ToolContext, input_data: dict[str, Any]) 
         {
             "db_path": str(db_path),
             "library_root": str(library_root),
-            "summary": {"checked": len(records), "removed_skipped": len(removed_records), **summary},
+            "summary": {
+                "checked": len(records),
+                "inactive_skipped": len(inactive_ids),
+                "removed_skipped": len(removed_records),
+                "purged_skipped": len(purged_records),
+                **summary,
+            },
             "files": checked,
             "dry_run": context.dry_run,
         }

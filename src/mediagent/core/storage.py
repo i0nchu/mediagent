@@ -17,7 +17,7 @@ LAYOUT_SCANNER_FRIENDLY_V1 = "scanner-friendly-v1"
 LAYOUT_SCANNER_FRIENDLY_V2 = "scanner-friendly-v2"
 SUPPORTED_MEDIA_TYPES = {"photo", "video", "audio"}
 SUPPORTED_STORAGE_CATEGORIES = SUPPORTED_MEDIA_TYPES | {"comic", "comic-pages"}
-FILE_HEALTH_VALUES = {"valid", "missing", "corrupt", "unknown"}
+FILE_HEALTH_VALUES = {"valid", "missing", "corrupt", "unknown", "removed", "purged"}
 SOURCE_AVAILABILITY_VALUES = {"available", "deleted", "restricted", "unavailable", "unknown"}
 PART_PREFIX_BY_MEDIA_TYPE = {
     "photo": "p",

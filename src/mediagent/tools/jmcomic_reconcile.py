@@ -450,7 +450,8 @@ def apply_manifest(*, db_path: Path, library_root: Path, manifest: dict[str, Any
             continue
         applied += 1
         quarantined += int(bool(package.get("quarantine_path")))
-        results.append({"remote_id": action["remote_id"], "status": "rebuilt", **package})
+        status = "skipped" if package.get("suppressed") else "rebuilt"
+        results.append({"remote_id": action["remote_id"], "status": status, **package})
 
     manifest["applied_at"] = datetime.now(UTC).isoformat()
     manifest["apply_results"] = results
@@ -492,7 +493,7 @@ def _apply_rebuild_action(*, db_path: Path, library_root: Path, action: dict[str
             allowed_root=library_root,
         )
         built_new = True
-        _commit_rebuilt_archive(db_path=db_path, action=action, package=package)
+        adoption = _commit_rebuilt_archive(db_path=db_path, action=action, package=package)
     except Exception:
         if built_new and target_path.exists():
             target_path.unlink()
@@ -501,15 +502,21 @@ def _apply_rebuild_action(*, db_path: Path, library_root: Path, action: dict[str
             os.replace(quarantine_path, current_path)
         raise
     return {
-        "target_path": package["target_path"],
+        "target_path": None if adoption.get("suppressed") else package["target_path"],
         "page_count": package["pages"],
         "size_bytes": package["size_bytes"],
         "checksum": package["checksum"],
         "quarantine_path": str(quarantine_path) if moved_old and quarantine_path else None,
+        "suppressed": bool(adoption.get("suppressed")),
     }
 
 
-def _commit_rebuilt_archive(*, db_path: Path, action: dict[str, Any], package: dict[str, Any]) -> None:
+def _commit_rebuilt_archive(
+    *,
+    db_path: Path,
+    action: dict[str, Any],
+    package: dict[str, Any],
+) -> dict[str, Any]:
     now = datetime.now(UTC).isoformat()
     item_id = int(action["item"]["id"])
     archive_record = action.get("archive_record")
@@ -573,4 +580,4 @@ def _commit_rebuilt_archive(*, db_path: Path, action: dict[str, Any], package: d
                 ),
             )
             file_id = int(cursor.lastrowid)
-    library_content.adopt_media_file(db_path, file_id=file_id)
+    return library_content.adopt_media_file(db_path, file_id=file_id)

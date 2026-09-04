@@ -24,6 +24,9 @@ def ensure_schema(connection: sqlite3.Connection) -> None:
             metadata_json TEXT NOT NULL DEFAULT '{"tags": []}',
             primary_library_entry_id TEXT,
             merged_into_asset_id TEXT,
+            removed_at TEXT,
+            purged_at TEXT,
+            purge_reason TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
             FOREIGN KEY(primary_library_entry_id) REFERENCES library_entries(id),
@@ -64,8 +67,31 @@ def ensure_schema(connection: sqlite3.Connection) -> None:
 
         CREATE INDEX IF NOT EXISTS idx_asset_representations_asset
         ON asset_representations(asset_id);
+
+        CREATE TABLE IF NOT EXISTS asset_operations (
+            id TEXT PRIMARY KEY,
+            asset_id TEXT NOT NULL,
+            operation_type TEXT NOT NULL,
+            state TEXT NOT NULL,
+            reason TEXT,
+            metadata_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL,
+            completed_at TEXT,
+            FOREIGN KEY(asset_id) REFERENCES assets(id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_asset_operations_asset
+        ON asset_operations(asset_id, created_at);
         """
     )
+    columns = {row["name"] for row in connection.execute("PRAGMA table_info(assets)")}
+    for column, definition in (
+        ("removed_at", "TEXT"),
+        ("purged_at", "TEXT"),
+        ("purge_reason", "TEXT"),
+    ):
+        if column not in columns:
+            connection.execute(f"ALTER TABLE assets ADD COLUMN {column} {definition}")
 
 
 def backfill(connection: sqlite3.Connection) -> dict[str, int]:
@@ -84,6 +110,7 @@ def backfill(connection: sqlite3.Connection) -> dict[str, int]:
         JOIN media_items mi ON mi.id = mf.media_item_id
         JOIN library_entries le ON le.id = mf.library_entry_id
         WHERE mf.library_entry_id IS NOT NULL
+          AND mf.status != 'skipped'
         ORDER BY mi.id, mf.library_entry_id
         """
     ).fetchall()
@@ -101,6 +128,7 @@ def needs_backfill(connection: sqlite3.Connection) -> bool:
         LEFT JOIN asset_representations representation
                ON representation.library_entry_id = mf.library_entry_id
         WHERE mf.library_entry_id IS NOT NULL
+          AND mf.status != 'skipped'
           AND (
               source.asset_id IS NULL
               OR representation.asset_id IS NULL
@@ -251,20 +279,42 @@ def attach_media_file(db_path: Path, *, file_id: int) -> dict[str, Any]:
 
         candidate_rows = connection.execute(
             """
-            SELECT asset_id FROM asset_sources WHERE media_item_id = ?
+            SELECT asset_id, 'source' AS relationship
+            FROM asset_sources WHERE media_item_id = ?
             UNION
-            SELECT asset_id FROM asset_representations WHERE library_entry_id = ?
+            SELECT asset_id, 'representation' AS relationship
+            FROM asset_representations WHERE library_entry_id = ?
             """,
             (row["media_item_id"], row["library_entry_id"]),
         ).fetchall()
-        candidates = {
-            resolved
-            for candidate in candidate_rows
-            if (resolved := resolve_asset_id(connection, str(candidate["asset_id"]))) is not None
+        if str(row["library_state"]) != "active":
+            raise ValueError("Only an active library representation can be attached to an active Asset.")
+        candidates_by_relationship: dict[str, set[str]] = defaultdict(set)
+        for candidate in candidate_rows:
+            resolved = resolve_asset_id(connection, str(candidate["asset_id"]))
+            if resolved is not None:
+                candidates_by_relationship[str(candidate["relationship"])].add(resolved)
+        representation_candidates = candidates_by_relationship["representation"]
+        for candidate in representation_candidates:
+            state = connection.execute(
+                "SELECT state FROM assets WHERE id = ?", (candidate,)
+            ).fetchone()
+            if state is None or str(state["state"]) != "active":
+                raise ValueError("An inactive Asset cannot acquire an active representation.")
+        candidates = candidates_by_relationship["source"] | representation_candidates
+        active_candidates = {
+            candidate
+            for candidate in candidates
+            if str(
+                connection.execute(
+                    "SELECT state FROM assets WHERE id = ?", (candidate,)
+                ).fetchone()["state"]
+            )
+            == "active"
         }
-        if candidates:
-            asset_id = _select_canonical_asset(connection, candidates)
-            for candidate in sorted(candidates - {asset_id}):
+        if active_candidates:
+            asset_id = _select_canonical_asset(connection, active_candidates)
+            for candidate in sorted(active_candidates - {asset_id}):
                 _merge_assets(connection, canonical_id=asset_id, merged_id=candidate, now=now)
         else:
             asset_id = _new_asset(connection, now=now)
@@ -321,15 +371,46 @@ def attach_media_item(
         requested_asset_id = resolve_asset_id(connection, asset_id)
         if requested_asset_id is None:
             raise ValueError(f"Unknown Asset: {asset_id}")
+        requested = connection.execute(
+            "SELECT state FROM assets WHERE id = ?", (requested_asset_id,)
+        ).fetchone()
+        if requested is None:
+            raise ValueError(f"Unknown Asset: {asset_id}")
         existing = connection.execute(
             "SELECT asset_id FROM asset_sources WHERE media_item_id = ?",
             (media_item_id,),
         ).fetchone()
+        requested_state = str(requested["state"])
+        if requested_state in {"removed", "purged"}:
+            if existing is None:
+                connection.execute(
+                    """
+                    INSERT INTO asset_sources (
+                        asset_id, media_item_id, source_role, first_seen_at, last_seen_at
+                    ) VALUES (?, ?, 'source', ?, ?)
+                    """,
+                    (requested_asset_id, media_item_id, now, now),
+                )
+            else:
+                current = resolve_asset_id(connection, str(existing["asset_id"]))
+                if current == requested_asset_id:
+                    connection.execute(
+                        "UPDATE asset_sources SET last_seen_at = ? WHERE media_item_id = ?",
+                        (now, media_item_id),
+                    )
+            return get_asset(connection, requested_asset_id)
+        if requested_state != "active":
+            raise ValueError("A merged Asset cannot accept source provenance.")
+
         candidates = {requested_asset_id}
         if existing is not None:
             current = resolve_asset_id(connection, str(existing["asset_id"]))
             if current is not None:
-                candidates.add(current)
+                current_state = connection.execute(
+                    "SELECT state FROM assets WHERE id = ?", (current,)
+                ).fetchone()
+                if current_state is not None and str(current_state["state"]) == "active":
+                    candidates.add(current)
         canonical_id = _select_canonical_asset(connection, candidates)
         for candidate in sorted(candidates - {canonical_id}):
             _merge_assets(connection, canonical_id=canonical_id, merged_id=candidate, now=now)
@@ -346,6 +427,176 @@ def attach_media_item(
         )
         _refresh_asset(connection, asset_id=canonical_id, now=now)
         return get_asset(connection, canonical_id)
+
+
+def attach_media_item_to_inactive_asset(
+    db_path: Path,
+    *,
+    media_item_id: int,
+    asset_id: str,
+) -> dict[str, Any]:
+    """Record inactive provenance without merging or reviving an Asset.
+
+    A multi-file source may already own an active Asset for another file.  In
+    that case the source remains attached to the active Asset while the
+    content-level tombstone remains independently purged.  A tombstoned
+    representation can also belong to an otherwise-active Asset; that case is
+    deliberately a no-op for source ownership.
+    """
+
+    from mediagent.core import db
+
+    now = datetime.now(UTC).isoformat()
+    with db.connect(db_path) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        requested_asset_id = resolve_asset_id(connection, asset_id)
+        if requested_asset_id is None:
+            raise ValueError(f"Unknown Asset: {asset_id}")
+        requested = connection.execute(
+            "SELECT state FROM assets WHERE id = ?",
+            (requested_asset_id,),
+        ).fetchone()
+        if requested is None:
+            raise ValueError(f"Unknown Asset: {asset_id}")
+        requested_state = str(requested["state"])
+        if requested_state == "active":
+            return get_asset(connection, requested_asset_id)
+        if requested_state not in {"removed", "purged"}:
+            raise ValueError("Suppressed provenance requires a managed Asset.")
+        existing = connection.execute(
+            "SELECT asset_id FROM asset_sources WHERE media_item_id = ?",
+            (media_item_id,),
+        ).fetchone()
+        if existing is None:
+            connection.execute(
+                """
+                INSERT INTO asset_sources (
+                    asset_id, media_item_id, source_role, first_seen_at, last_seen_at
+                ) VALUES (?, ?, 'source', ?, ?)
+                """,
+                (requested_asset_id, media_item_id, now, now),
+            )
+        else:
+            current_id = resolve_asset_id(connection, str(existing["asset_id"]))
+            if current_id == requested_asset_id:
+                connection.execute(
+                    "UPDATE asset_sources SET last_seen_at = ? WHERE media_item_id = ?",
+                    (now, media_item_id),
+                )
+        return get_asset(connection, requested_asset_id)
+
+
+def attach_inactive_media_file(db_path: Path, *, file_id: int) -> dict[str, Any]:
+    """Attach a removed or purged representation without reviving an Asset.
+
+    Legacy trash reconciliation needs to establish Asset relationships for
+    bytes that are already outside the active library.  Keeping this path
+    separate from ``attach_media_file`` prevents inactive and active Assets
+    from being merged merely because one source item has multiple files.
+    """
+
+    from mediagent.core import db
+
+    now = datetime.now(UTC).isoformat()
+    with db.connect(db_path) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        row = connection.execute(
+            """
+            SELECT mf.id, mf.media_item_id, mf.library_entry_id,
+                   le.presentation_key, le.state AS library_state
+            FROM media_files mf
+            LEFT JOIN library_entries le ON le.id = mf.library_entry_id
+            WHERE mf.id = ?
+            """,
+            (file_id,),
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"Unknown media file: {file_id}")
+        if row["library_entry_id"] is None:
+            raise ValueError("Media file must reference an inactive library entry.")
+        library_state = str(row["library_state"])
+        if library_state not in {"removed", "purged"}:
+            raise ValueError("Inactive attachment requires a removed or purged library entry.")
+
+        representation = connection.execute(
+            "SELECT asset_id FROM asset_representations WHERE library_entry_id = ?",
+            (row["library_entry_id"],),
+        ).fetchone()
+        asset_id: str | None = None
+        if representation is not None:
+            asset_id = resolve_asset_id(connection, str(representation["asset_id"]))
+            asset_state = connection.execute(
+                "SELECT state FROM assets WHERE id = ?",
+                (asset_id,),
+            ).fetchone()
+            if asset_state is None or (
+                str(asset_state["state"]) == "purged" and library_state != "purged"
+            ):
+                raise ValueError("Inactive library representation has an inconsistent Asset state.")
+        else:
+            source = connection.execute(
+                "SELECT asset_id FROM asset_sources WHERE media_item_id = ?",
+                (row["media_item_id"],),
+            ).fetchone()
+            if source is not None:
+                source_id = resolve_asset_id(connection, str(source["asset_id"]))
+                source_state = connection.execute(
+                    "SELECT state FROM assets WHERE id = ?",
+                    (source_id,),
+                ).fetchone()
+                if source_state is not None:
+                    source_state_value = str(source_state["state"])
+                    if source_state_value == "active" or source_state_value == library_state:
+                        asset_id = source_id
+                    elif source_state_value == "removed" and library_state == "purged":
+                        asset_id = source_id
+            if asset_id is None:
+                asset_id = _new_asset(connection, now=now)
+
+        connection.execute(
+            """
+            INSERT INTO asset_representations (
+                asset_id, library_entry_id, representation_role,
+                active, first_seen_at, last_seen_at
+            ) VALUES (?, ?, ?, 0, ?, ?)
+            ON CONFLICT(library_entry_id) DO UPDATE SET
+                asset_id = excluded.asset_id,
+                representation_role = excluded.representation_role,
+                active = 0,
+                last_seen_at = excluded.last_seen_at
+            """,
+            (
+                asset_id,
+                row["library_entry_id"],
+                representation_role(str(row["presentation_key"])),
+                now,
+                now,
+            ),
+        )
+
+        existing_source = connection.execute(
+            "SELECT asset_id FROM asset_sources WHERE media_item_id = ?",
+            (row["media_item_id"],),
+        ).fetchone()
+        if existing_source is None:
+            connection.execute(
+                """
+                INSERT INTO asset_sources (
+                    asset_id, media_item_id, source_role, first_seen_at, last_seen_at
+                ) VALUES (?, ?, 'source', ?, ?)
+                """,
+                (asset_id, row["media_item_id"], now, now),
+            )
+        else:
+            existing_source_id = resolve_asset_id(connection, str(existing_source["asset_id"]))
+            if existing_source_id == asset_id:
+                connection.execute(
+                    "UPDATE asset_sources SET last_seen_at = ? WHERE media_item_id = ?",
+                    (now, row["media_item_id"]),
+                )
+
+        _refresh_asset(connection, asset_id=asset_id, now=now)
+        return get_asset(connection, asset_id)
 
 
 def asset_ids_for_media_items(
@@ -394,6 +645,46 @@ def asset_ids_for_media_items(
     return output
 
 
+def purged_assets_for_media_items(
+    db_path: Path,
+    items: list[dict[str, Any]],
+) -> dict[tuple[str, str], str]:
+    """Return source identities already owned by permanently purged Assets."""
+
+    if not items or not db_path.exists():
+        return {}
+    identities = {
+        (str(item.get("platform") or ""), str(item.get("remote_id") or ""))
+        for item in items
+        if item.get("platform") and item.get("remote_id")
+    }
+    if not identities:
+        return {}
+    from mediagent.core import db
+
+    found: dict[tuple[str, str], str] = {}
+    with db.connect(db_path) as connection:
+        ordered = sorted(identities)
+        for offset in range(0, len(ordered), 400):
+            batch = ordered[offset : offset + 400]
+            placeholders = ",".join("(?, ?)" for _ in batch)
+            parameters = [value for identity in batch for value in identity]
+            rows = connection.execute(
+                f"""
+                SELECT mi.platform, mi.remote_id, source.asset_id
+                FROM media_items mi
+                JOIN asset_sources source ON source.media_item_id = mi.id
+                JOIN assets a ON a.id = source.asset_id
+                WHERE a.state = 'purged'
+                  AND (mi.platform, mi.remote_id) IN ({placeholders})
+                """,
+                parameters,
+            ).fetchall()
+            for row in rows:
+                found[(str(row["platform"]), str(row["remote_id"]))] = str(row["asset_id"])
+    return found
+
+
 def resolve_asset_id(connection: sqlite3.Connection, asset_id: str) -> str | None:
     """Resolve an Asset alias to its canonical current identifier."""
 
@@ -420,7 +711,8 @@ def get_asset(connection: sqlite3.Connection, asset_id: str) -> dict[str, Any]:
     row = connection.execute(
         """
         SELECT id, media_type, state, metadata_json, primary_library_entry_id,
-               merged_into_asset_id, created_at, updated_at
+               merged_into_asset_id, removed_at, purged_at, purge_reason,
+               created_at, updated_at
         FROM assets WHERE id = ?
         """,
         (canonical_id,),
@@ -561,6 +853,10 @@ def _merge_assets(
         "UPDATE asset_representations SET asset_id = ? WHERE asset_id = ?",
         (canonical_id, merged_id),
     )
+    connection.execute(
+        "UPDATE asset_operations SET asset_id = ? WHERE asset_id = ?",
+        (canonical_id, merged_id),
+    )
     metadata = _merge_metadata(_metadata(canonical["metadata_json"]), _metadata(merged["metadata_json"]))
     connection.execute(
         "UPDATE assets SET metadata_json = ?, updated_at = ? WHERE id = ?",
@@ -581,7 +877,7 @@ def _refresh_asset(connection: sqlite3.Connection, *, asset_id: str, now: str) -
     representation_rows = connection.execute(
         """
         SELECT ar.library_entry_id, ar.representation_role, le.state,
-               le.presentation_key, cb.mime_type
+               le.removed_at, le.presentation_key, cb.mime_type
         FROM asset_representations ar
         JOIN library_entries le ON le.id = ar.library_entry_id
         JOIN content_blobs cb ON cb.id = le.content_blob_id
@@ -610,10 +906,21 @@ def _refresh_asset(connection: sqlite3.Connection, *, asset_id: str, now: str) -
     if not representation_rows:
         return
     active_rows = [row for row in representation_rows if row["state"] == "active"]
-    state = "active" if active_rows else "removed"
+    if active_rows:
+        state = "active"
+    elif representation_rows and all(row["state"] == "purged" for row in representation_rows):
+        state = "purged"
+    else:
+        state = "removed"
     primary = active_rows[0] if active_rows else representation_rows[0]
     media_type = _asset_media_type(source_rows, representation_rows)
-    current = connection.execute("SELECT metadata_json FROM assets WHERE id = ?", (asset_id,)).fetchone()
+    current = connection.execute(
+        """
+        SELECT metadata_json, removed_at, purged_at, purge_reason
+        FROM assets WHERE id = ?
+        """,
+        (asset_id,),
+    ).fetchone()
     metadata = _metadata(current["metadata_json"] if current else None)
     tags = [
         value
@@ -634,11 +941,36 @@ def _refresh_asset(connection: sqlite3.Connection, *, asset_id: str, now: str) -
             source_tags.append(source_tag)
     type_tag = _baseline_tag("type", media_type)
     metadata["tags"] = [*tags, *source_tags, *([type_tag] if type_tag else [])]
+    entry_removed_at = next(
+        (
+            str(row["removed_at"])
+            for row in representation_rows
+            if row["removed_at"]
+        ),
+        None,
+    )
+    if state == "active":
+        removed_at = None
+        purged_at = None
+        purge_reason = None
+    elif state == "removed":
+        removed_at = (str(current["removed_at"]) if current and current["removed_at"] else None) or entry_removed_at or now
+        purged_at = None
+        purge_reason = None
+    else:
+        removed_at = (str(current["removed_at"]) if current and current["removed_at"] else None) or entry_removed_at or now
+        purged_at = (str(current["purged_at"]) if current and current["purged_at"] else None) or now
+        purge_reason = (
+            str(current["purge_reason"])
+            if current and current["purge_reason"]
+            else "content permanently purged"
+        )
     connection.execute(
         """
         UPDATE assets
         SET media_type = ?, state = ?, primary_library_entry_id = ?,
-            metadata_json = ?, merged_into_asset_id = NULL, updated_at = ?
+            metadata_json = ?, merged_into_asset_id = NULL,
+            removed_at = ?, purged_at = ?, purge_reason = ?, updated_at = ?
         WHERE id = ?
         """,
         (
@@ -646,6 +978,9 @@ def _refresh_asset(connection: sqlite3.Connection, *, asset_id: str, now: str) -
             state,
             primary["library_entry_id"],
             json.dumps(metadata, sort_keys=True),
+            removed_at,
+            purged_at,
+            purge_reason,
             now,
             asset_id,
         ),

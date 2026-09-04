@@ -281,6 +281,12 @@ async def file_upsert(context: ToolContext, input_data: dict[str, Any]) -> ToolR
                 result["library_entry_id"] = adoption.get("entry_id")
                 result["deduplicated"] = adoption.get("deduplicated", False)
                 result["hardlinked"] = adoption.get("hardlinked", False)
+            elif adoption.get("suppressed"):
+                result["local_path"] = None
+                result["status"] = "skipped"
+                result["file_health"] = adoption.get("state")
+                result["asset_id"] = adoption.get("asset_id")
+                result["suppressed"] = True
     except ValueError as exc:
         return ToolResult.failure(
             "library_content_conflict",

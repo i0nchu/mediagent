@@ -40,6 +40,10 @@ uv run mediagent add /path/to/media-directory
 uv run mediagent sync SOURCE
 uv run mediagent status
 uv run mediagent status SOURCE
+uv run mediagent remove ASSET_ID
+uv run mediagent restore ASSET_ID
+uv run mediagent trash purge --dry-run
+uv run mediagent trash purge
 ```
 
 Commands read `.env` from the current directory; existing environment variables
@@ -48,15 +52,13 @@ for complete machine-readable output.
 
 Local files are copied into the managed library. Directories are scanned
 recursively without following symbolic links; original files are left unchanged.
+For one imported or downloaded item, the normal output includes its Asset ID;
+use `--json` to inspect every Asset ID returned by a batch operation.
 
-```bash
-uv run mediagent library remove --path /absolute/path/to/file --reason 'not wanted'
-uv run mediagent library restore --removal-id rmv_operation_id
-uv run mediagent library rename --path /absolute/path/to/file --name 'new name'
-uv run mediagent library deduplicate --dry-run
-uv run mediagent library trash status
-```
-
-Remove moves content below `.trash/mediagent/` and records the operation in
-SQLite. Trash is retained indefinitely. Run `uv run mediagent --help` for the
-complete command reference.
+Remove moves every active representation of an Asset below `.trash/mediagent/`
+and records the operation in SQLite. Restore returns recoverable representations.
+Purge permanently
+deletes removed content older than `MEDIAGENT_TRASH_RETENTION_DAYS` while
+retaining its identity tombstone so the same content is not kept again. A new
+source without a remote checksum may still transfer bytes before identification.
+Run `uv run mediagent --help` for the complete command reference.

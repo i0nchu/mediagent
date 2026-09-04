@@ -86,6 +86,62 @@ class AssetIdentityTests(unittest.TestCase):
                 }
             self.assertEqual(roles, {"source_page", "comic_archive"})
 
+    def test_inactive_representation_can_remain_in_an_active_multifile_asset(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            db_path = root / "mediagent.sqlite3"
+            page = root / "comic-pages" / "jmcomic" / "chapter" / "001.jpg"
+            archive = root / "comic" / "jmcomic" / "chapter.cbz"
+            page.parent.mkdir(parents=True)
+            archive.parent.mkdir(parents=True)
+            page.write_bytes(b"comic-page")
+            archive.write_bytes(b"comic-archive")
+            page_result = self._adopt(
+                db_path,
+                page,
+                platform="jmcomic",
+                remote_id="photo:mixed",
+                file_key="page:1",
+                relative_path="comic-pages/jmcomic/chapter/001.jpg",
+            )
+            self._adopt(
+                db_path,
+                archive,
+                platform="jmcomic",
+                remote_id="photo:mixed",
+                file_key="archive:cbz",
+                mime_type="application/vnd.comicbook+zip",
+                relative_path="comic/jmcomic/chapter.cbz",
+            )
+            with db.connect(db_path) as connection:
+                row = connection.execute(
+                    """
+                    SELECT mf.id AS file_id, mf.library_entry_id
+                    FROM media_files mf
+                    JOIN media_items mi ON mi.id = mf.media_item_id
+                    WHERE mi.platform = 'jmcomic'
+                      AND mi.remote_id = 'photo:mixed'
+                      AND mf.file_key = 'page:1'
+                    """
+                ).fetchone()
+                connection.execute(
+                    "UPDATE library_entries SET state = 'removed' WHERE id = ?",
+                    (str(row["library_entry_id"]),),
+                )
+                connection.execute(
+                    "UPDATE asset_representations SET active = 0 WHERE library_entry_id = ?",
+                    (str(row["library_entry_id"]),),
+                )
+
+            result = assets.attach_inactive_media_file(
+                db_path,
+                file_id=int(row["file_id"]),
+            )
+
+            self.assertEqual(result["id"], page_result["asset_id"])
+            self.assertEqual(result["state"], "active")
+            self.assertEqual(result["representation_count"], 2)
+
     def test_equal_comic_page_bytes_do_not_merge_unrelated_chapters(self) -> None:
         with TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -159,7 +215,7 @@ class AssetIdentityTests(unittest.TestCase):
                     connection.execute("SELECT COUNT(*) FROM asset_representations").fetchone()[0],
                 )
 
-            self.assertEqual(db.get_schema_version(db_path), "12")
+            self.assertEqual(db.get_schema_version(db_path), "13")
             self.assertTrue(migration["migrated"])
             self.assertEqual(migration["previous_schema_version"], "10")
             self.assertEqual(migration["asset_backfill"]["assets_created"], 1)
@@ -380,6 +436,41 @@ class AssetIdentityTests(unittest.TestCase):
             self.assertTrue(migration["migrated"])
             self.assertEqual(migration["previous_schema_version"], "11")
             self.assertEqual(asset["metadata"]["tags"], ["source:pixiv", "type:image"])
+
+    def test_v12_migration_adds_asset_lifecycle_schema_idempotently(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "mediagent.sqlite3"
+            with db.connect(db_path) as connection:
+                connection.executescript(
+                    """
+                    CREATE TABLE schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                    INSERT INTO schema_meta (key, value) VALUES ('schema_version', '12');
+                    CREATE TABLE assets (
+                        id TEXT PRIMARY KEY,
+                        media_type TEXT NOT NULL,
+                        state TEXT NOT NULL DEFAULT 'active',
+                        metadata_json TEXT NOT NULL DEFAULT '{"tags": []}',
+                        primary_library_entry_id TEXT,
+                        merged_into_asset_id TEXT,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    );
+                    """
+                )
+
+            first = db.initialize_database(db_path)
+            second = db.initialize_database(db_path)
+
+            with db.connect(db_path) as connection:
+                columns = {row["name"] for row in connection.execute("PRAGMA table_info(assets)")}
+                operation_table = connection.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'asset_operations'"
+                ).fetchone()
+            self.assertEqual(first["previous_schema_version"], "12")
+            self.assertTrue(first["migrated"])
+            self.assertFalse(second["migrated"])
+            self.assertTrue({"removed_at", "purged_at", "purge_reason"}.issubset(columns))
+            self.assertIsNotNone(operation_table)
 
     def _adopt(
         self,

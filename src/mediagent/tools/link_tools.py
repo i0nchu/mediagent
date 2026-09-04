@@ -302,9 +302,11 @@ async def media_sync(context: ToolContext, input_data: dict[str, Any]) -> ToolRe
         "repaired": 0,
         "still_missing_files": 0,
         "downloaded": 0,
+        "skipped": 0,
         "partial": 0,
         "failed": 0,
         "files_downloaded": 0,
+        "files_skipped": 0,
         "files_deduplicated": 0,
         "dedup_bytes_reclaimed": 0,
         "files_failed": 0,
@@ -402,6 +404,7 @@ async def media_sync(context: ToolContext, input_data: dict[str, Any]) -> ToolRe
         item_results.append(result)
         summary[result["status"]] += 1
         summary["files_downloaded"] += result["files_downloaded"]
+        summary["files_skipped"] += result.get("files_skipped", 0)
         summary["files_deduplicated"] += result.get("files_deduplicated", 0)
         summary["dedup_bytes_reclaimed"] += result.get("dedup_bytes_reclaimed", 0)
         summary["files_failed"] += result["files_failed"]
@@ -482,6 +485,7 @@ async def sync_dedicated_comic_links(
         "resolved": 0,
         "skipped_links": 0,
         "queued": 0,
+        "skipped": 0,
         "skipped_items": 0,
         "skipped_healthy": 0,
         "repair_items": 0,
@@ -494,7 +498,9 @@ async def sync_dedicated_comic_links(
         "partial": 0,
         "failed": 0,
         "files_downloaded": 0,
+        "files_skipped": 0,
         "files_failed": 0,
+        "blocked_purged": 0,
         "bytes_written": 0,
         "cbz_packaged": 0,
         "cbz_existing": 0,
@@ -561,6 +567,7 @@ async def sync_dedicated_comic_links(
         comic_summary = result.data.get("summary", {}) if isinstance(result.data, dict) else {}
         for key in (
             "queued",
+            "skipped",
             "skipped_items",
             "skipped_healthy",
             "repair_items",
@@ -572,6 +579,8 @@ async def sync_dedicated_comic_links(
             "downloaded",
             "partial",
             "failed",
+            "files_skipped",
+            "blocked_purged",
             "cbz_packaged",
             "cbz_existing",
             "cbz_failed_or_incomplete",
@@ -777,8 +786,14 @@ def _sync_candidates(
         "repair_files_missing": 0,
         "repair_files_corrupt": 0,
         "repair_files_unhealthy": 0,
+        "blocked_purged": 0,
     }
+    purged = assets.purged_assets_for_media_items(db_path, items)
     for item in items:
+        if (str(item["platform"]), str(item["remote_id"])) in purged:
+            summary["skipped_items"] += 1
+            summary["blocked_purged"] += 1
+            continue
         status = statuses.get((item["platform"], item["remote_id"]))
         if status == "failed" and retry_failed:
             candidates.append(item)
@@ -825,7 +840,10 @@ def _repair_assessment(db_path: Path, item: dict[str, Any]) -> dict[str, Any]:
             health = str(record.get("file_health") or "unknown")
             status = str(record.get("status") or "")
             local_path = record.get("local_path")
-            if record.get("library_state") == "removed":
+            if record.get("library_state") in {"removed", "purged"} or health in {
+                "removed",
+                "purged",
+            }:
                 pass
             elif status == "skipped" and health == IGNORED_COMIC_SPACER_HEALTH:
                 pass
@@ -959,6 +977,12 @@ async def _sync_one_link_item(
                 )
                 continue
             file_record = _existing_file_record(db_path, item, file_info, plan)
+            if file_record.get("suppressed"):
+                result["files_skipped"] += 1
+                result["warnings"].append(
+                    "Skipped content that belongs to a removed Asset."
+                )
+                continue
             final_target = Path(str(file_record.get("local_path") or target_path))
             result["files_downloaded"] += 1
             result["bytes_written"] += file_record.get("size_bytes") or 0
@@ -1016,6 +1040,12 @@ async def _sync_one_link_item(
                 file_key=_stable_file_key(file_info),
             )
             adoption = library_content.adopt_media_file(db_path, file_id=int(file_record["id"]))
+            if adoption.get("suppressed"):
+                result["files_skipped"] += 1
+                result["warnings"].append(
+                    "Skipped content that belongs to a removed Asset."
+                )
+                continue
             final_target = Path(str(adoption.get("target_path") or download_result.data["target_path"]))
             if adoption.get("deduplicated"):
                 result["files_deduplicated"] += 1
@@ -1382,6 +1412,8 @@ def _existing_file_record(
         file_key=_stable_file_key(file_info),
     )
     adoption = library_content.adopt_media_file(db_path, file_id=int(record["id"]))
+    if adoption.get("suppressed"):
+        return {**record, "suppressed": True, "local_path": None, "status": "skipped"}
     if adoption.get("adopted"):
         record["local_path"] = adoption.get("target_path")
         record["library_relative_path"] = adoption.get("library_relative_path")

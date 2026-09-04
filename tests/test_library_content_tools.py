@@ -2,11 +2,12 @@ import asyncio
 import hashlib
 import os
 import unittest
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from zipfile import ZipFile
 
-from mediagent.core import db, library_content
+from mediagent.core import assets, db, library_content, lifecycle
 from mediagent.core.tooling import ToolContext, ToolValidationError
 from mediagent.tools.defaults import create_default_registry
 
@@ -39,7 +40,7 @@ class LibraryContentToolTests(unittest.TestCase):
                     row["name"]
                     for row in connection.execute("PRAGMA table_info(media_files)").fetchall()
                 }
-            self.assertEqual(db.get_schema_version(db_path), "12")
+            self.assertEqual(db.get_schema_version(db_path), "13")
             self.assertTrue({"content_blobs", "library_entries", "library_operations"} <= tables)
             self.assertIn("library_entry_id", media_file_columns)
 
@@ -77,7 +78,7 @@ class LibraryContentToolTests(unittest.TestCase):
                 ).fetchone()
                 blob_count = connection.execute("SELECT COUNT(*) FROM content_blobs").fetchone()[0]
 
-            self.assertEqual(db.get_schema_version(db_path), "12")
+            self.assertEqual(db.get_schema_version(db_path), "13")
             self.assertEqual(after["id"], before["id"])
             self.assertEqual(after["library_entry_id"], adoption["entry_id"])
             self.assertEqual(after["checksum"], before["checksum"])
@@ -260,7 +261,12 @@ class LibraryContentToolTests(unittest.TestCase):
             original = root / "pixiv/photo/legacy.jpg"
             original.parent.mkdir(parents=True)
             original.write_bytes(b"matching-content")
-            self._record(db_path, original, platform="pixiv", remote_id="legacy-duplicates")
+            record = self._record(
+                db_path,
+                original,
+                platform="pixiv",
+                remote_id="legacy-duplicates",
+            )
             older = root / ".trash/pixiv-unbookmarked-old/photo/legacy.jpg"
             newer = root / ".trash/pixiv-unbookmarked-new/photo/legacy.jpg"
             mismatch = root / ".trash/pixiv-unbookmarked-wrong/photo/legacy.jpg"
@@ -294,6 +300,143 @@ class LibraryContentToolTests(unittest.TestCase):
             self.assertTrue(older.is_file())
             self.assertTrue(newer.is_file())
             self.assertTrue(mismatch.is_file())
+            stored = db.list_media_files(
+                db_path,
+                platform="pixiv",
+                remote_id="legacy-duplicates",
+            )[0]
+            asset = assets.asset_for_library_entry(db_path, str(stored["library_entry_id"]))
+
+            purged = lifecycle.purge_trash(
+                db_path,
+                library_root=root,
+                retention_days=0,
+                dry_run=False,
+                now=datetime.now(UTC) + timedelta(seconds=1),
+            )
+
+            self.assertEqual(purged["paths_unlinked"], 2)
+            self.assertEqual(purged["assets_purged"], 1)
+            self.assertFalse(older.exists())
+            self.assertFalse(newer.exists())
+            self.assertTrue(mismatch.is_file())
+            self.assertEqual(assets.load_asset(db_path, str(asset["id"]))["state"], "purged")
+            self.assertEqual(stored["id"], record["id"])
+
+    def test_reconciled_legacy_trash_can_be_permanently_purged(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            root, db_path = self._workspace(temp_dir)
+            original = root / "pixiv/photo/legacy-purge.jpg"
+            original.parent.mkdir(parents=True)
+            original.write_bytes(b"legacy-purge-content")
+            record = self._record(
+                db_path,
+                original,
+                platform="pixiv",
+                remote_id="legacy-purge",
+            )
+            trash = root / ".trash/legacy-run/pixiv/photo/legacy-purge.jpg"
+            trash.parent.mkdir(parents=True)
+            os.replace(original, trash)
+            plan = library_content.legacy_trash_plan(db_path, library_root=root)
+            library_content.apply_legacy_trash_plan(db_path, plan)
+            stored = db.list_media_files(
+                db_path,
+                platform="pixiv",
+                remote_id="legacy-purge",
+            )[0]
+            asset = assets.asset_for_library_entry(db_path, str(stored["library_entry_id"]))
+
+            result = lifecycle.purge_trash(
+                db_path,
+                library_root=root,
+                retention_days=0,
+                dry_run=False,
+                now=datetime.now(UTC) + timedelta(seconds=1),
+            )
+
+            self.assertEqual(result["paths_unlinked"], 1)
+            self.assertEqual(result["assets_purged"], 1)
+            self.assertFalse(trash.exists())
+            self.assertEqual(assets.load_asset(db_path, str(asset["id"]))["state"], "purged")
+            refreshed = db.list_media_files(
+                db_path,
+                platform="pixiv",
+                remote_id="legacy-purge",
+            )[0]
+            self.assertEqual(refreshed["id"], record["id"])
+            self.assertEqual(refreshed["file_health"], "purged")
+
+    def test_reconciled_legacy_trash_can_be_restored_by_asset(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            root, db_path = self._workspace(temp_dir)
+            original = root / "pixiv/photo/legacy-restore.jpg"
+            original.parent.mkdir(parents=True)
+            original.write_bytes(b"legacy-restore-content")
+            self._record(
+                db_path,
+                original,
+                platform="pixiv",
+                remote_id="legacy-restore",
+            )
+            trash = root / ".trash/legacy-run/pixiv/photo/legacy-restore.jpg"
+            trash.parent.mkdir(parents=True)
+            os.replace(original, trash)
+            plan = library_content.legacy_trash_plan(db_path, library_root=root)
+            library_content.apply_legacy_trash_plan(db_path, plan)
+            stored = db.list_media_files(
+                db_path,
+                platform="pixiv",
+                remote_id="legacy-restore",
+            )[0]
+            asset = assets.asset_for_library_entry(db_path, str(stored["library_entry_id"]))
+
+            restored = lifecycle.restore_asset(
+                db_path,
+                asset_id=str(asset["id"]),
+                library_root=root,
+            )
+
+            self.assertEqual(restored["result"], "restored")
+            self.assertTrue(original.is_file())
+            self.assertFalse(trash.exists())
+            self.assertEqual(assets.load_asset(db_path, str(asset["id"]))["state"], "active")
+
+    def test_reconciled_legacy_asset_restore_discards_a_verified_duplicate(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            root, db_path = self._workspace(temp_dir)
+            original = root / "pixiv/photo/legacy-duplicate-restore.jpg"
+            original.parent.mkdir(parents=True)
+            original.write_bytes(b"legacy-duplicate-restore-content")
+            self._record(
+                db_path,
+                original,
+                platform="pixiv",
+                remote_id="legacy-duplicate-restore",
+            )
+            trash = root / ".trash/legacy-run/pixiv/photo/legacy-duplicate-restore.jpg"
+            trash.parent.mkdir(parents=True)
+            os.replace(original, trash)
+            plan = library_content.legacy_trash_plan(db_path, library_root=root)
+            library_content.apply_legacy_trash_plan(db_path, plan)
+            stored = db.list_media_files(
+                db_path,
+                platform="pixiv",
+                remote_id="legacy-duplicate-restore",
+            )[0]
+            asset = assets.asset_for_library_entry(db_path, str(stored["library_entry_id"]))
+            original.write_bytes(trash.read_bytes())
+
+            restored = lifecycle.restore_asset(
+                db_path,
+                asset_id=str(asset["id"]),
+                library_root=root,
+            )
+
+            self.assertEqual(restored["result"], "restored")
+            self.assertTrue(original.is_file())
+            self.assertFalse(trash.exists())
+            self.assertEqual(restored["duplicate_trash_cleanup_failed"], 0)
 
     def test_legacy_trash_reconcile_blocks_active_global_identity(self) -> None:
         registry = create_default_registry()
@@ -507,6 +650,60 @@ class LibraryContentToolTests(unittest.TestCase):
             self.assertEqual(result.data["removal_id"], "rmv_interrupted")
             self.assertTrue(target.is_file())
             self.assertEqual(result.data["entry"]["state"], "removed")
+
+    def test_remove_rejects_a_tracked_symlink_without_touching_its_target(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            root, db_path = self._workspace(temp_dir)
+            source = root / "photo/tracked.jpg"
+            victim = root / "photo/victim.jpg"
+            source.parent.mkdir(parents=True)
+            source.write_bytes(b"tracked-content")
+            victim.write_bytes(b"victim-content")
+            record = self._record(db_path, source, platform="pixiv", remote_id="symlinked")
+            adoption = library_content.adopt_media_file(db_path, file_id=record["id"])
+            source.unlink()
+            source.symlink_to(victim)
+
+            with self.assertRaisesRegex(ValueError, "symbolic link"):
+                library_content.remove_entry(
+                    db_path,
+                    entry_id=str(adoption["entry_id"]),
+                    library_root=root,
+                )
+
+            self.assertTrue(source.is_symlink())
+            self.assertEqual(victim.read_bytes(), b"victim-content")
+
+    def test_remove_rejects_an_untrusted_planned_target_outside_managed_trash(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            root, db_path = self._workspace(temp_dir)
+            source = root / "photo/tracked.jpg"
+            outside = Path(temp_dir) / "outside.jpg"
+            source.parent.mkdir(parents=True)
+            source.write_bytes(b"tracked-content")
+            outside.write_bytes(b"tracked-content")
+            record = self._record(db_path, source, platform="pixiv", remote_id="unsafe-journal")
+            adoption = library_content.adopt_media_file(db_path, file_id=record["id"])
+            with db.connect(db_path) as connection:
+                connection.execute(
+                    """
+                    INSERT INTO library_operations (
+                        id, operation_type, library_entry_id, state, original_path,
+                        target_path, metadata_json, created_at
+                    ) VALUES ('rmv_untrusted', 'remove', ?, 'planned', ?, ?, '{}', 'now')
+                    """,
+                    (adoption["entry_id"], str(source), str(outside)),
+                )
+
+            with self.assertRaisesRegex(ValueError, "outside its configured boundary"):
+                library_content.remove_entry(
+                    db_path,
+                    entry_id=str(adoption["entry_id"]),
+                    library_root=root,
+                )
+
+            self.assertEqual(source.read_bytes(), b"tracked-content")
+            self.assertEqual(outside.read_bytes(), b"tracked-content")
 
     def test_rename_recovers_a_planned_operation_after_file_move(self) -> None:
         registry = create_default_registry()
@@ -790,6 +987,10 @@ class LibraryContentToolTests(unittest.TestCase):
             self.assertTrue(prepared.data["operational"])
             self.assertEqual(Path(prepared.data["managed_path"]), root / ".trash/mediagent")
             self.assertFalse(prepared.data["retention"]["automatic_purge"])
+            self.assertEqual(
+                prepared.data["retention"]["policy"],
+                "retained_until_explicit_mediagent_purge",
+            )
             self.assertTrue(after.data["managed"]["writable"])
 
     def test_managed_trash_prepare_rejects_symlinked_trash_root(self) -> None:
@@ -805,6 +1006,21 @@ class LibraryContentToolTests(unittest.TestCase):
             status = library_content.managed_trash_status(root)
             self.assertFalse(status["operational"])
             self.assertTrue(status["trash"]["is_symlink"])
+
+    def test_legacy_trash_reconcile_rejects_a_symlinked_trash_root(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            root, db_path = self._workspace(temp_dir)
+            source = root / "pixiv/photo/legacy.jpg"
+            outside = Path(temp_dir) / "outside-trash"
+            source.parent.mkdir(parents=True)
+            outside.mkdir()
+            source.write_bytes(b"legacy-content")
+            self._record(db_path, source, platform="pixiv", remote_id="legacy-symlink")
+            source.unlink()
+            (root / ".trash").symlink_to(outside, target_is_directory=True)
+
+            with self.assertRaisesRegex(ValueError, "symbolic link"):
+                library_content.legacy_trash_plan(db_path, library_root=root)
 
     @staticmethod
     def _workspace(temp_dir: str) -> tuple[Path, Path]:

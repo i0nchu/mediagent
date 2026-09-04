@@ -361,7 +361,12 @@ def _import_file(
             source_timestamp=source_timestamp,
             status="downloaded" if status in {"existing", "repaired"} else "skipped",
         )
-        asset = assets.attach_media_item(
+        attach = (
+            assets.attach_media_item
+            if status in {"existing", "repaired"}
+            else assets.attach_media_item_to_inactive_asset
+        )
+        asset = attach(
             db_path,
             media_item_id=int(media_item["id"]),
             asset_id=identity.asset_id,
@@ -438,6 +443,17 @@ def _import_file(
         verified_at=datetime.now(UTC).isoformat(),
     )
     adoption = library_content.adopt_media_file(db_path, file_id=int(file_record["id"]))
+    if adoption.get("suppressed"):
+        return _result(
+            source=source,
+            status="blocked",
+            detected=detected,
+            checksum=checksum,
+            size_bytes=size_bytes,
+            asset_id=str(adoption["asset_id"]),
+            target_path=None,
+            copied=False,
+        )
     return _result(
         source=source,
         status=status,
@@ -569,11 +585,41 @@ def _identity_for_checksum(
                 JOIN library_entries le ON le.content_blob_id = cb.id
                 JOIN asset_representations ar ON ar.library_entry_id = le.id
                 WHERE cb.checksum = ? AND ar.representation_role = ?
+                  AND (
+                      le.state = 'active'
+                      OR NOT EXISTS (
+                          SELECT 1 FROM library_entries active
+                          WHERE active.content_blob_id = cb.id
+                            AND active.state = 'active'
+                      )
+                  )
                 ORDER BY CASE le.state WHEN 'active' THEN 0 ELSE 1 END, le.created_at, le.id
                 LIMIT 1
                 """,
                 (checksum, representation_role),
             ).fetchone()
+            if row is None:
+                row = connection.execute(
+                    """
+                    SELECT ar.asset_id, le.id AS library_entry_id, le.state,
+                           le.local_path, le.library_relative_path,
+                           cb.mime_type, cb.size_bytes, cb.checksum
+                    FROM content_blobs cb
+                    JOIN library_entries le ON le.content_blob_id = cb.id
+                    JOIN asset_representations ar ON ar.library_entry_id = le.id
+                    WHERE cb.checksum = ?
+                      AND le.state IN ('removed', 'purged')
+                      AND NOT EXISTS (
+                          SELECT 1 FROM library_entries active
+                          WHERE active.content_blob_id = cb.id
+                            AND active.state = 'active'
+                      )
+                    ORDER BY CASE le.state WHEN 'purged' THEN 0 ELSE 1 END,
+                             le.created_at, le.id
+                    LIMIT 1
+                    """,
+                    (checksum,),
+                ).fetchone()
     except sqlite3.OperationalError as exc:
         if "no such table" in str(exc).lower():
             return None

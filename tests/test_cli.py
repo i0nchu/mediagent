@@ -74,6 +74,9 @@ class CliTests(unittest.TestCase):
         self.assertIn("add", completed.stdout)
         self.assertIn("sync", completed.stdout)
         self.assertIn("status", completed.stdout)
+        self.assertIn("remove", completed.stdout)
+        self.assertIn("restore", completed.stdout)
+        self.assertIn("trash", completed.stdout)
 
     def test_short_init_uses_configured_database(self) -> None:
         with (
@@ -120,6 +123,44 @@ class CliTests(unittest.TestCase):
         self.assertEqual(run_tool.call_args.kwargs["input_data"], {"path": "./incoming"})
         self.assertTrue(run_tool.call_args.kwargs["dry_run"])
         self.assertTrue(run_tool.call_args.kwargs["compact_human"])
+
+    def test_short_remove_routes_asset_identity(self) -> None:
+        with (
+            patch.dict(os.environ, {"MEDIAGENT_ENV_FILE": ""}),
+            patch("mediagent.cli.run_tool_command", return_value=0) as run_tool,
+        ):
+            result = cli.run(["remove", "asset_example", "--reason", "not wanted"])
+
+        self.assertEqual(result, 0)
+        self.assertEqual(run_tool.call_args.kwargs["tool"], "library.asset.remove")
+        self.assertEqual(
+            run_tool.call_args.kwargs["input_data"],
+            {"asset_id": "asset_example", "reason": "not wanted"},
+        )
+        self.assertTrue(run_tool.call_args.kwargs["compact_human"])
+
+    def test_short_restore_routes_asset_identity(self) -> None:
+        with (
+            patch.dict(os.environ, {"MEDIAGENT_ENV_FILE": ""}),
+            patch("mediagent.cli.run_tool_command", return_value=0) as run_tool,
+        ):
+            result = cli.run(["restore", "asset_example"])
+
+        self.assertEqual(result, 0)
+        self.assertEqual(run_tool.call_args.kwargs["tool"], "library.asset.restore")
+        self.assertEqual(run_tool.call_args.kwargs["input_data"], {"asset_id": "asset_example"})
+
+    def test_short_trash_purge_routes_configured_retention(self) -> None:
+        with (
+            patch.dict(os.environ, {"MEDIAGENT_ENV_FILE": ""}),
+            patch("mediagent.cli.run_tool_command", return_value=0) as run_tool,
+        ):
+            result = cli.run(["trash", "purge", "--dry-run"])
+
+        self.assertEqual(result, 0)
+        self.assertEqual(run_tool.call_args.kwargs["tool"], "library.trash.purge")
+        self.assertEqual(run_tool.call_args.kwargs["input_data"], {})
+        self.assertTrue(run_tool.call_args.kwargs["dry_run"])
 
     def test_short_source_sync_applies_provider_defaults(self) -> None:
         with (
@@ -451,6 +492,49 @@ class CliTests(unittest.TestCase):
             stdout.getvalue(),
             "The operation completed successfully.\nDownloaded: 3; Skipped: 2; Failed: 0.\n",
         )
+
+    def test_compact_human_result_exposes_one_asset_id(self) -> None:
+        stdout = StringIO()
+        with redirect_stdout(stdout):
+            cli.print_compact_human_result(
+                {
+                    "tool": "media.local.import",
+                    "status": "success",
+                    "data": {
+                        "asset_ids": ["ast_example"],
+                        "summary": {"imported": 1, "failed": 0},
+                    },
+                }
+            )
+
+        self.assertEqual(
+            stdout.getvalue(),
+            "The operation completed successfully.\nImported: 1; Failed: 0.\nAsset ID: ast_example\n",
+        )
+
+    def test_compact_human_lifecycle_results_are_actionable(self) -> None:
+        cases = (
+            ("library.asset.remove", {"result": "removed"}, "The Asset was moved to trash.\n"),
+            ("library.asset.restore", {"result": "restored"}, "The Asset was restored.\n"),
+            (
+                "library.trash.purge",
+                {"dry_run": True, "assets_ready": 3},
+                "Trash purge preview found 3 Assets ready for permanent removal.\n",
+            ),
+            (
+                "library.trash.purge",
+                {"dry_run": False, "assets_purged": 2},
+                "Permanently purged 2 Assets.\n",
+            ),
+        )
+        for tool, data, expected in cases:
+            with self.subTest(tool=tool):
+                stdout = StringIO()
+                with redirect_stdout(stdout):
+                    cli.print_compact_human_result(
+                        {"status": "success", "tool": tool, "data": data}
+                    )
+                self.assertEqual(stdout.getvalue(), expected)
 
     def test_tool_result_exit_mapping_remains_compatible(self) -> None:
         self.assertEqual(cli.tool_result_exit_code(ToolResult.success()), 0)

@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from mediagent.core import db, library_content
+from mediagent.core import db, library_content, lifecycle
 from mediagent.core.filesystem import PathSafetyError, ensure_inside, normalize_path
 from mediagent.core.storage import default_library_root
 from mediagent.core.tooling import ErrorCategory, Permission, ToolContext, ToolDefinition, ToolResult, ToolSpec
@@ -80,6 +80,62 @@ def definitions() -> list[ToolDefinition]:
                 dry_run_supported=True,
             ),
             handler=prepare_managed_trash,
+        ),
+        ToolDefinition(
+            spec=ToolSpec(
+                name="library.trash.purge",
+                description="Permanently purge removed Assets whose configured retention has expired.",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "db_path": {"type": "string"},
+                        "library_root": {"type": "string"},
+                    },
+                },
+                output_schema={"type": "object"},
+                permissions=(Permission.READ_DB, Permission.WRITE_DB, Permission.READ_FILES, Permission.WRITE_FILES),
+                dry_run_supported=True,
+            ),
+            handler=purge_managed_trash,
+        ),
+        ToolDefinition(
+            spec=ToolSpec(
+                name="library.asset.remove",
+                description="Move every managed representation of one Asset into Mediagent trash.",
+                input_schema={
+                    "type": "object",
+                    "required": ["asset_id"],
+                    "properties": {
+                        "asset_id": {"type": "string"},
+                        "reason": {"type": "string"},
+                        "db_path": {"type": "string"},
+                        "library_root": {"type": "string"},
+                    },
+                },
+                output_schema={"type": "object"},
+                permissions=(Permission.READ_DB, Permission.WRITE_DB, Permission.READ_FILES, Permission.WRITE_FILES),
+                dry_run_supported=False,
+            ),
+            handler=remove_asset,
+        ),
+        ToolDefinition(
+            spec=ToolSpec(
+                name="library.asset.restore",
+                description="Restore every recoverable representation of one removed Asset.",
+                input_schema={
+                    "type": "object",
+                    "required": ["asset_id"],
+                    "properties": {
+                        "asset_id": {"type": "string"},
+                        "db_path": {"type": "string"},
+                        "library_root": {"type": "string"},
+                    },
+                },
+                output_schema={"type": "object"},
+                permissions=(Permission.READ_DB, Permission.WRITE_DB, Permission.READ_FILES, Permission.WRITE_FILES),
+                dry_run_supported=False,
+            ),
+            handler=restore_asset,
         ),
         ToolDefinition(
             spec=ToolSpec(
@@ -160,7 +216,7 @@ def deduplicate_content(context: ToolContext, input_data: dict[str, Any]) -> Too
             return ToolResult.success({"dry_run": True, "plan": public_plan})
         applied = library_content.apply_scan_plan(db_path, plan)
         return ToolResult.success({"dry_run": False, "plan": applied})
-    except (OSError, ValueError) as exc:
+    except (OSError, RuntimeError, ValueError) as exc:
         return ToolResult.failure(
             "library_dedup_failed",
             str(exc),
@@ -194,7 +250,7 @@ def reconcile_legacy_trash(context: ToolContext, input_data: dict[str, Any]) -> 
             )
         applied = library_content.apply_legacy_trash_plan(db_path, plan)
         return ToolResult.success({"dry_run": False, "plan": applied})
-    except (OSError, ValueError) as exc:
+    except (OSError, RuntimeError, ValueError) as exc:
         return ToolResult.failure(
             "legacy_trash_reconcile_failed",
             str(exc),
@@ -218,12 +274,125 @@ def prepare_managed_trash(context: ToolContext, input_data: dict[str, Any]) -> T
         return ToolResult.success({"dry_run": True, **library_content.managed_trash_status(resolved)})
     try:
         return ToolResult.success({"dry_run": False, **library_content.prepare_managed_trash(resolved)})
-    except (OSError, ValueError) as exc:
+    except (OSError, RuntimeError, ValueError) as exc:
         return ToolResult.failure(
             "managed_trash_unavailable",
             str(exc),
             details={"exception_type": type(exc).__name__},
             category=ErrorCategory.FILESYSTEM,
+        )
+
+
+def purge_managed_trash(context: ToolContext, input_data: dict[str, Any]) -> ToolResult:
+    resolved = _paths(context, input_data, require_library_root=True)
+    if isinstance(resolved, ToolResult):
+        return resolved
+    db_path, explicit_root = resolved
+    if not db_path.is_file():
+        return ToolResult.failure("missing_db", "Database does not exist.", category=ErrorCategory.DATABASE)
+    library_root = explicit_root or default_library_root(
+        data_dir=context.data_dir,
+        library_dir=context.library_dir,
+    )
+    try:
+        retention_days = int(
+            context.env.get("MEDIAGENT_TRASH_RETENTION_DAYS", lifecycle.DEFAULT_TRASH_RETENTION_DAYS)
+        )
+        result = lifecycle.purge_trash(
+            db_path,
+            library_root=library_root,
+            retention_days=retention_days,
+            dry_run=context.dry_run,
+        )
+    except (OSError, RuntimeError, ValueError) as exc:
+        return ToolResult.failure(
+            "trash_purge_failed",
+            str(exc),
+            details={"exception_type": type(exc).__name__},
+            category=ErrorCategory.FILESYSTEM,
+        )
+    if result["failed"] or result["blocked"]:
+        return ToolResult.failure(
+            "trash_purge_partial",
+            "Trash purge left one or more removed Assets unchanged.",
+            data=result,
+            category=ErrorCategory.FILESYSTEM,
+        )
+    return ToolResult.success(result)
+
+
+def remove_asset(context: ToolContext, input_data: dict[str, Any]) -> ToolResult:
+    resolved = _paths(context, input_data, require_library_root=True)
+    if isinstance(resolved, ToolResult):
+        return resolved
+    db_path, explicit_root = resolved
+    if not db_path.is_file():
+        return ToolResult.failure("missing_db", "Database does not exist.", category=ErrorCategory.DATABASE)
+    library_root = explicit_root or default_library_root(
+        data_dir=context.data_dir,
+        library_dir=context.library_dir,
+    )
+    try:
+        return ToolResult.success(
+            lifecycle.remove_asset(
+                db_path,
+                asset_id=str(input_data["asset_id"]),
+                library_root=library_root,
+                reason=input_data.get("reason"),
+            )
+        )
+    except (OSError, RuntimeError, ValueError) as exc:
+        message = str(exc)
+        if message.startswith("Unknown Asset:"):
+            return ToolResult.failure(
+                "asset_not_found",
+                message,
+                details={"exception_type": type(exc).__name__},
+                category=ErrorCategory.VALIDATION,
+            )
+        return ToolResult.failure(
+            "asset_remove_failed",
+            message,
+            details={"exception_type": type(exc).__name__},
+            category=ErrorCategory.FILESYSTEM,
+        )
+
+
+def restore_asset(context: ToolContext, input_data: dict[str, Any]) -> ToolResult:
+    resolved = _paths(context, input_data, require_library_root=True)
+    if isinstance(resolved, ToolResult):
+        return resolved
+    db_path, explicit_root = resolved
+    if not db_path.is_file():
+        return ToolResult.failure("missing_db", "Database does not exist.", category=ErrorCategory.DATABASE)
+    library_root = explicit_root or default_library_root(
+        data_dir=context.data_dir,
+        library_dir=context.library_dir,
+    )
+    try:
+        return ToolResult.success(
+            lifecycle.restore_asset(
+                db_path,
+                asset_id=str(input_data["asset_id"]),
+                library_root=library_root,
+            )
+        )
+    except (OSError, RuntimeError, ValueError) as exc:
+        message = str(exc)
+        if message.startswith("Unknown Asset:"):
+            return ToolResult.failure(
+                "asset_not_found",
+                message,
+                details={"exception_type": type(exc).__name__},
+                category=ErrorCategory.VALIDATION,
+            )
+        code = "asset_purged" if "permanently purged" in message else "asset_restore_failed"
+        category = ErrorCategory.VALIDATION if code == "asset_purged" else ErrorCategory.FILESYSTEM
+        return ToolResult.failure(
+            code,
+            message,
+            details={"exception_type": type(exc).__name__},
+            category=category,
         )
 
 

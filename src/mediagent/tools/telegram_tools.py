@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Mapping
 from urllib.parse import urlparse
 
-from mediagent.core import db, library_content
+from mediagent.core import assets, db, library_content
 from mediagent.core.auth import CredentialRef, resolve_credential
 from mediagent.core.filesystem import PathSafetyError, ensure_inside, normalize_path, resolve_placeholders
 from mediagent.core.links import (
@@ -677,6 +677,7 @@ async def messages_sync(context: ToolContext, input_data: dict[str, Any]) -> Too
         "partial": 0,
         "failed": 0,
         "files_downloaded": 0,
+        "files_skipped": 0,
         "files_deduplicated": 0,
         "dedup_bytes_reclaimed": 0,
         "files_failed": 0,
@@ -700,6 +701,7 @@ async def messages_sync(context: ToolContext, input_data: dict[str, Any]) -> Too
         item_results.append(result)
         summary[result["status"]] += 1
         summary["files_downloaded"] += result["files_downloaded"]
+        summary["files_skipped"] += result.get("files_skipped", 0)
         summary["files_deduplicated"] += result.get("files_deduplicated", 0)
         summary["dedup_bytes_reclaimed"] += result.get("dedup_bytes_reclaimed", 0)
         summary["files_failed"] += result["files_failed"]
@@ -834,9 +836,11 @@ async def inbox_sync_links(context: ToolContext, input_data: dict[str, Any]) -> 
         "repaired": 0,
         "still_missing_files": 0,
         "downloaded": 0,
+        "skipped": 0,
         "partial": 0,
         "failed": 0,
         "files_downloaded": 0,
+        "files_skipped": 0,
         "files_deduplicated": 0,
         "dedup_bytes_reclaimed": 0,
         "files_failed": 0,
@@ -986,6 +990,7 @@ async def inbox_sync_links(context: ToolContext, input_data: dict[str, Any]) -> 
         item_results.append(result)
         summary[result["status"]] += 1
         summary["files_downloaded"] += result["files_downloaded"]
+        summary["files_skipped"] += result.get("files_skipped", 0)
         summary["files_deduplicated"] += result.get("files_deduplicated", 0)
         summary["dedup_bytes_reclaimed"] += result.get("dedup_bytes_reclaimed", 0)
         summary["files_failed"] += result["files_failed"]
@@ -1300,6 +1305,7 @@ async def _sync_one_telegram_item(
         "status": "queued",
         "files_total": len(files),
         "files_downloaded": 0,
+        "files_skipped": 0,
         "files_deduplicated": 0,
         "dedup_bytes_reclaimed": 0,
         "files_failed": 0,
@@ -1364,6 +1370,12 @@ async def _sync_one_telegram_item(
                 )
                 continue
             file_record = _existing_file_record(db_path, item, file_info, plan)
+            if file_record.get("suppressed"):
+                result["files_skipped"] += 1
+                result["warnings"].append(
+                    "Skipped content that belongs to a removed Asset."
+                )
+                continue
             final_target = Path(str(file_record.get("local_path") or target_path))
             result["files_downloaded"] += 1
             result["bytes_written"] += file_record.get("size_bytes") or 0
@@ -1409,6 +1421,12 @@ async def _sync_one_telegram_item(
                 verified_at=datetime.now(UTC).isoformat(),
             )
             adoption = library_content.adopt_media_file(db_path, file_id=int(file_record["id"]))
+            if adoption.get("suppressed"):
+                result["files_skipped"] += 1
+                result["warnings"].append(
+                    "Skipped content that belongs to a removed Asset."
+                )
+                continue
             final_target = Path(str(adoption.get("target_path") or download_result.data["target_path"]))
             if adoption.get("deduplicated"):
                 result["files_deduplicated"] += 1
@@ -1450,6 +1468,7 @@ async def _sync_one_telegram_item(
         total=result["files_total"],
         downloaded=result["files_downloaded"],
         failed=result["files_failed"],
+        skipped=result["files_skipped"],
     )
     db.update_media_item_status(db_path, platform=platform, remote_id=remote_id, status=result["status"])
     return result
@@ -1470,6 +1489,7 @@ async def _sync_one_link_item(
         "status": "queued",
         "files_total": len(files),
         "files_downloaded": 0,
+        "files_skipped": 0,
         "files_deduplicated": 0,
         "dedup_bytes_reclaimed": 0,
         "files_failed": 0,
@@ -1530,6 +1550,12 @@ async def _sync_one_link_item(
                 )
                 continue
             file_record = _existing_link_file_record(db_path, item, file_info, plan)
+            if file_record.get("suppressed"):
+                result["files_skipped"] += 1
+                result["warnings"].append(
+                    "Skipped content that belongs to a removed Asset."
+                )
+                continue
             final_target = Path(str(file_record.get("local_path") or target_path))
             result["files_downloaded"] += 1
             result["bytes_written"] += file_record.get("size_bytes") or 0
@@ -1562,6 +1588,12 @@ async def _sync_one_link_item(
                 verified_at=datetime.now(UTC).isoformat(),
             )
             adoption = library_content.adopt_media_file(db_path, file_id=int(file_record["id"]))
+            if adoption.get("suppressed"):
+                result["files_skipped"] += 1
+                result["warnings"].append(
+                    "Skipped content that belongs to a removed Asset."
+                )
+                continue
             final_target = Path(str(adoption.get("target_path") or download_result.data["target_path"]))
             if adoption.get("deduplicated"):
                 result["files_deduplicated"] += 1
@@ -1603,6 +1635,7 @@ async def _sync_one_link_item(
         total=result["files_total"],
         downloaded=result["files_downloaded"],
         failed=result["files_failed"],
+        skipped=result["files_skipped"],
     )
     db.update_media_item_status(db_path, platform=platform, remote_id=remote_id, status=result["status"])
     return result
@@ -1917,8 +1950,14 @@ def _sync_candidates(
         "repair_files_missing": 0,
         "repair_files_corrupt": 0,
         "repair_files_unhealthy": 0,
+        "blocked_purged": 0,
     }
+    purged = assets.purged_assets_for_media_items(db_path, items)
     for item in items:
+        if (str(item["platform"]), str(item["remote_id"])) in purged:
+            summary["skipped_items"] += 1
+            summary["blocked_purged"] += 1
+            continue
         status = statuses.get((item["platform"], item["remote_id"]))
         if status == "failed" and retry_failed:
             candidates.append(item)
@@ -1965,7 +2004,10 @@ def _repair_assessment(db_path: Path, item: dict[str, Any], *, link_items: bool)
             health = str(record.get("file_health") or "unknown")
             status = str(record.get("status") or "")
             local_path = record.get("local_path")
-            if record.get("library_state") == "removed":
+            if record.get("library_state") in {"removed", "purged"} or health in {
+                "removed",
+                "purged",
+            }:
                 pass
             elif health == "corrupt":
                 reason = "corrupt_file"
@@ -2031,7 +2073,11 @@ def _merge_telegram_sync_summary(summary: dict[str, Any], telegram_summary: dict
         "partial",
         "failed",
         "files_downloaded",
+        "files_skipped",
+        "files_deduplicated",
+        "dedup_bytes_reclaimed",
         "files_failed",
+        "blocked_purged",
         "bytes_written",
     ):
         summary[key] += int(telegram_summary.get(key, 0) or 0)
@@ -2279,6 +2325,8 @@ def _existing_file_record(
         verified_at=datetime.now(UTC).isoformat(),
     )
     adoption = library_content.adopt_media_file(db_path, file_id=int(record["id"]))
+    if adoption.get("suppressed"):
+        return {**record, "suppressed": True, "local_path": None, "status": "skipped"}
     if adoption.get("adopted"):
         record["local_path"] = adoption.get("target_path")
         record["library_relative_path"] = adoption.get("library_relative_path")
@@ -2314,6 +2362,8 @@ def _existing_link_file_record(
         verified_at=datetime.now(UTC).isoformat(),
     )
     adoption = library_content.adopt_media_file(db_path, file_id=int(record["id"]))
+    if adoption.get("suppressed"):
+        return {**record, "suppressed": True, "local_path": None, "status": "skipped"}
     if adoption.get("adopted"):
         record["local_path"] = adoption.get("target_path")
         record["library_relative_path"] = adoption.get("library_relative_path")

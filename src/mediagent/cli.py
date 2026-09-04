@@ -35,7 +35,16 @@ VALIDATION_ERROR_CATEGORIES = {
     ErrorCategory.DATABASE.value,
 }
 
-SIMPLE_COMMANDS = {"init", "add", "sync", "status", "agent"}
+SIMPLE_COMMANDS = {
+    "init",
+    "add",
+    "sync",
+    "status",
+    "agent",
+    "remove",
+    "restore",
+    "trash",
+}
 SOURCE_SYNC_TOOLS = {
     "pixiv": "pixiv.bookmarks.sync",
     "telegram": "telegram.inbox.sync_links",
@@ -109,6 +118,24 @@ def build_parser() -> argparse.ArgumentParser:
     add.add_argument("--dry-run", action="store_true", help="Preview without writing files or SQLite.")
     add.add_argument("--json", action="store_true", help="Emit complete machine-readable JSON.")
     add.set_defaults(handler=handle_add)
+
+    remove = subcommands.add_parser("remove", help="Move one Asset into managed trash.")
+    remove.add_argument("asset_id", help="Stable Mediagent Asset identifier.")
+    remove.add_argument("--reason", default=None, help="Optional removal reason.")
+    remove.add_argument("--json", action="store_true", help="Emit complete machine-readable JSON.")
+    remove.set_defaults(handler=handle_asset_remove)
+
+    restore = subcommands.add_parser("restore", help="Restore one removed Asset.")
+    restore.add_argument("asset_id", help="Stable Mediagent Asset identifier.")
+    restore.add_argument("--json", action="store_true", help="Emit complete machine-readable JSON.")
+    restore.set_defaults(handler=handle_asset_restore)
+
+    trash = subcommands.add_parser("trash", help="Manage retained removed content.")
+    trash_commands = trash.add_subparsers(dest="trash_command")
+    trash_purge = trash_commands.add_parser("purge", help="Permanently purge content past retention.")
+    trash_purge.add_argument("--dry-run", action="store_true", help="Preview without deleting content.")
+    trash_purge.add_argument("--json", action="store_true", help="Emit complete machine-readable JSON.")
+    trash_purge.set_defaults(handler=handle_trash_purge)
 
     sync = subcommands.add_parser("sync", help="Synchronize one configured source.")
     sync.add_argument(
@@ -337,6 +364,42 @@ def handle_add(args: argparse.Namespace) -> int:
     return run_tool_command(
         tool="comic.link.sync" if comic_link else "link.media.sync",
         input_data=input_data,
+        json_output=args.json,
+        summary_json=False,
+        dry_run=args.dry_run,
+        compact_human=True,
+    )
+
+
+def handle_asset_remove(args: argparse.Namespace) -> int:
+    return run_tool_command(
+        tool="library.asset.remove",
+        input_data={
+            "asset_id": args.asset_id,
+            **({"reason": args.reason} if args.reason else {}),
+        },
+        json_output=args.json,
+        summary_json=False,
+        dry_run=False,
+        compact_human=True,
+    )
+
+
+def handle_asset_restore(args: argparse.Namespace) -> int:
+    return run_tool_command(
+        tool="library.asset.restore",
+        input_data={"asset_id": args.asset_id},
+        json_output=args.json,
+        summary_json=False,
+        dry_run=False,
+        compact_human=True,
+    )
+
+
+def handle_trash_purge(args: argparse.Namespace) -> int:
+    return run_tool_command(
+        tool="library.trash.purge",
+        input_data={},
         json_output=args.json,
         summary_json=False,
         dry_run=args.dry_run,
@@ -986,6 +1049,11 @@ def print_compact_human_result(payload: dict[str, Any]) -> None:
         metric_line = _compact_metric_line(source_data)
         if metric_line:
             print(metric_line)
+        asset_ids = source_data.get("asset_ids")
+        if isinstance(asset_ids, list) and len(asset_ids) == 1:
+            print(f"Asset ID: {asset_ids[0]}")
+        elif isinstance(asset_ids, list) and len(asset_ids) > 1:
+            print("Asset IDs are available in JSON output.")
     else:
         print("The operation did not complete.")
 
@@ -998,6 +1066,25 @@ def _compact_success_message(tool: str, data: dict[str, Any]) -> str:
         return f"Database schema {schema} is ready."
     if tool == "core.env.check":
         return "Configuration is ready."
+    if tool == "library.asset.remove":
+        return (
+            "The Asset is already in trash."
+            if data.get("result") == "already_removed"
+            else "The Asset was moved to trash."
+        )
+    if tool == "library.asset.restore":
+        return (
+            "The Asset is already active."
+            if data.get("result") == "already_active"
+            else "The Asset was restored."
+        )
+    if tool == "library.trash.purge":
+        if data.get("dry_run"):
+            return (
+                f"Trash purge preview found {int(data.get('assets_ready') or 0)} "
+                "Assets ready for permanent removal."
+            )
+        return f"Permanently purged {int(data.get('assets_purged') or 0)} Assets."
     if tool.endswith(".auth.status"):
         return _authentication_status_message(data)
     return "The operation completed successfully."
