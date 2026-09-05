@@ -8,5 +8,6 @@
 - [x] Phase 2 Stage 2: universal add for URLs and local media
 - [x] Phase 2 Stage 3: Asset removal, restore, retention purge, and permanent content tombstones
 - [x] Phase 2 Stage 4: Asset tags and library search
+- [ ] Unified Telegram inbox intake for links, direct uploads, and forwarded media
 
 ## Bugs
