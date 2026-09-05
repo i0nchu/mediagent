@@ -10,6 +10,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from mediagent.core.tag_values import canonicalize_tags, is_reserved_tag, tag_key
+
 
 def ensure_schema(connection: sqlite3.Connection) -> None:
     """Create the Asset identity tables without changing existing content rows."""
@@ -924,8 +926,8 @@ def _refresh_asset(connection: sqlite3.Connection, *, asset_id: str, now: str) -
     metadata = _metadata(current["metadata_json"] if current else None)
     tags = [
         value
-        for value in metadata.get("tags", [])
-        if isinstance(value, str) and not value.startswith(("source:", "type:"))
+        for value in canonicalize_tags(metadata.get("tags"), strict=True)
+        if not is_reserved_tag(value)
     ]
     source_tags: list[str] = []
     for source in source_rows:
@@ -937,10 +939,13 @@ def _refresh_asset(connection: sqlite3.Connection, *, asset_id: str, now: str) -
         if author_name and not metadata.get("author_name"):
             metadata["author_name"] = author_name
         source_tag = _baseline_tag("source", str(source["platform"] or ""))
-        if source_tag and source_tag not in source_tags:
+        if source_tag and tag_key(source_tag) not in {tag_key(value) for value in source_tags}:
             source_tags.append(source_tag)
     type_tag = _baseline_tag("type", media_type)
-    metadata["tags"] = [*tags, *source_tags, *([type_tag] if type_tag else [])]
+    metadata["tags"] = canonicalize_tags(
+        [*tags, *source_tags, *([type_tag] if type_tag else [])],
+        strict=True,
+    )
     entry_removed_at = next(
         (
             str(row["removed_at"])
@@ -1018,11 +1023,13 @@ def _metadata(raw: Any) -> dict[str, Any]:
 def _merge_metadata(canonical: dict[str, Any], merged: dict[str, Any]) -> dict[str, Any]:
     result = dict(merged)
     result.update(canonical)
-    tags: list[str] = []
-    for value in [*(canonical.get("tags") or []), *(merged.get("tags") or [])]:
-        if isinstance(value, str) and value not in tags:
-            tags.append(value)
-    result["tags"] = tags
+    result["tags"] = canonicalize_tags(
+        [
+            *canonicalize_tags(canonical.get("tags"), strict=True),
+            *canonicalize_tags(merged.get("tags"), strict=True),
+        ],
+        strict=True,
+    )
     return result
 
 

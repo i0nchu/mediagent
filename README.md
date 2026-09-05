@@ -42,6 +42,9 @@ uv run mediagent status
 uv run mediagent status SOURCE
 uv run mediagent remove ASSET_ID
 uv run mediagent restore ASSET_ID
+uv run mediagent tag ASSET_ID favorite landscape
+uv run mediagent untag ASSET_ID landscape
+uv run mediagent search favorite
 uv run mediagent trash purge --dry-run
 uv run mediagent trash purge
 ```
@@ -61,4 +64,7 @@ Purge permanently
 deletes removed content older than `MEDIAGENT_TRASH_RETENTION_DAYS` while
 retaining its identity tombstone so the same content is not kept again. A new
 source without a remote checksum may still transfer bytes before identification.
+Asset tags are a simple list shared by manual and future automated tagging.
+Search matches tags, descriptive metadata, source identity, and filenames; it
+lists active Assets by default and accepts `--all` when removed Assets are needed.
 Run `uv run mediagent --help` for the complete command reference.

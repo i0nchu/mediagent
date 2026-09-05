@@ -8,6 +8,7 @@ import json
 import os
 import sys
 import time
+import unicodedata
 from pathlib import Path
 from typing import Any
 
@@ -43,7 +44,10 @@ SIMPLE_COMMANDS = {
     "agent",
     "remove",
     "restore",
+    "search",
+    "tag",
     "trash",
+    "untag",
 }
 SOURCE_SYNC_TOOLS = {
     "pixiv": "pixiv.bookmarks.sync",
@@ -129,6 +133,25 @@ def build_parser() -> argparse.ArgumentParser:
     restore.add_argument("asset_id", help="Stable Mediagent Asset identifier.")
     restore.add_argument("--json", action="store_true", help="Emit complete machine-readable JSON.")
     restore.set_defaults(handler=handle_asset_restore)
+
+    tag = subcommands.add_parser("tag", help="Add tags to one Asset.")
+    tag.add_argument("asset_id", help="Stable Mediagent Asset identifier.")
+    tag.add_argument("tags", nargs="+", help="One or more tags to add.")
+    tag.add_argument("--json", action="store_true", help="Emit complete machine-readable JSON.")
+    tag.set_defaults(handler=handle_asset_tag)
+
+    untag = subcommands.add_parser("untag", help="Remove tags from one Asset.")
+    untag.add_argument("asset_id", help="Stable Mediagent Asset identifier.")
+    untag.add_argument("tags", nargs="+", help="One or more tags to remove.")
+    untag.add_argument("--json", action="store_true", help="Emit complete machine-readable JSON.")
+    untag.set_defaults(handler=handle_asset_untag)
+
+    search = subcommands.add_parser("search", help="Search managed Assets.")
+    search.add_argument("terms", nargs="*", help="Terms matched across tags, metadata, sources, and filenames.")
+    search.add_argument("--all", action="store_true", help="Include removed and permanently purged Assets.")
+    search.add_argument("--limit", type=int, default=50, help="Maximum results (default: 50; maximum: 200).")
+    search.add_argument("--json", action="store_true", help="Emit complete machine-readable JSON.")
+    search.set_defaults(handler=handle_asset_search)
 
     trash = subcommands.add_parser("trash", help="Manage retained removed content.")
     trash_commands = trash.add_subparsers(dest="trash_command")
@@ -389,6 +412,43 @@ def handle_asset_restore(args: argparse.Namespace) -> int:
     return run_tool_command(
         tool="library.asset.restore",
         input_data={"asset_id": args.asset_id},
+        json_output=args.json,
+        summary_json=False,
+        dry_run=False,
+        compact_human=True,
+    )
+
+
+def handle_asset_tag(args: argparse.Namespace) -> int:
+    return run_tool_command(
+        tool="library.asset.tags.update",
+        input_data={"asset_id": args.asset_id, "add": args.tags},
+        json_output=args.json,
+        summary_json=False,
+        dry_run=False,
+        compact_human=True,
+    )
+
+
+def handle_asset_untag(args: argparse.Namespace) -> int:
+    return run_tool_command(
+        tool="library.asset.tags.update",
+        input_data={"asset_id": args.asset_id, "remove": args.tags},
+        json_output=args.json,
+        summary_json=False,
+        dry_run=False,
+        compact_human=True,
+    )
+
+
+def handle_asset_search(args: argparse.Namespace) -> int:
+    return run_tool_command(
+        tool="library.asset.search",
+        input_data={
+            "terms": args.terms,
+            "include_inactive": args.all,
+            "limit": args.limit,
+        },
         json_output=args.json,
         summary_json=False,
         dry_run=False,
@@ -1046,6 +1106,9 @@ def print_compact_human_result(payload: dict[str, Any]) -> None:
     tool = str(payload.get("tool") or "")
     if payload.get("status") == "success":
         print(_compact_success_message(tool, source_data))
+        if tool == "library.asset.search":
+            _print_asset_search_results(source_data)
+            return
         metric_line = _compact_metric_line(source_data)
         if metric_line:
             print(metric_line)
@@ -1085,6 +1148,18 @@ def _compact_success_message(tool: str, data: dict[str, Any]) -> str:
                 "Assets ready for permanent removal."
             )
         return f"Permanently purged {int(data.get('assets_purged') or 0)} Assets."
+    if tool == "library.asset.tags.update":
+        added = len(data.get("tags_added") or [])
+        removed = len(data.get("tags_removed") or [])
+        if added and removed:
+            return f"Updated {added + removed} tags on the Asset."
+        if added:
+            return f"Added {added} tag{'s' if added != 1 else ''} to the Asset."
+        if removed:
+            return f"Removed {removed} tag{'s' if removed != 1 else ''} from the Asset."
+        return "The Asset tags were already up to date."
+    if tool == "library.asset.search":
+        return f"Found {int(data.get('count') or 0)} Assets."
     if tool.endswith(".auth.status"):
         return _authentication_status_message(data)
     return "The operation completed successfully."
@@ -1118,6 +1193,34 @@ def _authentication_status_message(data: dict[str, Any]) -> str:
         if isinstance(nested_status, str) and nested_status in messages:
             return messages[nested_status]
     return "The authentication check completed, but readiness was not confirmed."
+
+
+def _print_asset_search_results(data: dict[str, Any]) -> None:
+    for asset in data.get("assets") or []:
+        if not isinstance(asset, dict):
+            continue
+        paths = asset.get("paths") if isinstance(asset.get("paths"), list) else []
+        first_path = paths[0].get("path") if paths and isinstance(paths[0], dict) else ""
+        label = asset.get("title") or (Path(str(first_path)).name if first_path else "Untitled")
+        tags = ", ".join(str(tag) for tag in asset.get("tags") or [])
+        suffix = f" | {_one_line(tags)}" if tags else ""
+        print(
+            f"{_one_line(asset.get('asset_id'))} | {_one_line(asset.get('state'))} | "
+            f"{_one_line(asset.get('media_type'))} | {_one_line(label)}{suffix}"
+        )
+
+
+def _one_line(value: Any, *, max_length: int = 160) -> str:
+    characters: list[str] = []
+    for character in str(value or ""):
+        category = unicodedata.category(character)
+        if category == "Cc":
+            characters.append(" ")
+        elif not category.startswith("C"):
+            characters.append(character)
+    safe = "".join(characters)
+    text = " ".join(safe.split())
+    return text if len(text) <= max_length else f"{text[: max_length - 3]}..."
 
 
 def _compact_metric_line(data: dict[str, Any]) -> str | None:

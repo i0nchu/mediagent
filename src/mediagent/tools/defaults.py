@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from mediagent.core.tooling import ToolRegistry
 from mediagent.tools import (
+    asset_tools,
     auth_tools,
     cleanup_tools,
     comic_tools,
@@ -28,6 +29,7 @@ from mediagent.tools import (
 def create_default_registry() -> ToolRegistry:
     registry = ToolRegistry()
     for module in (
+        asset_tools,
         core_tools,
         cleanup_tools,
         comic_tools,

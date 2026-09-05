@@ -18,6 +18,13 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 class CliTests(unittest.TestCase):
+    def test_human_output_removes_terminal_control_characters(self) -> None:
+        self.assertEqual(
+            cli._one_line("safe\x1b[2J\u202eINJECT\nnext"),
+            "safe [2JINJECT next",
+        )
+        self.assertEqual(cli._one_line("safe\ud800text"), "safetext")
+
     def test_tools_list_json(self) -> None:
         completed = self.run_cli("tools", "list", "--json")
 
@@ -76,7 +83,38 @@ class CliTests(unittest.TestCase):
         self.assertIn("status", completed.stdout)
         self.assertIn("remove", completed.stdout)
         self.assertIn("restore", completed.stdout)
+        self.assertIn("search", completed.stdout)
+        self.assertIn("tag", completed.stdout)
+        self.assertIn("untag", completed.stdout)
         self.assertIn("trash", completed.stdout)
+
+    @patch("mediagent.cli.run_tool_command", return_value=0)
+    def test_short_tag_and_untag_route_asset_tools(self, run_tool) -> None:
+        self.assertEqual(cli.run(["tag", "asset_example", "favorite", "blue"]), 0)
+        first = run_tool.call_args
+        self.assertEqual(first.kwargs["tool"], "library.asset.tags.update")
+        self.assertEqual(
+            first.kwargs["input_data"],
+            {"asset_id": "asset_example", "add": ["favorite", "blue"]},
+        )
+
+        self.assertEqual(cli.run(["untag", "asset_example", "blue"]), 0)
+        second = run_tool.call_args
+        self.assertEqual(second.kwargs["tool"], "library.asset.tags.update")
+        self.assertEqual(
+            second.kwargs["input_data"],
+            {"asset_id": "asset_example", "remove": ["blue"]},
+        )
+
+    @patch("mediagent.cli.run_tool_command", return_value=0)
+    def test_short_search_routes_asset_search(self, run_tool) -> None:
+        self.assertEqual(cli.run(["search", "favorite", "Alice", "--all", "--limit", "12"]), 0)
+
+        self.assertEqual(run_tool.call_args.kwargs["tool"], "library.asset.search")
+        self.assertEqual(
+            run_tool.call_args.kwargs["input_data"],
+            {"terms": ["favorite", "Alice"], "include_inactive": True, "limit": 12},
+        )
 
     def test_short_init_uses_configured_database(self) -> None:
         with (
@@ -629,6 +667,59 @@ class CliTests(unittest.TestCase):
             self.assertEqual(removed.returncode, 0, removed.stderr)
             self.assertEqual(restored.returncode, 0, restored.stderr)
             self.assertTrue(renamed_path.is_file())
+
+    def test_asset_tag_and_search_cli_workflow(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            data_dir = Path(temp_dir) / "data"
+            library_root = Path(temp_dir) / "library"
+            db_path = data_dir / "mediagent.sqlite3"
+            source = library_root / "photo" / "evening.jpg"
+            source.parent.mkdir(parents=True)
+            source.write_bytes(b"cli-search-content")
+            db.initialize_database(db_path)
+            db.upsert_media_item(
+                db_path,
+                {
+                    "platform": "local",
+                    "remote_id": "cli-search",
+                    "media_type": "photo",
+                    "status": "downloaded",
+                    "metadata": {"title": "Evening Sky"},
+                },
+            )
+            file_record = db.upsert_media_file(
+                db_path,
+                platform="local",
+                remote_id="cli-search",
+                remote_url=None,
+                local_path=str(source),
+                mime_type="image/jpeg",
+                size_bytes=source.stat().st_size,
+                checksum=library_content.sha256_checksum(source)[0],
+                status="downloaded",
+                library_relative_path="photo/evening.jpg",
+                file_health="healthy",
+            )
+            adoption = library_content.adopt_media_file(db_path, file_id=file_record["id"])
+            asset_id = adoption["asset_id"]
+            env_updates = {
+                "MEDIAGENT_DATA_DIR": str(data_dir),
+                "MEDIAGENT_LIBRARY_DIR": str(library_root),
+                "MEDIAGENT_DB_PATH": str(db_path),
+            }
+
+            tagged = self.run_cli("tag", asset_id, "favorite", env_updates=env_updates)
+            searched = self.run_cli("search", "favorite", "Evening", "--json", env_updates=env_updates)
+            untagged = self.run_cli("untag", asset_id, "FAVORITE", env_updates=env_updates)
+
+            self.assertEqual(tagged.returncode, 0, tagged.stderr)
+            self.assertEqual(tagged.stdout, "Added 1 tag to the Asset.\n")
+            self.assertEqual(searched.returncode, 0, searched.stderr)
+            search_payload = json.loads(searched.stdout)
+            self.assertEqual(search_payload["data"]["count"], 1)
+            self.assertEqual(search_payload["data"]["assets"][0]["asset_id"], asset_id)
+            self.assertEqual(untagged.returncode, 0, untagged.stderr)
+            self.assertEqual(untagged.stdout, "Removed 1 tag from the Asset.\n")
 
     def test_library_cli_reconcile_trash_dry_run(self) -> None:
         with TemporaryDirectory() as temp_dir:
