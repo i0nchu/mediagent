@@ -9,6 +9,7 @@
 - [x] Phase 2 Stage 3: Asset removal, restore, retention purge, and permanent content tombstones
 - [x] Phase 2 Stage 4: Asset tags and library search
 - [x] Phase 2 Stage 5: unified add orchestration and durable metadata-only AI tagging
+- [x] Instagram multi-session fallback for authenticated exact links
 - [ ] Unified Telegram inbox intake for links, direct uploads, and forwarded media
 - [ ] Pornhub exact-video support through a dedicated yt-dlp-backed adapter
 

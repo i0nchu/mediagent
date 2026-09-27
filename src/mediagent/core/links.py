@@ -1887,6 +1887,8 @@ def _instagram_skip_reason(code: str) -> str:
         return "rate_limited"
     if code == "unsafe_credential_path":
         return "unsafe_credential_path"
+    if code == "instagram_profile_config_invalid":
+        return "requires_auth"
     if code == "instagram_media_not_found":
         return "deleted_or_removed"
     if code in {"instagram_media_private", "instagram_media_unsupported"}:

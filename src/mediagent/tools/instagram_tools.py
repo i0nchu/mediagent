@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -23,6 +24,15 @@ from mediagent.platforms.instagram import parser as instagram_parser
 from mediagent.tools import link_tools
 
 
+@dataclass(frozen=True)
+class _AuthSelection:
+    session_file: str | None
+    username: str | None
+    password: str | None
+    profile_name: str | None = None
+    credential_env_names: tuple[str, ...] = ()
+
+
 def definitions() -> list[ToolDefinition]:
     saved_properties = {
         "db_path": {"type": "string"}, "session_file": {"type": "string"},
@@ -39,6 +49,7 @@ def definitions() -> list[ToolDefinition]:
                 input_schema={
                     "type": "object",
                     "properties": {
+                        "profile": {"type": "string"},
                         "session_file": {"type": "string"},
                         "timeout_seconds": {"type": "number"},
                     },
@@ -56,6 +67,7 @@ def definitions() -> list[ToolDefinition]:
                 input_schema={
                     "type": "object",
                     "properties": {
+                        "profile": {"type": "string"},
                         "username": {"type": "string"},
                         "password": {"type": "string"},
                         "session_file": {"type": "string"},
@@ -80,6 +92,7 @@ def definitions() -> list[ToolDefinition]:
                 input_schema={
                     "type": "object",
                     "properties": {
+                        "profile": {"type": "string"},
                         "session_file": {"type": "string"},
                         "timeout_seconds": {"type": "number"},
                         "cooldown_seconds": {"type": "integer"},
@@ -415,17 +428,25 @@ def _validate_saved_dry_run(context: ToolContext, input_data: dict[str, Any]) ->
 
 async def auth_status(context: ToolContext, input_data: dict[str, Any]) -> ToolResult:
     try:
-        session_file = _safe_session_file(context, input_data)
+        selection = _auth_selection(context, input_data, login_fields=False)
     except PathSafetyError as exc:
         return ToolResult.failure("unsafe_credential_path", str(exc), category=ErrorCategory.FILESYSTEM)
+    except instagram_auth.InstagramPlatformError as exc:
+        return _instagram_failure(exc.code, str(exc), details=exc.public_details())
     if context.dry_run:
-        return ToolResult.success({"would_check": True, "provider": "instagram"})
+        return ToolResult.success(
+            {
+                "would_check": True,
+                "provider": "instagram",
+                **({"profile": selection.profile_name} if selection.profile_name else {}),
+            }
+        )
     try:
         status = instagram_auth.session_status(
             env=context.env,
             cwd=context.cwd,
             http_client=context.http_client,
-            session_file=session_file,
+            session_file=selection.session_file,
             timeout=_timeout(input_data),
         )
     except instagram_auth.InstagramPlatformError as exc:
@@ -436,25 +457,27 @@ async def auth_status(context: ToolContext, input_data: dict[str, Any]) -> ToolR
         return _instagram_failure(
             code,
             "Instagram auth session is not usable.",
-            data={"session": status},
+            data={"session": _session_for_selection(status, selection)},
             details=error,
         )
-    return ToolResult.success({"session": status})
+    return ToolResult.success({"session": _session_for_selection(status, selection)})
 
 
 async def auth_login(context: ToolContext, input_data: dict[str, Any]) -> ToolResult:
     try:
-        session_file = _safe_session_file(context, input_data)
+        selection = _auth_selection(context, input_data, login_fields=True)
     except PathSafetyError as exc:
         return ToolResult.failure("unsafe_credential_path", str(exc), category=ErrorCategory.FILESYSTEM)
+    except instagram_auth.InstagramPlatformError as exc:
+        return _instagram_failure(exc.code, str(exc), details=exc.public_details())
     if context.dry_run:
-        config = instagram_auth.load_config(env=context.env, cwd=context.cwd)
         return ToolResult.success(
             {
                 "would_login": True,
-                "would_write_credentials": session_file is not None,
-                "account_present": bool(input_data.get("username") or config.account),
-                "secret_present": bool(input_data.get("password") or config.secret),
+                "would_write_credentials": selection.session_file is not None,
+                "account_present": bool(selection.username),
+                "secret_present": bool(selection.password),
+                **({"profile": selection.profile_name} if selection.profile_name else {}),
             }
         )
     try:
@@ -462,52 +485,83 @@ async def auth_login(context: ToolContext, input_data: dict[str, Any]) -> ToolRe
             env=context.env,
             cwd=context.cwd,
             http_client=context.http_client,
-            username=input_data.get("username"),
-            password=input_data.get("password"),
-            session_file=session_file,
+            username=selection.username,
+            password=selection.password,
+            session_file=selection.session_file,
             timeout=_timeout(input_data),
         )
     except instagram_auth.InstagramPlatformError as exc:
-        _write_attempt_meta(context, session_file=session_file, status="failed", error_code=exc.code, login_attempted=True)
+        _write_attempt_meta(
+            context,
+            session_file=selection.session_file,
+            status="failed",
+            error_code=exc.code,
+            login_attempted=True,
+        )
         return _instagram_failure(exc.code, str(exc), details=exc.public_details())
-    _write_attempt_meta(context, session_file=session_file, status="usable", error_code=None, login_attempted=True)
-    return ToolResult.success({"session": session, "credentials_written": bool(session_file)})
+    _write_attempt_meta(
+        context,
+        session_file=selection.session_file,
+        status="usable",
+        error_code=None,
+        login_attempted=True,
+    )
+    return ToolResult.success(
+        {
+            "session": _session_for_selection(session, selection),
+            "credentials_written": bool(selection.session_file),
+        }
+    )
 
 
 async def auth_ensure_session(context: ToolContext, input_data: dict[str, Any]) -> ToolResult:
     try:
-        session_file = _safe_session_file(context, input_data)
+        selection = _auth_selection(context, input_data, login_fields=False)
     except PathSafetyError as exc:
         return ToolResult.failure("unsafe_credential_path", str(exc), category=ErrorCategory.FILESYSTEM)
+    except instagram_auth.InstagramPlatformError as exc:
+        return _instagram_failure(exc.code, str(exc), details=exc.public_details())
     if context.dry_run:
         return ToolResult.success(
             {
                 "would_check": True,
                 "would_login_if_needed": True,
                 "cooldown_seconds": _cooldown_seconds(input_data),
+                **({"profile": selection.profile_name} if selection.profile_name else {}),
             }
         )
     status = instagram_auth.session_status(
         env=context.env,
         cwd=context.cwd,
         http_client=context.http_client,
-        session_file=session_file,
+        session_file=selection.session_file,
         timeout=_timeout(input_data),
     )
     if status.get("status") == "usable":
-        _write_attempt_meta(context, session_file=session_file, status="usable", error_code=None)
-        return ToolResult.success({"session": status, "login_attempted": False})
+        _write_attempt_meta(context, session_file=selection.session_file, status="usable", error_code=None)
+        return ToolResult.success(
+            {"session": _session_for_selection(status, selection), "login_attempted": False}
+        )
     error = status.get("error") if isinstance(status.get("error"), dict) else {}
     code = str(error.get("error_code") or "instagram_session_invalid")
     if code in instagram_auth.USER_ACTION_REQUIRED_CODES:
-        _write_attempt_meta(context, session_file=session_file, status=str(status.get("status")), error_code=code)
+        _write_attempt_meta(
+            context,
+            session_file=selection.session_file,
+            status=str(status.get("status")),
+            error_code=code,
+        )
         return _instagram_failure(
             code,
             "Instagram session requires user action.",
-            data={"session": status, "login_attempted": False},
+            data={"session": _session_for_selection(status, selection), "login_attempted": False},
             details=error,
         )
-    path = instagram_auth.session_file_path(env=context.env, cwd=context.cwd, session_file=session_file)
+    path = instagram_auth.session_file_path(
+        env=context.env,
+        cwd=context.cwd,
+        session_file=selection.session_file,
+    )
     metadata = instagram_auth.read_session_meta(path) if path else {}
     can_login, next_attempt_at = instagram_auth.should_attempt_login(
         metadata=metadata,
@@ -519,7 +573,7 @@ async def auth_ensure_session(context: ToolContext, input_data: dict[str, Any]) 
         return _instagram_failure(
             code,
             "Instagram login cooldown is active.",
-            data={"session": status, "login_attempted": False},
+            data={"session": _session_for_selection(status, selection), "login_attempted": False},
             details=details,
             category=ErrorCategory.RATE_LIMIT if code in instagram_auth.RETRYABLE_CODES else ErrorCategory.AUTH,
         )
@@ -528,19 +582,38 @@ async def auth_ensure_session(context: ToolContext, input_data: dict[str, Any]) 
             env=context.env,
             cwd=context.cwd,
             http_client=context.http_client,
-            session_file=session_file,
+            username=selection.username,
+            password=selection.password,
+            session_file=selection.session_file,
             timeout=_timeout(input_data),
         )
     except instagram_auth.InstagramPlatformError as exc:
-        _write_attempt_meta(context, session_file=session_file, status="failed", error_code=exc.code, login_attempted=True)
+        _write_attempt_meta(
+            context,
+            session_file=selection.session_file,
+            status="failed",
+            error_code=exc.code,
+            login_attempted=True,
+        )
         return _instagram_failure(
             exc.code,
             str(exc),
-            data={"previous_session": status, "login_attempted": True},
+            data={
+                "previous_session": _session_for_selection(status, selection),
+                "login_attempted": True,
+            },
             details=exc.public_details(),
         )
-    _write_attempt_meta(context, session_file=session_file, status="usable", error_code=None, login_attempted=True)
-    return ToolResult.success({"session": session, "login_attempted": True})
+    _write_attempt_meta(
+        context,
+        session_file=selection.session_file,
+        status="usable",
+        error_code=None,
+        login_attempted=True,
+    )
+    return ToolResult.success(
+        {"session": _session_for_selection(session, selection), "login_attempted": True}
+    )
 
 
 async def link_resolve(context: ToolContext, input_data: dict[str, Any]) -> ToolResult:
@@ -554,10 +627,12 @@ async def link_resolve(context: ToolContext, input_data: dict[str, Any]) -> Tool
                 {"reason": "unsupported_instagram_url"},
             ),
         )
-    try:
-        session_file = _safe_session_file(context, input_data)
-    except PathSafetyError as exc:
-        return ToolResult.failure("unsafe_credential_path", str(exc), category=ErrorCategory.FILESYSTEM)
+    session_file = None
+    if input_data.get("session_file"):
+        try:
+            session_file = _safe_session_file(context, input_data)
+        except PathSafetyError as exc:
+            return ToolResult.failure("unsafe_credential_path", str(exc), category=ErrorCategory.FILESYSTEM)
     policy = LinkSafetyPolicy(timeout_seconds=_timeout(input_data))
     request = ResolveRequest(
         http_client=context.http_client,
@@ -590,6 +665,62 @@ async def link_resolve(context: ToolContext, input_data: dict[str, Any]) -> Tool
         data={"resolution": public_resolution},
         details=details,
     )
+
+
+def _auth_selection(
+    context: ToolContext,
+    input_data: dict[str, Any],
+    *,
+    login_fields: bool,
+) -> _AuthSelection:
+    raw_profile = input_data.get("profile")
+    if raw_profile is None:
+        config = instagram_auth.load_config(env=context.env, cwd=context.cwd)
+        return _AuthSelection(
+            session_file=_safe_session_file(context, input_data),
+            username=str(input_data.get("username") or config.account or "") or None,
+            password=str(input_data.get("password") or config.secret or "") or None,
+        )
+
+    conflicting = ["session_file"]
+    if login_fields:
+        conflicting.extend(("username", "password"))
+    present = [field for field in conflicting if field in input_data]
+    if present:
+        raise instagram_auth.InstagramPlatformError(
+            "instagram_profile_config_invalid",
+            "An Instagram profile cannot be combined with explicit credential inputs.",
+            details={"conflicting_fields": present},
+        )
+    profile = instagram_auth.load_profile(env=context.env, cwd=context.cwd, name=str(raw_profile))
+    path = instagram_auth.session_file_path(
+        env=context.env,
+        cwd=context.cwd,
+        session_file=profile.session_file,
+    )
+    if path is not None:
+        ensure_inside(path, context.allowed_write_roots())
+    return _AuthSelection(
+        session_file=str(path) if path is not None else None,
+        username=profile.account,
+        password=profile.secret,
+        profile_name=profile.name,
+        credential_env_names=profile.credential_env_names,
+    )
+
+
+def _session_for_selection(session: dict[str, Any], selection: _AuthSelection) -> dict[str, Any]:
+    if selection.profile_name is None:
+        return session
+    result = dict(session)
+    result["profile"] = selection.profile_name
+    result["credential_refs"] = [
+        {"source": "env", "name": name, "key": None}
+        for name in selection.credential_env_names
+        if name not in {instagram_auth.INSTAGRAM_SECRET_ENV}
+        and not name.endswith("_SECRET")
+    ]
+    return result
 
 
 def _safe_session_file(context: ToolContext, input_data: dict[str, Any]) -> str | None:
@@ -651,6 +782,8 @@ def _instagram_failure(
 
 
 def _category_for_code(code: str) -> ErrorCategory:
+    if code == "instagram_profile_config_invalid":
+        return ErrorCategory.VALIDATION
     if code in {"instagram_rate_limited", "instagram_temporarily_blocked"}:
         return ErrorCategory.RATE_LIMIT
     if code.startswith("instagram_session") or code in {
