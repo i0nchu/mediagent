@@ -1,4 +1,6 @@
 import asyncio
+import subprocess
+import sys
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -17,6 +19,21 @@ from mediagent.tools.defaults import create_default_registry
 
 
 class ToolingTests(unittest.TestCase):
+    def test_default_registry_imports_in_fresh_python_process(self) -> None:
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "from mediagent.tools.defaults import create_default_registry; "
+                "create_default_registry()",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+
     def test_tool_spec_and_result_are_json_compatible(self) -> None:
         spec = ToolSpec(
             name="example.tool",
