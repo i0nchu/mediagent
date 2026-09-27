@@ -864,6 +864,14 @@ def _merge_assets(
         "UPDATE assets SET metadata_json = ?, updated_at = ? WHERE id = ?",
         (json.dumps(metadata, sort_keys=True), now, canonical_id),
     )
+    from mediagent.core import asset_tagging_jobs
+
+    asset_tagging_jobs.reconcile_asset_merge(
+        connection,
+        canonical_id=canonical_id,
+        merged_id=merged_id,
+        now=now,
+    )
     connection.execute(
         """
         UPDATE assets

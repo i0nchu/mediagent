@@ -13,8 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from mediagent.agent import AgentRunner
-from mediagent.agent.core import LLMClient
-from mediagent.agent.llm import OllamaClient, OpenAICompatibleClient
+from mediagent.agent.llm import build_llm_client
 from mediagent.agent.skills import default_skill_registry
 from mediagent.core.config import EnvFileError, load_env_file
 from mediagent.core.operational_logging import OperationLogger, await_with_heartbeat, sanitize_log_text
@@ -134,9 +133,9 @@ def build_parser() -> argparse.ArgumentParser:
     restore.add_argument("--json", action="store_true", help="Emit complete machine-readable JSON.")
     restore.set_defaults(handler=handle_asset_restore)
 
-    tag = subcommands.add_parser("tag", help="Add tags to one Asset.")
-    tag.add_argument("asset_id", help="Stable Mediagent Asset identifier.")
-    tag.add_argument("tags", nargs="+", help="One or more tags to add.")
+    tag = subcommands.add_parser("tag", help="Add manual tags or run configured automatic tagging.")
+    tag.add_argument("asset_id", nargs="?", help="Stable Asset identifier; omit to retry pending jobs.")
+    tag.add_argument("tags", nargs="*", help="Manual tags; omit to generate tags with the configured LLM.")
     tag.add_argument("--json", action="store_true", help="Emit complete machine-readable JSON.")
     tag.set_defaults(handler=handle_asset_tag)
 
@@ -366,27 +365,13 @@ def handle_init(args: argparse.Namespace) -> int:
 
 
 def handle_add(args: argparse.Namespace) -> int:
-    if not _is_http_url(args.input):
-        return run_tool_command(
-            tool="media.local.import",
-            input_data={"path": args.input},
-            json_output=args.json,
-            summary_json=False,
-            dry_run=args.dry_run,
-            compact_human=True,
-        )
-    comic_link = _is_comic_link(args.input)
-    input_data: dict[str, Any] = {
-        "url": args.input,
-        "overwrite": args.overwrite,
-        "retry_failed": args.repair,
-        "repair_missing_files": args.repair,
-    }
-    if not comic_link:
-        input_data["write_sidecar_metadata"] = False
     return run_tool_command(
-        tool="comic.link.sync" if comic_link else "link.media.sync",
-        input_data=input_data,
+        tool="media.add",
+        input_data={
+            "input": args.input,
+            "overwrite": args.overwrite,
+            "repair": args.repair,
+        },
         json_output=args.json,
         summary_json=False,
         dry_run=args.dry_run,
@@ -420,6 +405,17 @@ def handle_asset_restore(args: argparse.Namespace) -> int:
 
 
 def handle_asset_tag(args: argparse.Namespace) -> int:
+    if not args.tags:
+        return run_tool_command(
+            tool="library.asset.tags.auto",
+            input_data={
+                **({"asset_ids": [args.asset_id], "force": True} if args.asset_id else {}),
+            },
+            json_output=args.json,
+            summary_json=False,
+            dry_run=False,
+            compact_human=True,
+        )
     return run_tool_command(
         tool="library.asset.tags.update",
         input_data={"asset_id": args.asset_id, "add": args.tags},
@@ -680,12 +676,6 @@ def _is_comic_link(url: str) -> bool:
     from mediagent.tools.comic_tools import comic_link_provider
 
     return comic_link_provider(url) is not None
-
-
-def _is_http_url(value: str) -> bool:
-    from urllib.parse import urlsplit
-
-    return urlsplit(value).scheme.lower() in {"http", "https"}
 
 
 def handle_agent_skills_list(args: argparse.Namespace) -> int:
@@ -1016,28 +1006,6 @@ def _load_simple_command_env() -> None:
     load_env_file(env_path.resolve())
 
 
-def build_llm_client() -> LLMClient:
-    import os
-
-    provider = os.environ.get("MEDIAGENT_LLM_PROVIDER", "ollama").strip().lower()
-    if provider == "ollama":
-        return OllamaClient(
-            base_url=os.environ.get("MEDIAGENT_OLLAMA_BASE_URL", "http://127.0.0.1:11434"),
-            model=os.environ.get("MEDIAGENT_OLLAMA_MODEL", "qwen3:8b"),
-            timeout=float(os.environ.get("MEDIAGENT_OLLAMA_TIMEOUT_SECONDS", "60")),
-            num_predict=int(os.environ.get("MEDIAGENT_OLLAMA_NUM_PREDICT", "512")),
-        )
-    if provider == "openai_compatible":
-        return OpenAICompatibleClient(
-            base_url=os.environ.get("MEDIAGENT_OPENAI_BASE_URL", "http://127.0.0.1:11435/v1"),
-            model=os.environ.get("MEDIAGENT_OPENAI_MODEL", "qwen3-8b"),
-            api_key=os.environ.get("MEDIAGENT_OPENAI_API_KEY", ""),
-            timeout=float(os.environ.get("MEDIAGENT_OPENAI_TIMEOUT_SECONDS", "60")),
-            max_tokens=int(os.environ.get("MEDIAGENT_OPENAI_MAX_TOKENS", "512")),
-        )
-    raise ValueError(f"Unsupported LLM provider: {provider}")
-
-
 def handle_experimental_telegram_sync_links(args: argparse.Namespace) -> int:
     args.tool = "telegram.inbox.sync_links"
     args.allow_experimental = True
@@ -1158,6 +1126,15 @@ def _compact_success_message(tool: str, data: dict[str, Any]) -> str:
         if removed:
             return f"Removed {removed} tag{'s' if removed != 1 else ''} from the Asset."
         return "The Asset tags were already up to date."
+    if tool == "library.asset.tags.auto":
+        tagging = data.get("tagging") if isinstance(data.get("tagging"), dict) else {}
+        tagged = int(tagging.get("tagged") or 0)
+        unchanged = int(tagging.get("unchanged") or 0)
+        if tagged:
+            return f"Generated tags for {tagged} Asset{'s' if tagged != 1 else ''}."
+        if unchanged:
+            return f"Verified tags for {unchanged} Asset{'s' if unchanged != 1 else ''}."
+        return "No automatic tagging jobs were ready."
     if tool == "library.asset.search":
         return f"Found {int(data.get('count') or 0)} Assets."
     if tool.endswith(".auth.status"):

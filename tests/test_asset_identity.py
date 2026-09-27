@@ -215,7 +215,7 @@ class AssetIdentityTests(unittest.TestCase):
                     connection.execute("SELECT COUNT(*) FROM asset_representations").fetchone()[0],
                 )
 
-            self.assertEqual(db.get_schema_version(db_path), "13")
+            self.assertEqual(db.get_schema_version(db_path), "14")
             self.assertTrue(migration["migrated"])
             self.assertEqual(migration["previous_schema_version"], "10")
             self.assertEqual(migration["asset_backfill"]["assets_created"], 1)

@@ -40,7 +40,7 @@ class LibraryContentToolTests(unittest.TestCase):
                     row["name"]
                     for row in connection.execute("PRAGMA table_info(media_files)").fetchall()
                 }
-            self.assertEqual(db.get_schema_version(db_path), "13")
+            self.assertEqual(db.get_schema_version(db_path), "14")
             self.assertTrue({"content_blobs", "library_entries", "library_operations"} <= tables)
             self.assertIn("library_entry_id", media_file_columns)
 
@@ -78,7 +78,7 @@ class LibraryContentToolTests(unittest.TestCase):
                 ).fetchone()
                 blob_count = connection.execute("SELECT COUNT(*) FROM content_blobs").fetchone()[0]
 
-            self.assertEqual(db.get_schema_version(db_path), "13")
+            self.assertEqual(db.get_schema_version(db_path), "14")
             self.assertEqual(after["id"], before["id"])
             self.assertEqual(after["library_entry_id"], adoption["entry_id"])
             self.assertEqual(after["checksum"], before["checksum"])

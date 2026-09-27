@@ -107,6 +107,19 @@ class CliTests(unittest.TestCase):
         )
 
     @patch("mediagent.cli.run_tool_command", return_value=0)
+    def test_short_tag_without_manual_tags_runs_automatic_tagging(self, run_tool) -> None:
+        self.assertEqual(cli.run(["tag", "asset_example"]), 0)
+        self.assertEqual(run_tool.call_args.kwargs["tool"], "library.asset.tags.auto")
+        self.assertEqual(
+            run_tool.call_args.kwargs["input_data"],
+            {"asset_ids": ["asset_example"], "force": True},
+        )
+
+        self.assertEqual(cli.run(["tag"]), 0)
+        self.assertEqual(run_tool.call_args.kwargs["tool"], "library.asset.tags.auto")
+        self.assertEqual(run_tool.call_args.kwargs["input_data"], {})
+
+    @patch("mediagent.cli.run_tool_command", return_value=0)
     def test_short_search_routes_asset_search(self, run_tool) -> None:
         self.assertEqual(cli.run(["search", "favorite", "Alice", "--all", "--limit", "12"]), 0)
 
@@ -136,15 +149,13 @@ class CliTests(unittest.TestCase):
             result = cli.run(["add", "https://example.com/file.jpg", "--dry-run"])
 
         self.assertEqual(result, 0)
-        self.assertEqual(run_tool.call_args.kwargs["tool"], "link.media.sync")
+        self.assertEqual(run_tool.call_args.kwargs["tool"], "media.add")
         self.assertEqual(
             run_tool.call_args.kwargs["input_data"],
             {
-                "url": "https://example.com/file.jpg",
+                "input": "https://example.com/file.jpg",
                 "overwrite": False,
-                "retry_failed": True,
-                "repair_missing_files": True,
-                "write_sidecar_metadata": False,
+                "repair": True,
             },
         )
         self.assertTrue(run_tool.call_args.kwargs["compact_human"])
@@ -157,8 +168,11 @@ class CliTests(unittest.TestCase):
             result = cli.run(["add", "./incoming", "--dry-run"])
 
         self.assertEqual(result, 0)
-        self.assertEqual(run_tool.call_args.kwargs["tool"], "media.local.import")
-        self.assertEqual(run_tool.call_args.kwargs["input_data"], {"path": "./incoming"})
+        self.assertEqual(run_tool.call_args.kwargs["tool"], "media.add")
+        self.assertEqual(
+            run_tool.call_args.kwargs["input_data"],
+            {"input": "./incoming", "overwrite": False, "repair": True},
+        )
         self.assertTrue(run_tool.call_args.kwargs["dry_run"])
         self.assertTrue(run_tool.call_args.kwargs["compact_human"])
 
@@ -571,6 +585,25 @@ class CliTests(unittest.TestCase):
                 with redirect_stdout(stdout):
                     cli.print_compact_human_result(
                         {"status": "success", "tool": tool, "data": data}
+                    )
+                self.assertEqual(stdout.getvalue(), expected)
+
+    def test_compact_human_auto_tag_result_is_actionable(self) -> None:
+        cases = (
+            ({"tagged": 2}, "Generated tags for 2 Assets.\n"),
+            ({"unchanged": 1}, "Verified tags for 1 Asset.\n"),
+            ({"deferred": 3}, "No automatic tagging jobs were ready.\n"),
+        )
+        for tagging, expected in cases:
+            with self.subTest(tagging=tagging):
+                stdout = StringIO()
+                with redirect_stdout(stdout):
+                    cli.print_compact_human_result(
+                        {
+                            "status": "success",
+                            "tool": "library.asset.tags.auto",
+                            "data": {"tagging": tagging},
+                        }
                     )
                 self.assertEqual(stdout.getvalue(), expected)
 

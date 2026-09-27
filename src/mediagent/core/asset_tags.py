@@ -44,6 +44,73 @@ def update_tags(
 ) -> dict[str, Any]:
     """Atomically add or remove equal-priority tags on one canonical Asset."""
 
+    additions, removals = _validated_tag_changes(add=add, remove=remove)
+    now = datetime.now(UTC).isoformat()
+    with db.connect(db_path) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        return update_tags_in_connection(
+            connection,
+            asset_id=asset_id,
+            add=additions,
+            remove=removals,
+            now=now,
+        )
+
+
+def update_tags_in_connection(
+    connection: sqlite3.Connection,
+    *,
+    asset_id: str,
+    add: Iterable[str] = (),
+    remove: Iterable[str] = (),
+    now: str | None = None,
+) -> dict[str, Any]:
+    """Update tags using the caller's transaction.
+
+    This is intentionally connection-scoped so workflows such as automated
+    tagging can make the metadata write and their durable state transition one
+    atomic operation.
+    """
+
+    additions, removals = _validated_tag_changes(add=add, remove=remove)
+    timestamp = now or datetime.now(UTC).isoformat()
+    canonical_id = assets.resolve_asset_id(connection, asset_id)
+    if canonical_id is None:
+        raise ValueError(f"Unknown Asset: {asset_id}")
+    row = connection.execute(
+        "SELECT metadata_json FROM assets WHERE id = ?", (canonical_id,)
+    ).fetchone()
+    if row is None:
+        raise ValueError(f"Unknown Asset: {asset_id}")
+    metadata = _metadata(row["metadata_json"], strict=True)
+    current = canonicalize_tags(metadata.get("tags"), strict=True)
+    removal_keys = {tag_key(tag) for tag in removals}
+    updated = [tag for tag in current if tag_key(tag) not in removal_keys]
+    known = {tag_key(tag) for tag in updated}
+    for tag in additions:
+        if tag_key(tag) not in known:
+            updated.append(tag)
+            known.add(tag_key(tag))
+    if len(updated) > MAX_TAGS_PER_ASSET:
+        raise ValueError(f"An Asset may contain at most {MAX_TAGS_PER_ASSET} tags.")
+    metadata["tags"] = updated
+    connection.execute(
+        "UPDATE assets SET metadata_json = ?, updated_at = ? WHERE id = ?",
+        (json.dumps(metadata, ensure_ascii=False, sort_keys=True), timestamp, canonical_id),
+    )
+    result = assets.get_asset(connection, canonical_id)
+    result["tags_added"] = [
+        tag for tag in additions if tag_key(tag) not in {tag_key(value) for value in current}
+    ]
+    result["tags_removed"] = [tag for tag in current if tag_key(tag) in removal_keys]
+    return result
+
+
+def _validated_tag_changes(
+    *,
+    add: Iterable[str],
+    remove: Iterable[str],
+) -> tuple[list[str], list[str]]:
     additions = normalize_tags(add)
     removals = normalize_tags(remove)
     if not additions and not removals:
@@ -54,38 +121,7 @@ def update_tags(
     overlap = {tag_key(tag) for tag in additions} & {tag_key(tag) for tag in removals}
     if overlap:
         raise ValueError("The same tag cannot be added and removed in one operation.")
-
-    now = datetime.now(UTC).isoformat()
-    with db.connect(db_path) as connection:
-        connection.execute("BEGIN IMMEDIATE")
-        canonical_id = assets.resolve_asset_id(connection, asset_id)
-        if canonical_id is None:
-            raise ValueError(f"Unknown Asset: {asset_id}")
-        row = connection.execute(
-            "SELECT metadata_json FROM assets WHERE id = ?", (canonical_id,)
-        ).fetchone()
-        if row is None:
-            raise ValueError(f"Unknown Asset: {asset_id}")
-        metadata = _metadata(row["metadata_json"], strict=True)
-        current = canonicalize_tags(metadata.get("tags"), strict=True)
-        removal_keys = {tag_key(tag) for tag in removals}
-        updated = [tag for tag in current if tag_key(tag) not in removal_keys]
-        known = {tag_key(tag) for tag in updated}
-        for tag in additions:
-            if tag_key(tag) not in known:
-                updated.append(tag)
-                known.add(tag_key(tag))
-        if len(updated) > MAX_TAGS_PER_ASSET:
-            raise ValueError(f"An Asset may contain at most {MAX_TAGS_PER_ASSET} tags.")
-        metadata["tags"] = updated
-        connection.execute(
-            "UPDATE assets SET metadata_json = ?, updated_at = ? WHERE id = ?",
-            (json.dumps(metadata, ensure_ascii=False, sort_keys=True), now, canonical_id),
-        )
-        result = assets.get_asset(connection, canonical_id)
-    result["tags_added"] = [tag for tag in additions if tag_key(tag) not in {tag_key(v) for v in current}]
-    result["tags_removed"] = [tag for tag in current if tag_key(tag) in removal_keys]
-    return result
+    return additions, removals
 
 
 def search(

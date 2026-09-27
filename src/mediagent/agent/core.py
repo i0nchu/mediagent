@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from typing import Protocol
 
 from mediagent.agent.actions import AgentActionError, parse_agent_action, parse_skill_choice
+from mediagent.agent.llm.protocol import LLMClient
 from mediagent.agent.prompts import SYSTEM_PROMPT, action_prompt, skill_selection_prompt
 from mediagent.agent.schema import AgentAction, AgentActionType, AgentError, AgentRunResult, AgentStatus, AgentStep
 from mediagent.agent.skills import AgentSkill, SkillRegistry, default_skill_registry
@@ -17,11 +17,6 @@ from mediagent.tools.defaults import create_default_registry
 
 UNSUPPORTED_SKILL_NAMES = frozenset({"unsupported_task", "tool_gap", "no_skill", "none"})
 DESTINATION_INPUT_FIELDS = frozenset({"library_root", "target_dir", "target_path"})
-
-
-class LLMClient(Protocol):
-    def generate(self, prompt: str, *, system: str | None = None) -> str:
-        ...
 
 
 @dataclass

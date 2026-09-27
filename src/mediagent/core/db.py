@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 
-SCHEMA_VERSION = "13"
+SCHEMA_VERSION = "14"
 SQLITE_BUSY_TIMEOUT_MILLISECONDS = 30_000
 
 
@@ -30,12 +30,13 @@ def initialize_database(db_path: Path) -> dict[str, Any]:
         _ensure_media_files_schema(connection)
         _ensure_link_queue_schema(connection)
         _ensure_library_content_schema(connection)
-        from mediagent.core import assets
+        from mediagent.core import asset_tagging_jobs, assets
 
         assets.ensure_schema(connection)
+        asset_tagging_jobs.ensure_schema(connection)
         asset_reconciliation_required = (
-            previous_version != SCHEMA_VERSION
-            or not assets_existed
+            not assets_existed
+            or _legacy_asset_refresh_required(previous_version)
             or assets.needs_backfill(connection)
         )
         if asset_reconciliation_required:
@@ -72,6 +73,17 @@ def _table_exists(connection: sqlite3.Connection, table: str) -> bool:
         (table,),
     ).fetchone()
     return row is not None
+
+
+def _legacy_asset_refresh_required(previous_version: str | None) -> bool:
+    """Keep pre-tag baseline migration without rescanning later schemas."""
+
+    if previous_version is None:
+        return True
+    try:
+        return int(previous_version) <= 11
+    except ValueError:
+        return True
 
 
 def connect(db_path: Path) -> sqlite3.Connection:

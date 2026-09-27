@@ -10,7 +10,13 @@ from urllib import error, request
 from unittest.mock import patch
 
 from mediagent import cli
-from mediagent.agent.llm import OllamaClient, OpenAICompatibleClient
+from mediagent.agent.core import LLMClient as CoreLLMClient
+from mediagent.agent.llm import (
+    LLMClient,
+    OllamaClient,
+    OpenAICompatibleClient,
+    build_llm_client,
+)
 
 
 class FakeResponse:
@@ -29,6 +35,17 @@ class FakeResponse:
 
 
 class LLMClientTests(unittest.TestCase):
+    def test_protocol_and_factory_are_available_below_agent_llm(self) -> None:
+        self.assertIs(CoreLLMClient, LLMClient)
+        client = build_llm_client(
+            {
+                "MEDIAGENT_LLM_PROVIDER": "ollama",
+                "MEDIAGENT_OLLAMA_MODEL": "factory-model",
+            }
+        )
+        self.assertIsInstance(client, OllamaClient)
+        self.assertEqual(client.model, "factory-model")
+
     def test_ollama_provider_build_behavior_is_unchanged(self) -> None:
         with patch.dict(
             "os.environ",
