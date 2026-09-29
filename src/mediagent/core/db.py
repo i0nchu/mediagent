@@ -1646,6 +1646,9 @@ def link_resolution_retryable(
 
     if status == "resolved":
         return False
+    details = resolution.get("details")
+    if isinstance(details, dict) and isinstance(details.get("retryable"), bool):
+        return bool(details["retryable"])
     reason = skip_reason or resolution.get("skip_reason")
     if reason in {
         "unsafe_url",

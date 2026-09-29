@@ -12,6 +12,11 @@ dependencies = [
 [project.scripts]
 mediagent = "mediagent.cli:main"
 
+[project.optional-dependencies]
+video = [
+    "yt-dlp[curl-cffi,default]>=2026.8.19,<2027",
+]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"

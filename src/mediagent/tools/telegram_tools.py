@@ -8,22 +8,16 @@ import mimetypes
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Mapping
-from urllib.parse import urlparse
 
 from mediagent.core import assets, db, library_content
 from mediagent.core.auth import CredentialRef, resolve_credential
 from mediagent.core.filesystem import PathSafetyError, ensure_inside, normalize_path, resolve_placeholders
 from mediagent.core.links import (
-    ALLOWED_MEDIA_MIME_TYPES,
     LinkSafetyPolicy,
     ResolveRequest,
     URLSafetyError,
-    clean_mime,
     default_link_resolver_registry,
     extract_external_links_from_messages,
-    fetch_limited_follow_redirects,
-    header_value,
-    int_header,
     resolution_to_media_item,
     sanitize_link_resolution_for_output,
 )
@@ -1915,14 +1909,12 @@ async def _sync_one_link_item(
             result["bytes_written"] += file_record.get("size_bytes") or 0
             result["artifacts"].append(str(final_target))
             continue
-        download_result = _download_link_file_safely(
+        download_result = await link_tools.download_resolved_file_safely(
             context,
             input_data,
-            url=_link_file_download_url(file_info),
-            headers=_link_file_download_headers(file_info),
+            file_info=file_info,
             target_path=target_path,
             overwrite=overwrite,
-            expected_mime_prefix=_expected_mime_prefix(file_info),
         )
         if download_result.is_success:
             file_record = db.upsert_media_file(
@@ -1993,132 +1985,6 @@ async def _sync_one_link_item(
     )
     db.update_media_item_status(db_path, platform=platform, remote_id=remote_id, status=result["status"])
     return result
-
-
-def _download_link_file_safely(
-    context: ToolContext,
-    input_data: dict[str, Any],
-    *,
-    url: str,
-    headers: dict[str, str] | None = None,
-    target_path: Path,
-    overwrite: bool,
-    expected_mime_prefix: str | None,
-) -> ToolResult:
-    partial_path = target_path.with_name(target_path.name + ".partial")
-    try:
-        ensure_inside(target_path, context.allowed_write_roots())
-        ensure_inside(partial_path, context.allowed_write_roots())
-    except PathSafetyError as exc:
-        return ToolResult.failure("unsafe_path", str(exc), category=ErrorCategory.FILESYSTEM)
-    if target_path.exists() and not overwrite:
-        return ToolResult.failure(
-            "target_exists",
-            "Target file already exists and overwrite is false.",
-            details={"target_path": str(target_path)},
-            category=ErrorCategory.VALIDATION,
-        )
-
-    policy = _link_safety_policy(input_data)
-    request = ResolveRequest(
-        http_client=context.http_client,
-        policy=policy,
-        env=context.env,
-        cwd=context.cwd,
-        allowed_write_roots=tuple(context.allowed_write_roots()),
-        dry_run=context.dry_run,
-    )
-    try:
-        response, final_url = fetch_limited_follow_redirects(
-            url,
-            request=request,
-            max_bytes=policy.max_media_bytes + 1,
-            headers=headers,
-        )
-    except URLSafetyError as exc:
-        return ToolResult.failure(
-            "unsafe_url",
-            str(exc),
-            details={"reason": exc.reason, **exc.details},
-            category=ErrorCategory.NETWORK,
-        )
-    except Exception as exc:
-        return ToolResult.failure(
-            "download_failed",
-            "Download failed during safe link GET.",
-            details={"exception_type": type(exc).__name__},
-            category=ErrorCategory.NETWORK,
-        )
-    if response.status_code in (401, 403):
-        return ToolResult.failure(
-            "requires_auth",
-            "Download URL requires authentication.",
-            details={"status_code": response.status_code},
-            category=ErrorCategory.AUTH,
-        )
-    if not 200 <= response.status_code < 300:
-        return ToolResult.failure(
-            "download_failed",
-            "Download failed during safe link GET.",
-            details={"status_code": response.status_code},
-            category=ErrorCategory.NETWORK,
-        )
-    content_length = int_header(response.headers, "content-length")
-    if content_length is not None and content_length > policy.max_media_bytes:
-        return ToolResult.failure(
-            "too_large",
-            "Download Content-Length exceeds the configured link media limit.",
-            details={"size_bytes": content_length, "max_media_bytes": policy.max_media_bytes},
-            category=ErrorCategory.NETWORK,
-        )
-    if len(response.content) > policy.max_media_bytes:
-        return ToolResult.failure(
-            "too_large",
-            "Download body exceeds the configured link media limit.",
-            details={"bytes_read": len(response.content), "max_media_bytes": policy.max_media_bytes},
-            category=ErrorCategory.NETWORK,
-        )
-    mime_type = clean_mime(header_value(response.headers, "content-type"))
-    final_url_suffix = Path(urlparse(final_url).path).suffix.lower()
-    if mime_type not in ALLOWED_MEDIA_MIME_TYPES and final_url_suffix == ".mov":
-        mime_type = "video/quicktime"
-    if mime_type not in ALLOWED_MEDIA_MIME_TYPES:
-        return ToolResult.failure(
-            "unsupported_media_type",
-            "Download Content-Type is not an allowed media MIME type.",
-            details={"mime_type": mime_type},
-            category=ErrorCategory.NETWORK,
-        )
-    if expected_mime_prefix and not mime_type.startswith(expected_mime_prefix):
-        return ToolResult.failure(
-            "download_validation_failed",
-            f"Content type does not start with {expected_mime_prefix!r}.",
-            details={"mime_type": mime_type},
-            category=ErrorCategory.NETWORK,
-        )
-    try:
-        target_path.parent.mkdir(parents=True, exist_ok=True)
-        if partial_path.exists():
-            partial_path.unlink()
-        partial_path.write_bytes(response.content)
-        checksum, size_bytes = _hash_file(partial_path)
-        partial_path.replace(target_path)
-    except Exception:
-        _remove_partial(partial_path)
-        raise
-    return ToolResult.success(
-        {
-            "url": url,
-            "final_url": final_url,
-            "target_path": str(target_path),
-            "partial_path": str(partial_path),
-            "finalized": True,
-            "size_bytes": size_bytes,
-            "checksum": f"sha256:{checksum}",
-            "mime_type": mime_type,
-        },
-        artifacts=[{"type": "file", "path": str(target_path)}],
-    )
 
 
 def _validated_config(context: ToolContext) -> telegram_auth.TelegramConfig | ToolResult:

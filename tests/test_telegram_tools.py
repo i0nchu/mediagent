@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 import unittest
 from pathlib import Path
@@ -11,6 +12,7 @@ from mediagent.core.http import HttpResponse
 from mediagent.core.tooling import ToolContext
 from mediagent.platforms.telegram import client as telegram_client
 from mediagent.platforms.telegram import parser as telegram_parser
+from mediagent.platforms.pornhub import client as pornhub_client
 from mediagent.tools import telegram_tools
 from mediagent.tools.defaults import create_default_registry
 
@@ -1484,6 +1486,114 @@ class TelegramToolTests(unittest.TestCase):
         self.assertEqual(second.data["summary"]["retryable_links_unresolved"], 0)
         self.assertEqual(second.data["summary"]["link_downloaded"], 1)
         self.assertEqual(second_cursor["cursor_value"], "10")
+
+    def test_unified_inbox_sync_uses_pornhub_materializer_and_advances_cursor(self) -> None:
+        registry = create_default_registry()
+        url = "https://www.pornhub.com/view_video.php?viewkey=ph123abc"
+        message = {
+            "id": 10,
+            "date": "2026-07-21T10:00:00+00:00",
+            "chat": {"id": "saved_messages", "type": "saved_messages"},
+            "text": url,
+            "media": [],
+        }
+        fake = FakeTelegramClient(messages={"saved_messages": [message]})
+        probe = {
+            "viewkey": "ph123abc",
+            "canonical_url": url,
+            "title": "Example video",
+            "author": "Example author",
+            "description": None,
+            "source_timestamp": "2026-09-20T00:00:00+00:00",
+            "duration_seconds": 12.5,
+        }
+        video = b"\x00\x00\x00\x18ftypisom" + b"\x00" * 80
+
+        def materialize(_url: str, *, target_path: Path, **_kwargs):
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            target_path.write_bytes(video)
+            return pornhub_client.PornhubMaterializedVideo(
+                viewkey="ph123abc",
+                canonical_url=url,
+                target_path=str(target_path),
+                title="Example video",
+                author="Example author",
+                description=None,
+                source_timestamp="2026-09-20T00:00:00+00:00",
+                duration_seconds=12.5,
+                mime_type="video/mp4",
+                extension=".mp4",
+                checksum="sha256:" + hashlib.sha256(video).hexdigest(),
+                size_bytes=len(video),
+            )
+
+        with TemporaryDirectory() as temp_dir:
+            context, _data_dir, db_path = _telegram_context(temp_dir, fake)
+            with (
+                patch("mediagent.core.links.resolve_host_ips", return_value=["93.184.216.34"]),
+                patch("mediagent.platforms.pornhub.client.probe_exact_video", return_value=probe),
+                patch(
+                    "mediagent.tools.link_tools.pornhub_client.materialize_exact_video",
+                    side_effect=materialize,
+                ) as download,
+            ):
+                result = asyncio.run(
+                    registry.run(
+                        "telegram.inbox.sync",
+                        {"db_path": str(db_path), "chat": "saved_messages"},
+                        context,
+                    )
+                )
+            cursor = db.get_sync_cursor(
+                db_path,
+                platform="telegram",
+                cursor_name="inbox:saved_messages",
+            )
+
+        self.assertTrue(result.is_success, result.to_dict())
+        self.assertEqual(download.call_count, 1)
+        self.assertEqual(result.data["summary"]["link_downloaded"], 1)
+        self.assertEqual(len(result.data["asset_ids"]), 1)
+        self.assertEqual(cursor["cursor_value"], "10")
+
+    def test_unified_inbox_sync_permanent_pornhub_failure_does_not_hold_cursor(self) -> None:
+        registry = create_default_registry()
+        url = "https://www.pornhub.com/view_video.php?viewkey=gone123"
+        message = {
+            "id": 10,
+            "date": "2026-07-21T10:00:00+00:00",
+            "chat": {"id": "saved_messages", "type": "saved_messages"},
+            "text": url,
+            "media": [],
+        }
+        fake = FakeTelegramClient(messages={"saved_messages": [message]})
+        error = pornhub_client.PornhubClientError(
+            "pornhub_video_unavailable",
+            "Pornhub video is unavailable or removed.",
+            category="validation",
+        )
+        with TemporaryDirectory() as temp_dir:
+            context, _data_dir, db_path = _telegram_context(temp_dir, fake)
+            with (
+                patch("mediagent.core.links.resolve_host_ips", return_value=["93.184.216.34"]),
+                patch("mediagent.platforms.pornhub.client.probe_exact_video", side_effect=error),
+            ):
+                result = asyncio.run(
+                    registry.run(
+                        "telegram.inbox.sync",
+                        {"db_path": str(db_path), "chat": "saved_messages"},
+                        context,
+                    )
+                )
+            cursor = db.get_sync_cursor(
+                db_path,
+                platform="telegram",
+                cursor_name="inbox:saved_messages",
+            )
+
+        self.assertTrue(result.is_success, result.to_dict())
+        self.assertEqual(result.data["summary"]["retryable_links_unresolved"], 0)
+        self.assertEqual(cursor["cursor_value"], "10")
 
     def test_unified_inbox_sync_expands_album_at_scan_boundary(self) -> None:
         registry = create_default_registry()

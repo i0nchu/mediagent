@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -31,6 +32,7 @@ from mediagent.core.operational_logging import ProgressLogger
 from mediagent.core.storage import default_library_root, plan_storage_path, platform_library_env_name
 from mediagent.core.sync import TERMINAL_ITEM_STATUSES, item_status_from_file_counts
 from mediagent.core.tooling import ErrorCategory, Permission, ToolContext, ToolDefinition, ToolResult, ToolSpec
+from mediagent.platforms.pornhub import client as pornhub_client
 from mediagent.tools.metadata_tools import metadata_write
 
 
@@ -318,6 +320,7 @@ async def media_sync(context: ToolContext, input_data: dict[str, Any]) -> ToolRe
         "cbz_failed_or_incomplete": 0,
     }
     warnings: list[str] = []
+    fatal_resolution_errors: list[dict[str, Any]] = []
     comic_route = await sync_dedicated_comic_links(
         context,
         input_data,
@@ -350,6 +353,17 @@ async def media_sync(context: ToolContext, input_data: dict[str, Any]) -> ToolRe
             )
         if resolution.get("status") != "resolved":
             summary["skipped_links"] += 1
+            details = resolution.get("details") if isinstance(resolution.get("details"), dict) else {}
+            if details.get("tool_failure"):
+                summary["failed"] += 1
+                error_code = str(details.get("error_code") or resolution.get("skip_reason") or "resolver_error")
+                warnings.append(f"Exact-video resolver failed with {error_code}.")
+                fatal_resolution_errors.append(
+                    {
+                        "code": error_code,
+                        "category": str(details.get("error_category") or "network"),
+                    }
+                )
             continue
         summary["resolved"] += 1
         item = resolution_to_media_item(resolution, ingest_provenance=_link_ingest_provenance(link))
@@ -381,10 +395,19 @@ async def media_sync(context: ToolContext, input_data: dict[str, Any]) -> ToolRe
             "links": resolutions,
             "planned_downloads": planned_downloads,
         }
-        if comic_route["failed"]:
+        if fatal_resolution_errors and not summary["resolved"] and not comic_route["summary"]["resolved"]:
+            error = fatal_resolution_errors[0]
+            return ToolResult.failure(
+                error["code"],
+                "Exact-video source could not be resolved.",
+                data=data,
+                warnings=warnings,
+                category=_error_category(error["category"]),
+            )
+        if comic_route["failed"] or summary["failed"]:
             return ToolResult.failure(
                 "link_media_sync_partial" if summary["resolved"] else "link_media_sync_failed",
-                "Link media sync preview could not resolve every dedicated comic source.",
+                "Link media sync preview could not resolve every dedicated source.",
                 data=data,
                 warnings=warnings,
                 category=ErrorCategory.NETWORK,
@@ -450,6 +473,15 @@ async def media_sync(context: ToolContext, input_data: dict[str, Any]) -> ToolRe
     }
     if run_status == "success":
         return ToolResult.success(data, artifacts=artifacts, warnings=warnings)
+    if fatal_resolution_errors and not summary["resolved"] and not comic_route["summary"]["resolved"]:
+        error = fatal_resolution_errors[0]
+        return ToolResult.failure(
+            error["code"],
+            "Exact-video source could not be resolved.",
+            data=data,
+            warnings=warnings,
+            category=_error_category(error["category"]),
+        )
     return ToolResult.failure(
         "link_media_sync_partial" if run_status == "partial" else "link_media_sync_failed",
         "Link media sync finished with failed or partially downloaded items.",
@@ -457,6 +489,13 @@ async def media_sync(context: ToolContext, input_data: dict[str, Any]) -> ToolRe
         warnings=warnings,
         category=ErrorCategory.NETWORK,
     )
+
+
+def _error_category(value: str) -> ErrorCategory:
+    try:
+        return ErrorCategory(value)
+    except ValueError:
+        return ErrorCategory.NETWORK
 
 
 async def sync_dedicated_comic_links(
@@ -988,15 +1027,12 @@ async def _sync_one_link_item(
             result["bytes_written"] += file_record.get("size_bytes") or 0
             result["artifacts"].append(str(final_target))
             continue
-        download_result = _download_file_safely(
+        download_result = await download_resolved_file_safely(
             context,
             input_data,
-            url=_file_download_url(file_info),
-            headers=_file_download_headers(file_info),
+            file_info=file_info,
             target_path=target_path,
             overwrite=overwrite,
-            expected_mime_prefix=_expected_mime_prefix(file_info),
-            content_transform=_file_content_transform(file_info),
         )
         if download_result.is_success:
             if download_result.data.get("skipped"):
@@ -1253,6 +1289,72 @@ def _download_file_safely(
     )
 
 
+def _download_pornhub_file_safely(
+    context: ToolContext,
+    input_data: dict[str, Any],
+    *,
+    url: str,
+    target_path: Path,
+    overwrite: bool,
+) -> ToolResult:
+    try:
+        materialized = pornhub_client.materialize_exact_video(
+            url,
+            target_path=target_path,
+            allowed_write_roots=context.allowed_write_roots(),
+            overwrite=overwrite,
+            timeout_seconds=float(input_data.get("timeout_seconds", pornhub_client.DEFAULT_TIMEOUT_SECONDS)),
+            max_media_bytes=int(input_data.get("max_media_bytes", pornhub_client.DEFAULT_MAX_MEDIA_BYTES)),
+            max_redirects=max(0, int(input_data.get("max_redirects", pornhub_client.DEFAULT_MAX_REDIRECTS))),
+        )
+    except pornhub_client.PornhubClientError as exc:
+        return ToolResult.failure(
+            exc.code,
+            str(exc),
+            details=exc.details,
+            category=exc.category,
+        )
+    return ToolResult.success(
+        {
+            "target_path": materialized.target_path,
+            "mime_type": materialized.mime_type,
+            "size_bytes": materialized.size_bytes,
+            "checksum": materialized.checksum,
+        }
+    )
+
+
+async def download_resolved_file_safely(
+    context: ToolContext,
+    input_data: dict[str, Any],
+    *,
+    file_info: dict[str, Any],
+    target_path: Path,
+    overwrite: bool,
+) -> ToolResult:
+    """Materialize one normalized link candidate through its declared strategy."""
+
+    if _file_download_strategy(file_info) == "pornhub_yt_dlp":
+        return await asyncio.to_thread(
+            _download_pornhub_file_safely,
+            context,
+            input_data,
+            url=_file_download_url(file_info),
+            target_path=target_path,
+            overwrite=overwrite,
+        )
+    return _download_file_safely(
+        context,
+        input_data,
+        url=_file_download_url(file_info),
+        headers=_file_download_headers(file_info),
+        target_path=target_path,
+        overwrite=overwrite,
+        expected_mime_prefix=_expected_mime_prefix(file_info),
+        content_transform=_file_content_transform(file_info),
+    )
+
+
 def _target_dir_for_item(
     context: ToolContext,
     input_data: dict[str, Any],
@@ -1329,6 +1431,14 @@ def _file_download_url(file_info: dict[str, Any]) -> str:
     if isinstance(download_context, dict) and download_context.get("url"):
         return str(download_context["url"])
     return _file_remote_url(file_info)
+
+
+def _file_download_strategy(file_info: dict[str, Any]) -> str | None:
+    download_context = file_info.get("download_context")
+    if not isinstance(download_context, dict):
+        return None
+    value = str(download_context.get("strategy") or "").strip()
+    return value or None
 
 
 def _file_download_headers(file_info: dict[str, Any]) -> dict[str, str] | None:

@@ -13,6 +13,10 @@ uv sync --locked
 cp .env.example .env
 ```
 
+Inputs that require segmented-video extraction can be run with
+`uv run --locked --extra video mediagent add URL`; some stream combinations
+also require the system `ffmpeg` executable.
+
 Set the local paths in `.env`:
 
 ```dotenv

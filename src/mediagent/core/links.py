@@ -19,6 +19,7 @@ from mediagent.core.http import HttpResponse, UrllibHttpClient
 from mediagent.core.storage import extension_from_mime, safe_storage_segment
 from mediagent.platforms.instagram import links as instagram_links
 from mediagent.platforms.pixiv import links as pixiv_links
+from mediagent.platforms.pornhub import links as pornhub_links
 from mediagent.platforms.reddit import links as reddit_links
 
 
@@ -48,6 +49,7 @@ INSTAGRAM_HOSTS = instagram_links.INSTAGRAM_HOSTS
 IMGUR_HOSTS = {"imgur.com", "www.imgur.com"}
 REDGIFS_HOSTS = {"redgifs.com", "www.redgifs.com"}
 REDGIFS_MEDIA_HOSTS = {"media.redgifs.com"}
+PORNHUB_HOSTS = pornhub_links.PORNHUB_HOSTS
 REDDIT_HOSTS = tuple(
     sorted(
         reddit_links.REDDIT_PAGE_HOSTS
@@ -55,7 +57,7 @@ REDDIT_HOSTS = tuple(
         | reddit_links.REDDIT_DIRECT_VIDEO_HOSTS
     )
 )
-RESERVED_PLATFORM_PAGE_HOSTS = PIXIV_HOSTS | INSTAGRAM_HOSTS | IMGUR_HOSTS
+RESERVED_PLATFORM_PAGE_HOSTS = PIXIV_HOSTS | INSTAGRAM_HOSTS | IMGUR_HOSTS | PORNHUB_HOSTS
 HTML_MIME_TYPES = {"text/html", "application/xhtml+xml"}
 HTML_META_MEDIA_NAMES = {
     "og:image",
@@ -1249,6 +1251,121 @@ class ReservedPlatformPageResolver(Resolver):
         )
 
 
+class PornhubExactVideoResolver(Resolver):
+    spec = ResolverSpec(
+        name="pornhub_exact_video",
+        allowed_domains=tuple(sorted(PORNHUB_HOSTS)),
+        matching_rules="Pornhub exact-video view, show, and embed URLs with a stable viewkey.",
+    )
+
+    def matches(self, safe_url: SafeURL) -> bool:
+        return (
+            safe_url.host in PORNHUB_HOSTS
+            and pornhub_links.parse_exact_video_link(safe_url.normalized_url) is not None
+        )
+
+    def resolve(self, safe_url: SafeURL, request: ResolveRequest) -> dict[str, Any]:
+        link = pornhub_links.parse_exact_video_link(safe_url.normalized_url)
+        if link is None:
+            return skipped_resolution(
+                original_url=safe_url.original_url,
+                normalized_url=safe_url.normalized_url,
+                resolver=self.spec.name,
+                skip_reason="pornhub_url_unsupported",
+                origin_source="pornhub",
+                details={"retryable": False, "user_action_required": False},
+            )
+        from mediagent.platforms.pornhub import client as pornhub_client
+
+        options = request.platform_options.get("pornhub") or {}
+        try:
+            probe = pornhub_client.probe_exact_video(
+                link.canonical_url,
+                timeout_seconds=request.policy.timeout_seconds,
+                max_redirects=request.policy.max_redirects,
+                ytdlp_factory=options.get("ytdlp_factory"),
+                url_validator=lambda url: validate_url_safety(
+                    url,
+                    host_resolver=request.host_resolver,
+                ),
+            )
+        except pornhub_client.PornhubClientError as exc:
+            retryable = exc.category in {"network", "rate_limit"} or exc.code in {
+                "pornhub_backend_missing",
+                "pornhub_backend_unsafe",
+                "pornhub_ffmpeg_required",
+            }
+            return skipped_resolution(
+                original_url=safe_url.original_url,
+                normalized_url=safe_url.normalized_url,
+                resolver=self.spec.name,
+                skip_reason=exc.code,
+                origin_source="pornhub",
+                remote_id=link.viewkey,
+                details={
+                    "error_code": exc.code,
+                    "error_category": exc.category,
+                    "tool_failure": True,
+                    "retryable": retryable,
+                    "user_action_required": exc.category in {"auth", "validation"},
+                    **exc.details,
+                },
+            )
+        candidate = {
+            "url": link.canonical_url,
+            "media_type": "video",
+            "mime_type": "video/mp4",
+            "extension": ".mp4",
+            "size_bytes": None,
+            "source": "pornhub",
+            "quality_rank": 0,
+            "file_index": 0,
+            "part": "v0",
+            "content_identity": f"video:{link.viewkey}",
+            "group_id": link.viewkey,
+            "required": True,
+            "persistable_headers": {},
+            "download_context_ref": None,
+            "download_context": {
+                "strategy": "pornhub_yt_dlp",
+                "url": link.canonical_url,
+            },
+        }
+        return {
+            "status": "resolved",
+            "original_url": safe_url.original_url,
+            "normalized_url": safe_url.normalized_url,
+            "canonical_url": link.canonical_url,
+            "aliases": _resolution_aliases(link.canonical_url, [safe_url.normalized_url]),
+            "source_url": link.canonical_url,
+            "resolved_media_url": link.canonical_url,
+            "resolver": self.spec.name,
+            "origin_source": "pornhub",
+            "remote_id": link.viewkey,
+            "media_type": "video",
+            "mime_type": "video/mp4",
+            "extension": ".mp4",
+            "size_bytes": None,
+            "media_count": 1,
+            "media_candidates": [candidate],
+            "selected_candidate": candidate,
+            "warnings": [],
+            "details": {
+                "validation": "exact_video_url",
+                "source_timestamp": probe.get("source_timestamp"),
+                "pornhub": {
+                    "viewkey": link.viewkey,
+                    "title": probe.get("title"),
+                    "author": probe.get("author"),
+                    "description": probe.get("description"),
+                    "duration_seconds": probe.get("duration_seconds"),
+                    "source_timestamp": probe.get("source_timestamp"),
+                },
+            },
+            "source_timestamp": probe.get("source_timestamp"),
+        }
+
+
 class DirectMediaResolver(Resolver):
     spec = ResolverSpec(
         name="direct_media",
@@ -1421,6 +1538,7 @@ def default_link_resolver_registry() -> LinkResolverRegistry:
             ImgurSingleResolver(),
             RedgifsResolver(),
             RedditMediaLinkResolver(),
+            PornhubExactVideoResolver(),
             ReservedPlatformPageResolver(),
             DirectMediaResolver(),
             GenericHTMLMediaResolver(),
@@ -2167,6 +2285,8 @@ def _reserved_platform_name(host: str) -> str:
         return "pixiv"
     if host in IMGUR_HOSTS:
         return "imgur"
+    if host in PORNHUB_HOSTS:
+        return "pornhub"
     return origin_source_from_host(host)
 
 
@@ -2178,6 +2298,8 @@ def _reserved_platform_reason(platform: str, url: str) -> str:
         return "unsupported_pixiv_url"
     if platform == "imgur":
         return "unsupported_imgur_url"
+    if platform == "pornhub":
+        return "unsupported_pornhub_url"
     return "reserved_platform_url_not_supported"
 
 
