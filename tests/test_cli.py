@@ -236,6 +236,25 @@ class CliTests(unittest.TestCase):
         )
         self.assertTrue(run_tool.call_args.kwargs["summary_json"])
 
+    def test_short_telegram_sync_routes_unified_inbox(self) -> None:
+        with (
+            patch.dict(os.environ, {"MEDIAGENT_ENV_FILE": ""}),
+            patch("mediagent.cli.run_tool_command", return_value=0) as run_tool,
+        ):
+            result = cli.run(["sync", "telegram", "--full"])
+
+        self.assertEqual(result, 0)
+        self.assertEqual(run_tool.call_args.kwargs["tool"], "telegram.inbox.sync")
+        self.assertEqual(
+            run_tool.call_args.kwargs["input_data"],
+            {
+                "overwrite": False,
+                "retry_failed": True,
+                "repair_missing_files": True,
+                "full_sync": True,
+            },
+        )
+
     def test_short_sync_rejects_folder_for_non_jmcomic_source(self) -> None:
         completed = self.run_cli(
             "sync",

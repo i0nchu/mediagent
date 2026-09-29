@@ -50,7 +50,7 @@ SIMPLE_COMMANDS = {
 }
 SOURCE_SYNC_TOOLS = {
     "pixiv": "pixiv.bookmarks.sync",
-    "telegram": "telegram.inbox.sync_links",
+    "telegram": "telegram.inbox.sync",
     "jmcomic": "jmcomic.favorites.sync",
     "nhentai": "nhentai.favorites.sync",
     "instagram": "instagram.saved.sync",

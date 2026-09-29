@@ -102,18 +102,16 @@ def fake_registry() -> ToolRegistry:
     registry.register(
         ToolDefinition(
             spec=ToolSpec(
-                name="telegram.inbox.sync_links",
-                description="Sync inbox links.",
+                name="telegram.inbox.sync",
+                description="Sync inbox media.",
                 input_schema={
                     "type": "object",
                     "properties": {
                         "chat": {"type": "object"},
-                        "limit": {"type": "integer"},
                         "max_messages": {"type": "integer"},
                         "full_sync": {"type": "boolean"},
                         "store_cursor": {"type": "boolean"},
                         "write_sidecar_metadata": {"type": "boolean"},
-                        "retry_failed": {"type": "boolean"},
                         "repair_missing_files": {"type": "boolean"},
                     },
                 },
@@ -164,7 +162,7 @@ class AgentCoreTests(unittest.TestCase):
         registry = default_skill_registry()
         skill = registry.get("telegram_inbox_download")
 
-        self.assertIn("telegram.inbox.sync_links", skill.allowed_tools)
+        self.assertIn("telegram.inbox.sync", skill.allowed_tools)
         self.assertIn("Use this skill", skill.body)
         self.assertNotIn("下載", skill.body)
         self.assertTrue(skill.supports_unbounded)
@@ -237,7 +235,7 @@ class AgentCoreTests(unittest.TestCase):
         llm = FakeLLM(
             [
                 '{"skill":"telegram_inbox_download","reason":"Inbox download task."}',
-                '{"action":"call_tool","tool":"telegram.inbox.sync_links","input":{"limit":10,"write_sidecar_metadata":false},"dry_run":true,"reason":"Preview inbox media."}',
+                '{"action":"call_tool","tool":"telegram.inbox.sync","input":{"max_messages":10,"write_sidecar_metadata":false},"dry_run":true,"reason":"Preview inbox media."}',
                 '{"action":"final","message":"Dry-run completed."}',
             ]
         )
@@ -314,7 +312,7 @@ class AgentCoreTests(unittest.TestCase):
     def test_dry_run_rejects_model_execute_action(self) -> None:
         llm = FakeLLM(
             [
-                '{"action":"call_tool","tool":"telegram.inbox.sync_links","input":{"chat":{"type":"saved_messages"}},"dry_run":false,"reason":"Execute."}',
+                '{"action":"call_tool","tool":"telegram.inbox.sync","input":{"chat":{"type":"saved_messages"}},"dry_run":false,"reason":"Execute."}',
             ]
         )
         runner = AgentRunner(
@@ -340,7 +338,7 @@ class AgentCoreTests(unittest.TestCase):
     def test_hidden_stable_inbox_skill_runs_without_experimental_flag(self) -> None:
         llm = FakeLLM(
             [
-                '{"action":"call_tool","tool":"telegram.inbox.sync_links","input":{"chat":{"type":"saved_messages"}},"dry_run":true,"reason":"Preview inbox media."}',
+                '{"action":"call_tool","tool":"telegram.inbox.sync","input":{"chat":{"type":"saved_messages"}},"dry_run":true,"reason":"Preview inbox media."}',
                 '{"action":"final","message":"Dry-run completed."}',
             ]
         )
@@ -369,7 +367,7 @@ class AgentCoreTests(unittest.TestCase):
         llm = FakeLLM(
             [
                 '{"action":"final","message":"No media found."}',
-                '{"action":"call_tool","tool":"telegram.inbox.sync_links","input":{"chat":{"type":"saved_messages"}},"dry_run":true,"reason":"Inspect inbox before answering."}',
+                '{"action":"call_tool","tool":"telegram.inbox.sync","input":{"chat":{"type":"saved_messages"}},"dry_run":true,"reason":"Inspect inbox before answering."}',
                 '{"action":"final","message":"Dry-run completed."}',
             ]
         )
@@ -392,13 +390,13 @@ class AgentCoreTests(unittest.TestCase):
 
         self.assertEqual(result.status, AgentStatus.SUCCESS)
         self.assertEqual(result.steps[0].error.code, "tool_call_required")
-        self.assertEqual(result.steps[1].action.tool, "telegram.inbox.sync_links")
+        self.assertEqual(result.steps[1].action.tool, "telegram.inbox.sync")
         self.assertEqual(result.steps[1].tool_result["summary"]["links_considered"], 2)
 
     def test_execute_mode_overrides_model_dry_run_action(self) -> None:
         llm = FakeLLM(
             [
-                '{"action":"call_tool","tool":"telegram.inbox.sync_links","input":{"chat":{"type":"saved_messages"}},"dry_run":true,"reason":"Model requested preview."}',
+                '{"action":"call_tool","tool":"telegram.inbox.sync","input":{"chat":{"type":"saved_messages"}},"dry_run":true,"reason":"Model requested preview."}',
                 '{"action":"final","message":"Executed."}',
             ]
         )
@@ -426,7 +424,7 @@ class AgentCoreTests(unittest.TestCase):
     def test_unbounded_inbox_task_uses_full_sync_without_invented_limit(self) -> None:
         llm = FakeLLM(
             [
-                '{"action":"call_tool","tool":"telegram.inbox.sync_links","input":{"chat":{"type":"saved_messages"},"full_sync":true,"store_cursor":false},"dry_run":true,"reason":"Scan all inbox media."}',
+                '{"action":"call_tool","tool":"telegram.inbox.sync","input":{"chat":{"type":"saved_messages"},"full_sync":true,"store_cursor":false},"dry_run":true,"reason":"Scan all inbox media."}',
                 '{"action":"final","message":"Dry-run completed."}',
             ]
         )
@@ -450,10 +448,10 @@ class AgentCoreTests(unittest.TestCase):
         self.assertFalse(result.steps[0].action.input["store_cursor"])
         self.assertNotIn("limit", result.steps[0].action.input)
 
-    def test_bounded_inbox_task_can_use_limit(self) -> None:
+    def test_bounded_inbox_task_can_use_message_limit(self) -> None:
         llm = FakeLLM(
             [
-                '{"action":"call_tool","tool":"telegram.inbox.sync_links","input":{"chat":{"type":"saved_messages"},"limit":50},"dry_run":true,"reason":"Use explicit limit."}',
+                '{"action":"call_tool","tool":"telegram.inbox.sync","input":{"chat":{"type":"saved_messages"},"max_messages":50},"dry_run":true,"reason":"Use explicit limit."}',
                 '{"action":"final","message":"Dry-run completed."}',
             ]
         )
@@ -473,7 +471,7 @@ class AgentCoreTests(unittest.TestCase):
         )
 
         self.assertEqual(result.status, AgentStatus.SUCCESS)
-        self.assertEqual(result.steps[0].action.input["limit"], 50)
+        self.assertEqual(result.steps[0].action.input["max_messages"], 50)
 
     def test_agent_strips_destination_paths_not_present_in_user_task(self) -> None:
         llm = FakeLLM(

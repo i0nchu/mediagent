@@ -11,6 +11,7 @@ from mediagent.core.http import HttpResponse
 from mediagent.core.tooling import ToolContext
 from mediagent.platforms.telegram import client as telegram_client
 from mediagent.platforms.telegram import parser as telegram_parser
+from mediagent.tools import telegram_tools
 from mediagent.tools.defaults import create_default_registry
 
 
@@ -1484,13 +1485,22 @@ class TelegramToolTests(unittest.TestCase):
         self.assertEqual(second.data["summary"]["link_downloaded"], 1)
         self.assertEqual(second_cursor["cursor_value"], "10")
 
-    def test_unified_inbox_sync_withholds_album_cut_by_scan_limit(self) -> None:
+    def test_unified_inbox_sync_expands_album_at_scan_boundary(self) -> None:
         registry = create_default_registry()
         album = _telegram_album_messages_fixture("saved_messages", start_id=100)
-        fake = FakeTelegramClient(messages={"saved_messages": album}, downloads={})
+        fake = FakeTelegramClient(
+            messages={"saved_messages": album},
+            downloads={
+                f"saved_messages:{100 + index}:photo-{100 + index}": {
+                    "content": f"album-{index}".encode(),
+                    "mime_type": "image/jpeg",
+                }
+                for index in range(3)
+            },
+        )
         with TemporaryDirectory() as temp_dir:
             context, _data_dir, db_path = _telegram_context(temp_dir, fake)
-            result = asyncio.run(
+            first = asyncio.run(
                 registry.run(
                     "telegram.inbox.sync",
                     {
@@ -1501,19 +1511,48 @@ class TelegramToolTests(unittest.TestCase):
                     context,
                 )
             )
-            cursor = db.get_sync_cursor(db_path, platform="telegram", cursor_name="inbox:saved_messages")
+            first_cursor = db.get_sync_cursor(
+                db_path,
+                platform="telegram",
+                cursor_name="inbox:saved_messages",
+            )
+            retry_context, _data_dir, _db_path = _telegram_context(temp_dir, fake)
+            second = asyncio.run(
+                registry.run(
+                    "telegram.inbox.sync",
+                    {
+                        "db_path": str(db_path),
+                        "chat": "saved_messages",
+                        "max_messages": 1,
+                    },
+                    retry_context,
+                )
+            )
+            second_cursor = db.get_sync_cursor(
+                db_path,
+                platform="telegram",
+                cursor_name="inbox:saved_messages",
+            )
             with db.connect(db_path) as connection:
                 media_item_count = connection.execute("SELECT COUNT(*) FROM media_items").fetchone()[0]
 
         download_calls = [call for call in fake.calls if call[0] == "media_download"]
-        self.assertFalse(result.is_success)
-        self.assertEqual(result.error.code, "telegram_inbox_sync_partial")
-        self.assertEqual(result.data["summary"]["incomplete_album_groups"], 1)
-        self.assertEqual(result.data["summary"]["direct_media_items"], 0)
-        self.assertEqual(result.data["summary"]["cursor_reason"], "run_not_successful")
-        self.assertEqual(download_calls, [])
-        self.assertEqual(media_item_count, 0)
-        self.assertIsNone(cursor)
+        root_limits = [
+            call[1]["limit"]
+            for call in fake.calls
+            if call[0] == "messages_collect" and call[1]["chats"] == ["saved_messages"]
+        ]
+        self.assertTrue(first.is_success, first.to_dict())
+        self.assertEqual(first.data["summary"]["incomplete_album_groups"], 0)
+        self.assertEqual(first.data["summary"]["direct_media_items"], 3)
+        self.assertEqual(first.data["summary"]["direct_downloaded"], 3)
+        self.assertEqual(first_cursor["cursor_value"], "102")
+        self.assertTrue(second.is_success, second.to_dict())
+        self.assertEqual(second.data["summary"]["direct_media_items"], 0)
+        self.assertEqual(second_cursor["cursor_value"], "102")
+        self.assertEqual(len(download_calls), 3)
+        self.assertEqual(media_item_count, 3)
+        self.assertEqual(root_limits, [1 + telegram_tools.ROOT_ALBUM_LOOKAHEAD] * 2)
 
     def test_unified_inbox_sync_ignores_legacy_limit_without_starving_media(self) -> None:
         registry = create_default_registry()
@@ -1760,6 +1799,87 @@ class TelegramToolTests(unittest.TestCase):
         self.assertEqual(len(files), 1)
         self.assertNotIn("telegram.inbox.sync", public_tools)
         self.assertIn("telegram.inbox.sync", hidden_tools)
+
+    def test_unified_inbox_sync_continues_from_legacy_link_cursor(self) -> None:
+        registry = create_default_registry()
+        messages = [
+            {
+                "id": message_id,
+                "date": f"2026-07-21T10:0{message_id - 10}:00+00:00",
+                "chat": {"id": "saved_messages", "type": "saved_messages"},
+                "media": [
+                    {
+                        "id": f"photo-{message_id}",
+                        "kind": "photo",
+                        "mime_type": "image/jpeg",
+                        "download_ref": {
+                            "chat_id": "saved_messages",
+                            "message_id": str(message_id),
+                            "media_id": f"photo-{message_id}",
+                        },
+                    }
+                ],
+            }
+            for message_id in (10, 11)
+        ]
+        fake = FakeTelegramClient(
+            messages={"saved_messages": messages},
+            downloads={
+                "saved_messages:11:photo-11": {"content": b"new-media", "mime_type": "image/jpeg"},
+            },
+        )
+        with TemporaryDirectory() as temp_dir:
+            context, _data_dir, db_path = _telegram_context(temp_dir, fake)
+            db.initialize_database(db_path)
+            db.set_sync_cursor(
+                db_path,
+                platform="telegram",
+                cursor_name="links:saved_messages",
+                cursor_value="10",
+            )
+
+            result = asyncio.run(
+                registry.run(
+                    "telegram.inbox.sync",
+                    {"db_path": str(db_path), "chat": "saved_messages"},
+                    context,
+                )
+            )
+            cursor = db.get_sync_cursor(
+                db_path,
+                platform="telegram",
+                cursor_name="inbox:saved_messages",
+            )
+            fake.downloads["saved_messages:10:photo-10"] = {
+                "content": b"older-media",
+                "mime_type": "image/jpeg",
+            }
+            full_context, _data_dir, _db_path = _telegram_context(temp_dir, fake)
+            full = asyncio.run(
+                registry.run(
+                    "telegram.inbox.sync",
+                    {
+                        "db_path": str(db_path),
+                        "chat": "saved_messages",
+                        "full_sync": True,
+                    },
+                    full_context,
+                )
+            )
+
+        root_scans = [
+            call for call in fake.calls if call[0] == "messages_collect" and call[1]["chats"]
+        ]
+        self.assertTrue(result.is_success, result.to_dict())
+        self.assertEqual(root_scans[0][1]["after_by_source"], {"saved_messages": 10})
+        self.assertEqual(result.data["summary"]["legacy_cursor_fallbacks"], 1)
+        self.assertEqual(result.data["summary"]["direct_downloaded"], 1)
+        self.assertTrue(any("full sync" in warning for warning in result.warnings))
+        self.assertEqual(cursor["cursor_value"], "11")
+        self.assertTrue(full.is_success, full.to_dict())
+        self.assertEqual(root_scans[1][1]["after_by_source"], {"saved_messages": None})
+        self.assertEqual(full.data["summary"]["legacy_cursor_fallbacks"], 0)
+        self.assertEqual(full.data["summary"]["direct_downloaded"], 1)
 
     def test_unified_inbox_sync_dry_run_has_no_side_effects(self) -> None:
         registry = create_default_registry()

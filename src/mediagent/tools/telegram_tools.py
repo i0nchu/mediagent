@@ -47,6 +47,7 @@ from mediagent.tools.metadata_tools import metadata_write
 
 CHAT_TYPES = ["saved_messages", "private", "group", "supergroup", "channel"]
 MEDIA_TYPES = ["photo", "video", "audio"]
+ROOT_ALBUM_LOOKAHEAD = 16
 
 
 def definitions() -> list[ToolDefinition]:
@@ -892,6 +893,7 @@ async def inbox_sync(context: ToolContext, input_data: dict[str, Any]) -> ToolRe
     collect_summary = collect_result.data.get("summary", {})
     pending_message_links = int(collect_summary.get("message_link_depth_limit_reached", 0) or 0)
     incomplete_album_groups = int(collect_summary.get("incomplete_album_groups", 0) or 0)
+    legacy_cursor_fallbacks = int(collect_summary.get("legacy_cursor_fallbacks", 0) or 0)
     retryable_links_unresolved = int(
         link_result.data.get("summary", {}).get("retryable_links_unresolved", 0) or 0
     )
@@ -921,6 +923,10 @@ async def inbox_sync(context: ToolContext, input_data: dict[str, Any]) -> ToolRe
     if retryable_links_unresolved:
         warnings.append(
             "Telegram inbox cursors were not advanced because one or more external links remain retryable."
+        )
+    if legacy_cursor_fallbacks:
+        warnings.append(
+            "Unified inbox intake continued from an existing link cursor; use a full sync to backfill older direct and forwarded media."
         )
     cursor_decision = _telegram_inbox_cursor_decision(
         input_data,
@@ -952,6 +958,7 @@ async def inbox_sync(context: ToolContext, input_data: dict[str, Any]) -> ToolRe
         "pending_message_links": pending_message_links,
         "incomplete_album_groups": incomplete_album_groups,
         "retryable_links_unresolved": retryable_links_unresolved,
+        "legacy_cursor_fallbacks": legacy_cursor_fallbacks,
         "cursor_stored": bool(stored_cursors),
         "cursor_reason": cursor_reason,
         "cursors": stored_cursors,
@@ -1436,13 +1443,22 @@ async def _messages_collect(
     config = config_result
     if not context.dry_run:
         db.initialize_database(db_path)
-    after_by_source = (
-        _inbox_after_by_source(db_path, chats, input_data)
-        if unified_inbox
-        else _after_by_source(db_path, chats, input_data)
-    )
+    legacy_cursor_fallbacks = 0
+    if unified_inbox:
+        after_by_source, legacy_cursor_fallbacks = _inbox_after_by_source(
+            db_path,
+            chats,
+            input_data,
+        )
+    else:
+        after_by_source = _after_by_source(db_path, chats, input_data)
     message_ids_by_source = _message_ids_by_source(chats, input_data)
     scan_limit = _message_scan_limit(input_data, allow_full_sync=True)
+    fetch_limit = (
+        scan_limit + ROOT_ALBUM_LOOKAHEAD
+        if unified_inbox and scan_limit is not None and not message_ids_by_source
+        else scan_limit
+    )
     try:
         payload = await _telegram_call(
             context,
@@ -1450,7 +1466,7 @@ async def _messages_collect(
             "telegram_collect_messages",
             chats=chats,
             after_by_source=after_by_source,
-            limit=scan_limit,
+            limit=fetch_limit,
             message_ids_by_source=message_ids_by_source,
             message_links=input_data.get("message_links") or [],
             include_protected=input_data.get("include_protected", False),
@@ -1463,11 +1479,15 @@ async def _messages_collect(
         )
     messages = payload.get("messages", []) if isinstance(payload, dict) else []
     source_summaries = payload.get("source_summaries", []) if isinstance(payload, dict) else []
-    incomplete_album_keys = (
-        _root_scan_incomplete_album_keys(messages, source_summaries, root_source_count=len(chats), scan_limit=scan_limit)
-        if unified_inbox
-        else set()
-    )
+    incomplete_album_keys: set[tuple[str, str]] = set()
+    if unified_inbox:
+        messages, source_summaries, incomplete_album_keys = _select_root_scan_window(
+            messages,
+            source_summaries,
+            root_source_count=len(chats),
+            requested_limit=scan_limit,
+            fetched_limit=fetch_limit,
+        )
     if unified_inbox:
         messages = [{**message, "_inbox_delivery": "direct"} for message in messages]
     extracted_message_links: list[str] = []
@@ -1580,6 +1600,7 @@ async def _messages_collect(
                 "duplicates_in_run": duplicate_count,
                 "incomplete_album_groups": len(incomplete_album_keys),
                 "duplicate_messages": duplicate_messages,
+                "legacy_cursor_fallbacks": legacy_cursor_fallbacks,
             }
         )
     return ToolResult.success(data)
@@ -2246,9 +2267,14 @@ def _after_by_source(db_path: Path, chats: list[Any], input_data: dict[str, Any]
     return after
 
 
-def _inbox_after_by_source(db_path: Path, chats: list[Any], input_data: dict[str, Any]) -> dict[str, int | None]:
+def _inbox_after_by_source(
+    db_path: Path,
+    chats: list[Any],
+    input_data: dict[str, Any],
+) -> tuple[dict[str, int | None], int]:
     explicit = input_data.get("after_message_id")
     after: dict[str, int | None] = {}
+    legacy_fallbacks = 0
     for chat in chats:
         source_key = telegram_client.source_key_for_chat(chat)
         if explicit is not None:
@@ -2262,8 +2288,20 @@ def _inbox_after_by_source(db_path: Path, chats: list[Any], input_data: dict[str
             platform="telegram",
             cursor_name=_telegram_inbox_cursor_name(source_key),
         )
-        after[source_key] = int(cursor["cursor_value"]) if cursor and cursor.get("cursor_value") else None
-    return after
+        if cursor and cursor.get("cursor_value"):
+            after[source_key] = int(cursor["cursor_value"])
+            continue
+        legacy_cursor = db.get_sync_cursor(
+            db_path,
+            platform="telegram",
+            cursor_name=_telegram_link_cursor_name(source_key),
+        )
+        if legacy_cursor and legacy_cursor.get("cursor_value"):
+            after[source_key] = int(legacy_cursor["cursor_value"])
+            legacy_fallbacks += 1
+        else:
+            after[source_key] = None
+    return after, legacy_fallbacks
 
 
 def _link_after_by_source(db_path: Path, chats: list[Any], input_data: dict[str, Any]) -> dict[str, int | None]:
@@ -2486,40 +2524,60 @@ def _unified_inbox_counters(
     }
 
 
-def _root_scan_incomplete_album_keys(
+def _select_root_scan_window(
     messages: list[dict[str, Any]],
     source_summaries: list[dict[str, Any]],
     *,
     root_source_count: int,
-    scan_limit: int | None,
-) -> set[tuple[str, str]]:
-    """Conservatively detect a root scan that may have cut through an album.
+    requested_limit: int | None,
+    fetched_limit: int | None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], set[tuple[str, str]]]:
+    """Keep the requested root window while extending a boundary album."""
 
-    Telegram clients concatenate root-source messages in the same order as
-    their source summaries.  When a bounded scan returns exactly its limit and
-    the last message is grouped, the following sibling may be outside the
-    window.  The group is withheld and the unified cursor remains unchanged so
-    an operator can retry with a larger limit or ``full_sync``.
-    """
-
-    if scan_limit is None:
-        return set()
+    if requested_limit is None or fetched_limit is None:
+        return messages, source_summaries, set()
+    selected_messages: list[dict[str, Any]] = []
+    selected_summaries: list[dict[str, Any]] = []
     incomplete: set[tuple[str, str]] = set()
     offset = 0
-    for source in source_summaries[:root_source_count]:
+    for source_index, source in enumerate(source_summaries):
+        if source_index >= root_source_count:
+            selected_summaries.append(source)
+            continue
         count = max(0, int(source.get("messages", 0) or 0))
         source_messages = messages[offset : offset + count]
         offset += count
-        if count < scan_limit or not source_messages:
-            continue
-        last = source_messages[-1]
-        grouped_id = last.get("grouped_id")
-        if grouped_id in (None, ""):
-            continue
-        chat = last.get("chat") if isinstance(last.get("chat"), dict) else {}
-        chat_id = str(chat.get("id") or last.get("chat_id") or source.get("source_key") or "")
-        incomplete.add((chat_id, str(grouped_id)))
-    return incomplete
+        selected = source_messages[:requested_limit]
+        boundary_key = _message_album_key(selected[-1]) if selected else None
+        next_index = requested_limit
+        if boundary_key is not None:
+            while next_index < len(source_messages):
+                if _message_album_key(source_messages[next_index]) != boundary_key:
+                    break
+                selected.append(source_messages[next_index])
+                next_index += 1
+            if next_index == len(source_messages) and count >= fetched_limit:
+                incomplete.add(boundary_key)
+        selected_messages.extend(selected)
+        ids = [int(message["id"]) for message in selected if str(message.get("id") or "").isdigit()]
+        selected_summaries.append(
+            {
+                **source,
+                "messages": len(selected),
+                "next_message_id": str(max(ids)) if ids else None,
+            }
+        )
+    selected_messages.extend(messages[offset:])
+    return selected_messages, selected_summaries, incomplete
+
+
+def _message_album_key(message: dict[str, Any]) -> tuple[str, str] | None:
+    grouped_id = message.get("grouped_id")
+    if grouped_id in (None, ""):
+        return None
+    chat = message.get("chat") if isinstance(message.get("chat"), dict) else {}
+    chat_id = str(chat.get("id") or message.get("chat_id") or "")
+    return (chat_id, str(grouped_id))
 
 
 def _dedupe_collected_messages(messages: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int]:
