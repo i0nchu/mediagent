@@ -1182,7 +1182,7 @@ def update_link_resolution(
 ) -> dict[str, Any]:
     now = datetime.now(UTC).isoformat()
     storage_resolution = _sanitize_link_resolution_for_storage(resolution)
-    retryable = _link_resolution_retryable(
+    retryable = link_resolution_retryable(
         status=status,
         resolution=storage_resolution,
         skip_reason=skip_reason,
@@ -1598,7 +1598,15 @@ def _merge_link_provenance(
     merged: list[dict[str, Any]] = []
     seen: set[str] = set()
     for item in [*existing, *incoming]:
-        key = json.dumps(item, sort_keys=True)
+        key = json.dumps(
+            {
+                "ingest_platform": item.get("ingest_platform"),
+                "source_chat_id": item.get("source_chat_id"),
+                "source_message_id": item.get("source_message_id"),
+                "original_url": item.get("original_url"),
+            },
+            sort_keys=True,
+        )
         if key in seen:
             continue
         seen.add(key)
@@ -1628,12 +1636,14 @@ def _link_aliases_from_resolution(resolution: dict[str, Any]) -> list[dict[str, 
     return unique
 
 
-def _link_resolution_retryable(
+def link_resolution_retryable(
     *,
     status: str,
     resolution: dict[str, Any],
     skip_reason: str | None,
 ) -> bool:
+    """Return whether an unresolved link represents transient work."""
+
     if status == "resolved":
         return False
     reason = skip_reason or resolution.get("skip_reason")

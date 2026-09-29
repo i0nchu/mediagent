@@ -1911,6 +1911,25 @@ class LinkQueueAndSyncTests(unittest.TestCase):
         self.assertFalse(updated["retryable"])
         self.assertEqual(updated["last_error_code"], "requires_auth")
 
+    def test_link_queue_provenance_does_not_grow_across_collector_runs(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "mediagent.sqlite3"
+            db.initialize_database(db_path)
+            base = {
+                "ingest_platform": "telegram",
+                "original_url": "https://1.1.1.1/photo.jpg",
+                "normalized_url": "https://1.1.1.1/photo.jpg",
+                "source_chat_id": "inbox",
+                "source_message_id": "1",
+            }
+
+            first = db.upsert_link(db_path, {**base, "collector_run_id": "run-one"})
+            second = db.upsert_link(db_path, {**base, "collector_run_id": "run-two"})
+
+        self.assertEqual(len(first["source_provenance"]), 1)
+        self.assertEqual(len(second["source_provenance"]), 1)
+        self.assertEqual(second["source_provenance"][0]["collector_run_id"], "run-one")
+
     def test_link_queue_claims_ready_links_and_respects_lease(self) -> None:
         with TemporaryDirectory() as temp_dir:
             db_path = Path(temp_dir) / "mediagent.sqlite3"
