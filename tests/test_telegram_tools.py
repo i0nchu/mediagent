@@ -7,8 +7,10 @@ from typing import Any
 from unittest.mock import patch
 
 from mediagent.core import db
+from mediagent.core.http import HttpResponse
 from mediagent.core.tooling import ToolContext
 from mediagent.platforms.telegram import client as telegram_client
+from mediagent.platforms.telegram import parser as telegram_parser
 from mediagent.tools.defaults import create_default_registry
 
 
@@ -682,6 +684,33 @@ class TelegramToolTests(unittest.TestCase):
         self.assertEqual(refs[1]["chat"], -100123456789)
         self.assertEqual(refs[1]["message_id"], 55)
 
+    def test_album_metadata_is_scoped_by_chat_and_counts_media_entries(self) -> None:
+        first_chat = _telegram_album_messages_fixture("first_chat", start_id=100)[:1]
+        first_chat[0]["media"].append(
+            {
+                "id": "photo-extra",
+                "kind": "photo",
+                "mime_type": "image/jpeg",
+            }
+        )
+        second_chat = _telegram_album_messages_fixture("second_chat", start_id=200)[:1]
+
+        items, _summary = telegram_parser.normalize_messages(
+            [*first_chat, *second_chat],
+            include_intake_metadata=True,
+        )
+
+        first_albums = [item["metadata"]["telegram"]["album"] for item in items[:2]]
+        second_album = items[2]["metadata"]["telegram"]["album"]
+        self.assertEqual(first_albums, [
+            {"group_id": "album-telegram-realistic", "position": 1, "size": 2},
+            {"group_id": "album-telegram-realistic", "position": 2, "size": 2},
+        ])
+        self.assertEqual(
+            second_album,
+            {"group_id": "album-telegram-realistic", "position": 1, "size": 1},
+        )
+
     def test_telegram_download_entity_selector_converts_numeric_chat_id(self) -> None:
         self.assertEqual(telegram_client.download_entity_selector({"chat_id": "-100123456789"}), -100123456789)
         self.assertEqual(
@@ -1168,6 +1197,588 @@ class TelegramToolTests(unittest.TestCase):
         self.assertEqual(len(result.data["planned_downloads"]), 3)
         self.assertFalse(db_exists)
         self.assertEqual(media_files, [])
+
+    def test_unified_inbox_sync_uses_one_root_scan_for_direct_forwarded_and_linked_media(self) -> None:
+        registry = create_default_registry()
+        external_url = "https://1.1.1.1/inbox.jpg"
+
+        class UnifiedFake(FakeTelegramClient):
+            def head(self, url: str, *, headers=None, timeout: float = 30.0) -> HttpResponse:
+                self.calls.append(("http_head", {"url": url}))
+                return HttpResponse(200, {"content-type": "image/jpeg", "content-length": "8"}, b"", url)
+
+            def get_limited(
+                self,
+                url: str,
+                *,
+                headers=None,
+                timeout: float = 30.0,
+                max_bytes: int = 1024 * 1024,
+            ) -> HttpResponse:
+                self.calls.append(("http_get", {"url": url}))
+                return HttpResponse(200, {"content-type": "image/jpeg"}, b"external"[:max_bytes], url)
+
+        direct = {
+            "id": 10,
+            "date": "2026-07-21T10:00:00+00:00",
+            "chat": {"id": "saved_messages", "title": "Saved Messages", "type": "saved_messages"},
+            "forward": {
+                "type": "channel",
+                "id": "source-1",
+                "name": "Source",
+                "message_id": "99",
+                "date": "2026-07-20T10:00:00+00:00",
+                "access_hash": "must-not-persist",
+            },
+            "media": [
+                {
+                    "id": "photo-10",
+                    "kind": "photo",
+                    "mime_type": "image/jpeg",
+                    "download_ref": {
+                        "chat_id": "saved_messages",
+                        "message_id": "10",
+                        "media_id": "photo-10",
+                    },
+                }
+            ],
+        }
+        link_message = {
+            "id": 11,
+            "date": "2026-07-21T10:01:00+00:00",
+            "chat": {"id": "saved_messages", "title": "Saved Messages", "type": "saved_messages"},
+            "text": f"{external_url} https://t.me/source_channel/100",
+            "media": [],
+        }
+        linked_album = _telegram_album_messages_fixture("source_channel", start_id=100)[:2]
+        fake = UnifiedFake(
+            messages={"saved_messages": [direct, link_message], "link:source_channel": linked_album},
+            downloads={
+                "saved_messages:10:photo-10": {"content": b"direct-1", "mime_type": "image/jpeg"},
+                "source_channel:100:photo-100": {"content": b"linked-1", "mime_type": "image/jpeg"},
+                "source_channel:101:photo-101": {"content": b"linked-2", "mime_type": "image/jpeg"},
+            },
+        )
+        with TemporaryDirectory() as temp_dir:
+            context, _data_dir, db_path = _telegram_context(temp_dir, fake)
+            result = asyncio.run(
+                registry.run(
+                    "telegram.inbox.sync",
+                    {"db_path": str(db_path), "chat": "saved_messages"},
+                    context,
+                )
+            )
+            cursor = db.get_sync_cursor(db_path, platform="telegram", cursor_name="inbox:saved_messages")
+            legacy_messages_cursor = db.get_sync_cursor(
+                db_path,
+                platform="telegram",
+                cursor_name="messages:saved_messages",
+            )
+            legacy_links_cursor = db.get_sync_cursor(
+                db_path,
+                platform="telegram",
+                cursor_name="links:saved_messages",
+            )
+            with db.connect(db_path) as connection:
+                row = connection.execute(
+                    "SELECT metadata_json FROM media_items WHERE platform = ? AND remote_id = ?",
+                    ("telegram", "saved_messages:10:photo-10"),
+                ).fetchone()
+            metadata = json.loads(row["metadata_json"])
+
+        root_scans = [
+            call
+            for call in fake.calls
+            if call[0] == "messages_collect" and call[1]["chats"] == ["saved_messages"]
+        ]
+        self.assertTrue(result.is_success, result.to_dict())
+        self.assertEqual(len(root_scans), 1)
+        self.assertEqual(result.data["summary"]["direct_media_items"], 1)
+        self.assertEqual(result.data["summary"]["forwarded_media_items"], 1)
+        self.assertEqual(result.data["summary"]["external_links"], 1)
+        self.assertEqual(result.data["summary"]["telegram_message_links"], 1)
+        self.assertEqual(result.data["summary"]["telegram_link_media_items"], 2)
+        self.assertEqual(result.data["summary"]["album_groups"], 1)
+        self.assertEqual(result.data["summary"]["downloaded"], 4)
+        self.assertEqual(len(result.data["asset_ids"]), 4)
+        self.assertEqual(cursor["cursor_value"], "11")
+        self.assertIsNone(legacy_messages_cursor)
+        self.assertIsNone(legacy_links_cursor)
+        self.assertNotIn("must-not-persist", json.dumps(metadata))
+        self.assertEqual(metadata["telegram"]["forward_origin"]["id"], "source-1")
+
+    def test_unified_inbox_sync_failure_does_not_advance_cursor(self) -> None:
+        registry = create_default_registry()
+        download_key = "saved_messages:10:photo-10"
+        external_url = "https://1.1.1.1/retry-shared.jpg"
+
+        class UnifiedFake(FakeTelegramClient):
+            def head(self, url: str, *, headers=None, timeout: float = 30.0) -> HttpResponse:
+                return HttpResponse(200, {"content-type": "image/jpeg", "content-length": "6"}, b"", url)
+
+            def get_limited(
+                self,
+                url: str,
+                *,
+                headers=None,
+                timeout: float = 30.0,
+                max_bytes: int = 1024 * 1024,
+            ) -> HttpResponse:
+                return HttpResponse(200, {"content-type": "image/jpeg"}, b"shared", url)
+
+        message = _telegram_messages_fixture()[0]
+        message["text"] = external_url
+        fake = UnifiedFake(
+            messages={"saved_messages": [message]},
+            downloads={
+                download_key: telegram_client.TelegramClientError("network failed"),
+            },
+        )
+        with TemporaryDirectory() as temp_dir:
+            context, _data_dir, db_path = _telegram_context(temp_dir, fake)
+            result = asyncio.run(
+                registry.run(
+                    "telegram.inbox.sync",
+                    {"db_path": str(db_path), "chat": "saved_messages"},
+                    context,
+                )
+            )
+            cursor = db.get_sync_cursor(db_path, platform="telegram", cursor_name="inbox:saved_messages")
+            fake.downloads[download_key] = {"content": b"retried", "mime_type": "image/jpeg"}
+            retry_context, _data_dir, _db_path = _telegram_context(temp_dir, fake)
+            retried = asyncio.run(
+                registry.run(
+                    "telegram.inbox.sync",
+                    {"db_path": str(db_path), "chat": "saved_messages"},
+                    retry_context,
+                )
+            )
+            retried_cursor = db.get_sync_cursor(
+                db_path,
+                platform="telegram",
+                cursor_name="inbox:saved_messages",
+            )
+            links = db.list_links(db_path)
+
+        self.assertFalse(result.is_success)
+        self.assertEqual(result.error.code, "telegram_inbox_sync_partial")
+        self.assertEqual(result.data["summary"]["cursor_reason"], "run_not_successful")
+        self.assertIsNone(cursor)
+        self.assertTrue(retried.is_success, retried.to_dict())
+        self.assertEqual(retried.data["summary"]["direct_downloaded"], 1)
+        self.assertEqual(retried_cursor["cursor_value"], "10")
+        self.assertEqual(len(links), 1)
+        self.assertEqual(len(links[0]["source_provenance"]), 1)
+
+    def test_unified_inbox_sync_pending_nested_link_does_not_advance_cursor(self) -> None:
+        registry = create_default_registry()
+        root = {
+            "id": 10,
+            "date": "2026-07-21T10:00:00+00:00",
+            "chat": {"id": "saved_messages", "type": "saved_messages"},
+            "text": "https://t.me/source_a/100",
+            "media": [],
+        }
+        linked = {
+            "id": 100,
+            "date": "2026-07-21T10:01:00+00:00",
+            "chat": {"id": "source_a", "type": "channel", "username": "source_a"},
+            "text": "https://t.me/source_b/200",
+            "media": [],
+        }
+        fake = FakeTelegramClient(
+            messages={"saved_messages": [root], "link:source_a": [linked]},
+        )
+        with TemporaryDirectory() as temp_dir:
+            context, _data_dir, db_path = _telegram_context(temp_dir, fake)
+            result = asyncio.run(
+                registry.run(
+                    "telegram.inbox.sync",
+                    {
+                        "db_path": str(db_path),
+                        "chat": "saved_messages",
+                        "max_message_link_depth": 1,
+                    },
+                    context,
+                )
+            )
+            cursor = db.get_sync_cursor(db_path, platform="telegram", cursor_name="inbox:saved_messages")
+
+        followed = [
+            call[1]["message_links"]
+            for call in fake.calls
+            if call[0] == "messages_collect" and call[1]["message_links"]
+        ]
+        self.assertFalse(result.is_success)
+        self.assertEqual(result.error.code, "telegram_inbox_sync_partial")
+        self.assertEqual(result.data["summary"]["pending_message_links"], 1)
+        self.assertEqual(result.data["summary"]["cursor_reason"], "run_not_successful")
+        self.assertEqual(followed, [["https://t.me/source_a/100"]])
+        self.assertIsNone(cursor)
+
+    def test_unified_inbox_sync_retryable_link_resolution_does_not_advance_cursor(self) -> None:
+        registry = create_default_registry()
+        external_url = "https://1.1.1.1/transient.jpg"
+
+        class TransientLinkFake(FakeTelegramClient):
+            fail_resolution = True
+
+            def head(self, url: str, *, headers=None, timeout: float = 30.0) -> HttpResponse:
+                if self.fail_resolution:
+                    raise TimeoutError("temporary resolver timeout")
+                return HttpResponse(200, {"content-type": "image/jpeg", "content-length": "5"}, b"", url)
+
+            def get_limited(
+                self,
+                url: str,
+                *,
+                headers=None,
+                timeout: float = 30.0,
+                max_bytes: int = 1024 * 1024,
+            ) -> HttpResponse:
+                return HttpResponse(200, {"content-type": "image/jpeg"}, b"image", url)
+
+        message = {
+            "id": 10,
+            "date": "2026-07-21T10:00:00+00:00",
+            "chat": {"id": "saved_messages", "type": "saved_messages"},
+            "text": external_url,
+            "media": [],
+        }
+        fake = TransientLinkFake(messages={"saved_messages": [message]})
+        with TemporaryDirectory() as temp_dir:
+            context, _data_dir, db_path = _telegram_context(temp_dir, fake)
+            first = asyncio.run(
+                registry.run(
+                    "telegram.inbox.sync",
+                    {"db_path": str(db_path), "chat": "saved_messages"},
+                    context,
+                )
+            )
+            first_cursor = db.get_sync_cursor(
+                db_path,
+                platform="telegram",
+                cursor_name="inbox:saved_messages",
+            )
+            fake.fail_resolution = False
+            retry_context, _data_dir, _db_path = _telegram_context(temp_dir, fake)
+            second = asyncio.run(
+                registry.run(
+                    "telegram.inbox.sync",
+                    {"db_path": str(db_path), "chat": "saved_messages"},
+                    retry_context,
+                )
+            )
+            second_cursor = db.get_sync_cursor(
+                db_path,
+                platform="telegram",
+                cursor_name="inbox:saved_messages",
+            )
+
+        self.assertFalse(first.is_success)
+        self.assertEqual(first.error.code, "telegram_inbox_sync_partial")
+        self.assertEqual(first.data["summary"]["retryable_links_unresolved"], 1)
+        self.assertIsNone(first_cursor)
+        self.assertTrue(second.is_success, second.to_dict())
+        self.assertEqual(second.data["summary"]["retryable_links_unresolved"], 0)
+        self.assertEqual(second.data["summary"]["link_downloaded"], 1)
+        self.assertEqual(second_cursor["cursor_value"], "10")
+
+    def test_unified_inbox_sync_withholds_album_cut_by_scan_limit(self) -> None:
+        registry = create_default_registry()
+        album = _telegram_album_messages_fixture("saved_messages", start_id=100)
+        fake = FakeTelegramClient(messages={"saved_messages": album}, downloads={})
+        with TemporaryDirectory() as temp_dir:
+            context, _data_dir, db_path = _telegram_context(temp_dir, fake)
+            result = asyncio.run(
+                registry.run(
+                    "telegram.inbox.sync",
+                    {
+                        "db_path": str(db_path),
+                        "chat": "saved_messages",
+                        "max_messages": 1,
+                    },
+                    context,
+                )
+            )
+            cursor = db.get_sync_cursor(db_path, platform="telegram", cursor_name="inbox:saved_messages")
+            with db.connect(db_path) as connection:
+                media_item_count = connection.execute("SELECT COUNT(*) FROM media_items").fetchone()[0]
+
+        download_calls = [call for call in fake.calls if call[0] == "media_download"]
+        self.assertFalse(result.is_success)
+        self.assertEqual(result.error.code, "telegram_inbox_sync_partial")
+        self.assertEqual(result.data["summary"]["incomplete_album_groups"], 1)
+        self.assertEqual(result.data["summary"]["direct_media_items"], 0)
+        self.assertEqual(result.data["summary"]["cursor_reason"], "run_not_successful")
+        self.assertEqual(download_calls, [])
+        self.assertEqual(media_item_count, 0)
+        self.assertIsNone(cursor)
+
+    def test_unified_inbox_sync_ignores_legacy_limit_without_starving_media(self) -> None:
+        registry = create_default_registry()
+        messages = _telegram_album_messages_fixture("saved_messages", start_id=100)
+        for message in messages:
+            message.pop("grouped_id", None)
+        fake = FakeTelegramClient(
+            messages={"saved_messages": messages[:2]},
+            downloads={
+                "saved_messages:100:photo-100": {"content": b"first", "mime_type": "image/jpeg"},
+                "saved_messages:101:photo-101": {"content": b"second", "mime_type": "image/jpeg"},
+            },
+        )
+        with TemporaryDirectory() as temp_dir:
+            context, _data_dir, db_path = _telegram_context(temp_dir, fake)
+            result = asyncio.run(
+                registry.run(
+                    "telegram.inbox.sync",
+                    {
+                        "db_path": str(db_path),
+                        "chat": "saved_messages",
+                        "limit": 1,
+                    },
+                    context,
+                )
+            )
+            cursor = db.get_sync_cursor(db_path, platform="telegram", cursor_name="inbox:saved_messages")
+
+        self.assertTrue(result.is_success, result.to_dict())
+        self.assertEqual(result.data["summary"]["direct_downloaded"], 2)
+        self.assertNotIn("intake_items_deferred", result.data["summary"])
+        self.assertEqual(result.data["summary"]["cursor_reason"], "stored")
+        self.assertEqual(cursor["cursor_value"], "101")
+
+    def test_unified_inbox_sync_deduplicates_overlapping_message_link_albums(self) -> None:
+        registry = create_default_registry()
+        root = {
+            "id": 10,
+            "date": "2026-07-21T10:00:00+00:00",
+            "chat": {"id": "saved_messages", "type": "saved_messages"},
+            "text": "https://t.me/source_channel/100 https://t.me/source_channel/101",
+            "media": [],
+        }
+        album = _telegram_album_messages_fixture("source_channel", start_id=100)
+        fake = FakeTelegramClient(
+            messages={"saved_messages": [root], "link:source_channel": album},
+            downloads={
+                f"source_channel:{100 + index}:photo-{100 + index}": {
+                    "content": f"album-{index}".encode(),
+                    "mime_type": "image/jpeg",
+                }
+                for index in range(3)
+            },
+        )
+        with TemporaryDirectory() as temp_dir:
+            context, _data_dir, db_path = _telegram_context(temp_dir, fake)
+            result = asyncio.run(
+                registry.run(
+                    "telegram.inbox.sync",
+                    {"db_path": str(db_path), "chat": "saved_messages"},
+                    context,
+                )
+            )
+
+        download_calls = [call for call in fake.calls if call[0] == "media_download"]
+        self.assertTrue(result.is_success, result.to_dict())
+        self.assertEqual(result.data["summary"]["telegram_message_links"], 2)
+        self.assertEqual(result.data["summary"]["telegram_link_media_items"], 3)
+        self.assertEqual(result.data["summary"]["downloaded"], 3)
+        self.assertEqual(len(download_calls), 3)
+        self.assertEqual(len(result.data["asset_ids"]), 3)
+
+    def test_unified_inbox_sync_deduplicates_direct_and_linked_content(self) -> None:
+        registry = create_default_registry()
+        external_url = "https://1.1.1.1/same.jpg"
+
+        class UnifiedFake(FakeTelegramClient):
+            def head(self, url: str, *, headers=None, timeout: float = 30.0) -> HttpResponse:
+                return HttpResponse(200, {"content-type": "image/jpeg", "content-length": "12"}, b"", url)
+
+            def get_limited(
+                self,
+                url: str,
+                *,
+                headers=None,
+                timeout: float = 30.0,
+                max_bytes: int = 1024 * 1024,
+            ) -> HttpResponse:
+                return HttpResponse(200, {"content-type": "image/jpeg"}, b"same-content", url)
+
+        direct = {
+            "id": 10,
+            "date": "2026-07-21T10:00:00+00:00",
+            "chat": {"id": "saved_messages", "type": "saved_messages"},
+            "text": external_url,
+            "media": [
+                {
+                    "id": "photo-10",
+                    "kind": "photo",
+                    "mime_type": "image/jpeg",
+                    "download_ref": {
+                        "chat_id": "saved_messages",
+                        "message_id": "10",
+                        "media_id": "photo-10",
+                    },
+                }
+            ],
+        }
+        fake = UnifiedFake(
+            messages={"saved_messages": [direct]},
+            downloads={
+                "saved_messages:10:photo-10": {"content": b"same-content", "mime_type": "image/jpeg"},
+            },
+        )
+        with TemporaryDirectory() as temp_dir:
+            context, data_dir, db_path = _telegram_context(temp_dir, fake)
+            result = asyncio.run(
+                registry.run(
+                    "telegram.inbox.sync",
+                    {"db_path": str(db_path), "chat": "saved_messages"},
+                    context,
+                )
+            )
+            records = db.list_media_files(db_path)
+            visible_images = list((data_dir / "library").rglob("*.jpg"))
+
+        self.assertTrue(result.is_success, result.to_dict())
+        self.assertEqual(result.data["summary"]["downloaded"], 2)
+        self.assertEqual(len(result.data["asset_ids"]), 1)
+        self.assertEqual(len(records), 2)
+        self.assertEqual(len({record["library_entry_id"] for record in records}), 1)
+        self.assertEqual(len({record["local_path"] for record in records}), 1)
+        self.assertEqual(len(visible_images), 1)
+
+    def test_unified_inbox_sync_preserves_duplicate_link_provenance(self) -> None:
+        registry = create_default_registry()
+        external_url = "https://1.1.1.1/shared.jpg"
+
+        class UnifiedFake(FakeTelegramClient):
+            def head(self, url: str, *, headers=None, timeout: float = 30.0) -> HttpResponse:
+                return HttpResponse(200, {"content-type": "image/jpeg", "content-length": "6"}, b"", url)
+
+            def get_limited(
+                self,
+                url: str,
+                *,
+                headers=None,
+                timeout: float = 30.0,
+                max_bytes: int = 1024 * 1024,
+            ) -> HttpResponse:
+                return HttpResponse(200, {"content-type": "image/jpeg"}, b"shared", url)
+
+        messages = [
+            {
+                "id": message_id,
+                "date": f"2026-07-21T10:0{message_id - 10}:00+00:00",
+                "chat": {"id": "saved_messages", "type": "saved_messages"},
+                "text": external_url,
+                "media": [],
+            }
+            for message_id in (10, 11)
+        ]
+        fake = UnifiedFake(messages={"saved_messages": messages})
+        with TemporaryDirectory() as temp_dir:
+            context, _data_dir, db_path = _telegram_context(temp_dir, fake)
+            result = asyncio.run(
+                registry.run(
+                    "telegram.inbox.sync",
+                    {"db_path": str(db_path), "chat": "saved_messages"},
+                    context,
+                )
+            )
+            links = db.list_links(db_path)
+
+        self.assertTrue(result.is_success, result.to_dict())
+        self.assertEqual(result.data["summary"]["external_links"], 1)
+        self.assertEqual(len(links), 1)
+        self.assertEqual(len(links[0]["source_provenance"]), 2)
+        self.assertEqual(
+            {entry["source_message_id"] for entry in links[0]["source_provenance"]},
+            {"10", "11"},
+        )
+
+    def test_legacy_message_normalization_omits_unified_intake_metadata(self) -> None:
+        message = _telegram_album_messages_fixture("saved_messages", start_id=100)[0]
+        message["forward"] = {
+            "type": "channel",
+            "id": "source-channel",
+            "message_id": "77",
+        }
+        message["_inbox_delivery"] = "direct"
+
+        legacy_items, _summary = telegram_parser.normalize_messages([message])
+        unified_items, _summary = telegram_parser.normalize_messages(
+            [message],
+            include_intake_metadata=True,
+        )
+
+        legacy = legacy_items[0]["metadata"]["telegram"]
+        unified = unified_items[0]["metadata"]["telegram"]
+        self.assertNotIn("album", legacy)
+        self.assertNotIn("forward_origin", legacy)
+        self.assertNotIn("inbox_delivery", legacy)
+        self.assertIn("album", unified)
+        self.assertEqual(unified["forward_origin"]["id"], "source-channel")
+        self.assertEqual(unified["inbox_delivery"], "direct")
+
+    def test_unified_inbox_sync_is_hidden_and_repeated_runs_are_idempotent(self) -> None:
+        registry = create_default_registry()
+        fake = FakeTelegramClient(
+            messages={"saved_messages": _telegram_messages_fixture()[:1]},
+            downloads={
+                "saved_messages:10:photo-10": {"content": b"photo-one", "mime_type": "image/jpeg"},
+            },
+        )
+        with TemporaryDirectory() as temp_dir:
+            context, _data_dir, db_path = _telegram_context(temp_dir, fake)
+            first = asyncio.run(
+                registry.run(
+                    "telegram.inbox.sync",
+                    {"db_path": str(db_path), "chat": "saved_messages"},
+                    context,
+                )
+            )
+            download_calls_after_first = sum(1 for name, _payload in fake.calls if name == "media_download")
+            second = asyncio.run(
+                registry.run(
+                    "telegram.inbox.sync",
+                    {"db_path": str(db_path), "chat": "saved_messages"},
+                    context,
+                )
+            )
+            download_calls_after_second = sum(1 for name, _payload in fake.calls if name == "media_download")
+            files = _media_files(db_path)
+
+        public_tools = {spec.name for spec in registry.list()}
+        hidden_tools = {spec.name for spec in registry.list(include_hidden=True)}
+        self.assertTrue(first.is_success)
+        self.assertTrue(second.is_success)
+        self.assertEqual(first.data["summary"]["downloaded"], 1)
+        self.assertEqual(second.data["summary"]["downloaded"], 0)
+        self.assertEqual(download_calls_after_first, 1)
+        self.assertEqual(download_calls_after_second, 1)
+        self.assertEqual(len(files), 1)
+        self.assertNotIn("telegram.inbox.sync", public_tools)
+        self.assertIn("telegram.inbox.sync", hidden_tools)
+
+    def test_unified_inbox_sync_dry_run_has_no_side_effects(self) -> None:
+        registry = create_default_registry()
+        fake = FakeTelegramClient(messages={"saved_messages": _telegram_messages_fixture()[:1]})
+        with TemporaryDirectory() as temp_dir:
+            context, data_dir, db_path = _telegram_context(temp_dir, fake, dry_run=True)
+            result = asyncio.run(
+                registry.run(
+                    "telegram.inbox.sync",
+                    {"db_path": str(db_path), "chat": "saved_messages"},
+                    context,
+                )
+            )
+            library_files = list((data_dir / "library").rglob("*")) if (data_dir / "library").exists() else []
+
+        self.assertTrue(result.is_success)
+        self.assertEqual(result.data["summary"]["cursor_reason"], "dry_run")
+        self.assertFalse(db_path.exists())
+        self.assertEqual(library_files, [])
 
 
 def _telegram_context(

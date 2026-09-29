@@ -120,6 +120,51 @@ def definitions() -> list[ToolDefinition]:
         ),
         ToolDefinition(
             spec=ToolSpec(
+                name="telegram.inbox.sync",
+                description="Collect and download direct, forwarded, and linked media from one Telegram inbox scan.",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "db_path": {"type": "string"},
+                        "library_root": {"type": "string"},
+                        "target_dir": {"type": "string"},
+                        "include_platform_layer": {"type": "boolean"},
+                        "chat": _chat_selector_schema(),
+                        "chats": {"type": "array", "items": _chat_selector_schema()},
+                        "after_message_id": {"type": "integer"},
+                        "max_messages": {"type": "integer"},
+                        "full_sync": {"type": "boolean"},
+                        "media_types": {"type": "array", "items": {"type": "string", "enum": MEDIA_TYPES}},
+                        "include_protected": {"type": "boolean"},
+                        "max_message_link_depth": {"type": "integer"},
+                        "overwrite": {"type": "boolean"},
+                        "retry_auth_skipped": {"type": "boolean"},
+                        "repair_missing_files": {"type": "boolean"},
+                        "attempts": {"type": "integer"},
+                        "timeout_seconds": {"type": "number"},
+                        "max_redirects": {"type": "integer"},
+                        "max_html_bytes": {"type": "integer"},
+                        "max_media_bytes": {"type": "integer"},
+                        "store_cursor": {"type": "boolean"},
+                        "write_sidecar_metadata": {"type": "boolean"},
+                    },
+                },
+                output_schema={"type": "object"},
+                permissions=(
+                    Permission.NETWORK,
+                    Permission.READ_CREDENTIALS,
+                    Permission.READ_DB,
+                    Permission.WRITE_DB,
+                    Permission.READ_FILES,
+                    Permission.WRITE_FILES,
+                ),
+                dry_run_supported=True,
+                hidden=True,
+            ),
+            handler=inbox_sync,
+        ),
+        ToolDefinition(
+            spec=ToolSpec(
                 name="telegram.auth.login",
                 description="Start or complete explicit local Telegram user-session login.",
                 input_schema={
@@ -577,7 +622,14 @@ async def media_download(context: ToolContext, input_data: dict[str, Any]) -> To
     )
 
 
-async def messages_sync(context: ToolContext, input_data: dict[str, Any]) -> ToolResult:
+async def messages_sync(
+    context: ToolContext,
+    input_data: dict[str, Any],
+    *,
+    precollected_result: ToolResult | None = None,
+    include_asset_ids: bool = False,
+    message_link_provenance: list[dict[str, Any]] | None = None,
+) -> ToolResult:
     db_path = _db_path(context, input_data)
     if not db_path:
         return ToolResult.failure(
@@ -609,13 +661,15 @@ async def messages_sync(context: ToolContext, input_data: dict[str, Any]) -> Too
     collect_input = dict(input_data)
     collect_input["db_path"] = str(db_path)
     collect_input["store_cursor"] = False
-    collect_result = await _messages_collect(context, collect_input, allow_cursor_store=False)
+    collect_result = precollected_result
+    if collect_result is None:
+        collect_result = await _messages_collect(context, collect_input, allow_cursor_store=False)
     if not collect_result.is_success:
         return collect_result
     collected_items = collect_result.data.get("items", [])
     _apply_message_link_provenance(
         collected_items,
-        input_data.get("_message_link_provenance") or [],
+        message_link_provenance or input_data.get("_message_link_provenance") or [],
     )
     items = _limited_items(collected_items, input_data.get("limit"))
 
@@ -749,6 +803,8 @@ async def messages_sync(context: ToolContext, input_data: dict[str, Any]) -> Too
         "source_summaries": collect_result.data.get("source_summaries", []),
         "message_links": collect_result.data.get("message_links", []),
     }
+    if include_asset_ids:
+        data["asset_ids"] = assets.asset_ids_for_media_items(db_path, items)
     if run_status == "success":
         return ToolResult.success(data, artifacts=artifacts, warnings=warnings)
     return ToolResult.failure(
@@ -764,7 +820,182 @@ async def inbox_collect_links(context: ToolContext, input_data: dict[str, Any]) 
     return await _inbox_collect_links(context, input_data, allow_cursor_store=not context.dry_run)
 
 
-async def inbox_sync_links(context: ToolContext, input_data: dict[str, Any]) -> ToolResult:
+async def inbox_sync(context: ToolContext, input_data: dict[str, Any]) -> ToolResult:
+    """Synchronize every supported inbox intake kind from one collected message set."""
+
+    db_path = _db_path(context, input_data)
+    if not db_path:
+        return ToolResult.failure(
+            "missing_db_path",
+            "Provide db_path or set MEDIAGENT_DB_PATH.",
+            category=ErrorCategory.VALIDATION,
+        )
+    collect_input = dict(input_data)
+    collect_input.update(
+        {
+            "db_path": str(db_path),
+            "extract_message_links": True,
+            "store_cursor": False,
+        }
+    )
+    collect_result = await _messages_collect(
+        context,
+        collect_input,
+        allow_cursor_store=False,
+        unified_inbox=True,
+    )
+    if not collect_result.is_success:
+        return collect_result
+
+    telegram_items = collect_result.data.get("items", [])
+    message_link_records = collect_result.data.get("telegram_message_links", [])
+    direct_input = {
+        **input_data,
+        "db_path": str(db_path),
+        "retry_failed": True,
+        "store_cursor": False,
+    }
+    direct_input.pop("limit", None)
+    direct_result = await messages_sync(
+        context,
+        direct_input,
+        precollected_result=collect_result,
+        include_asset_ids=True,
+        message_link_provenance=message_link_records,
+    )
+
+    external_collect = ToolResult.success(
+        {
+            "platform": "telegram",
+            "db_path": str(db_path),
+            "links": collect_result.data.get("links", []),
+            "telegram_message_links": [],
+            "summary": collect_result.data.get("summary", {}),
+            "source_summaries": collect_result.data.get("source_summaries", []),
+            "cursors": [],
+        }
+    )
+    link_input = {
+        **input_data,
+        "db_path": str(db_path),
+        "retry_failed": True,
+        "store_cursor": False,
+    }
+    link_input.pop("limit", None)
+    link_result = await inbox_sync_links(
+        context,
+        link_input,
+        precollected_result=external_collect,
+        include_asset_ids=True,
+    )
+
+    collect_summary = collect_result.data.get("summary", {})
+    pending_message_links = int(collect_summary.get("message_link_depth_limit_reached", 0) or 0)
+    incomplete_album_groups = int(collect_summary.get("incomplete_album_groups", 0) or 0)
+    retryable_links_unresolved = int(
+        link_result.data.get("summary", {}).get("retryable_links_unresolved", 0) or 0
+    )
+    run_status = "success" if direct_result.is_success and link_result.is_success else "partial"
+    if not direct_result.data and not link_result.data:
+        run_status = "failed"
+    if run_status == "success" and (
+        pending_message_links or incomplete_album_groups or retryable_links_unresolved
+    ):
+        run_status = "partial"
+    counters = _unified_inbox_counters(
+        telegram_items,
+        direct_result.data.get("items", []),
+        link_result.data.get("summary", {}),
+        external_links=len(collect_result.data.get("links", [])),
+        telegram_links=len(message_link_records),
+    )
+    warnings = [*direct_result.warnings, *link_result.warnings]
+    if pending_message_links:
+        warnings.append(
+            "Telegram inbox cursors were not advanced because nested message links remain beyond the configured depth."
+        )
+    if incomplete_album_groups:
+        warnings.append(
+            "Telegram inbox cursors were not advanced because the message scan ended inside a media album."
+        )
+    if retryable_links_unresolved:
+        warnings.append(
+            "Telegram inbox cursors were not advanced because one or more external links remain retryable."
+        )
+    cursor_decision = _telegram_inbox_cursor_decision(
+        input_data,
+        run_status=run_status,
+        dry_run=context.dry_run,
+    )
+    stored_cursors: list[dict[str, Any]] = []
+    if cursor_decision["should_store"]:
+        stored_cursors = _store_telegram_inbox_cursors(
+            db_path,
+            source_summaries=collect_result.data.get("source_summaries", []),
+        )
+        cursor_reason = "stored" if stored_cursors else "no_cursor_value"
+    else:
+        cursor_reason = cursor_decision["reason"]
+        if cursor_decision["warning"]:
+            warnings.append(cursor_decision["warning"])
+
+    asset_ids = list(
+        dict.fromkeys(
+            [
+                *direct_result.data.get("asset_ids", []),
+                *link_result.data.get("asset_ids", []),
+            ]
+        )
+    )
+    summary = {
+        **counters,
+        "pending_message_links": pending_message_links,
+        "incomplete_album_groups": incomplete_album_groups,
+        "retryable_links_unresolved": retryable_links_unresolved,
+        "cursor_stored": bool(stored_cursors),
+        "cursor_reason": cursor_reason,
+        "cursors": stored_cursors,
+        "direct_status": direct_result.status.value,
+        "link_status": link_result.status.value,
+    }
+    data = {
+        "platform": "telegram",
+        "db_path": str(db_path),
+        "summary": summary,
+        "asset_ids": asset_ids,
+        "items": [
+            *direct_result.data.get("items", []),
+            *link_result.data.get("items", []),
+        ],
+        "links": link_result.data.get("links", []),
+        "packages": link_result.data.get("packages", []),
+    }
+    if context.dry_run:
+        data["planned_downloads"] = [
+            *direct_result.data.get("planned_downloads", []),
+            *link_result.data.get("planned_downloads", []),
+        ]
+    artifacts = _unique_artifacts([*direct_result.artifacts, *link_result.artifacts])
+    if not context.dry_run:
+        _record_telegram_inbox_run(db_path, run_status=run_status, summary=summary)
+    if run_status == "success":
+        return ToolResult.success(data, artifacts=artifacts, warnings=warnings)
+    return ToolResult.failure(
+        "telegram_inbox_sync_partial" if run_status == "partial" else "telegram_inbox_sync_failed",
+        "Telegram inbox sync finished with one or more incomplete branches.",
+        data=data,
+        warnings=warnings,
+        category=ErrorCategory.NETWORK,
+    )
+
+
+async def inbox_sync_links(
+    context: ToolContext,
+    input_data: dict[str, Any],
+    *,
+    precollected_result: ToolResult | None = None,
+    include_asset_ids: bool = False,
+) -> ToolResult:
     db_path = _db_path(context, input_data)
     if not db_path:
         return ToolResult.failure(
@@ -776,7 +1007,9 @@ async def inbox_sync_links(context: ToolContext, input_data: dict[str, Any]) -> 
     collect_input = dict(input_data)
     collect_input["db_path"] = str(db_path)
     collect_input["store_cursor"] = False
-    collect_result = await _inbox_collect_links(context, collect_input, allow_cursor_store=False)
+    collect_result = precollected_result
+    if collect_result is None:
+        collect_result = await _inbox_collect_links(context, collect_input, allow_cursor_store=False)
     if not collect_result.is_success:
         return collect_result
 
@@ -826,6 +1059,7 @@ async def inbox_sync_links(context: ToolContext, input_data: dict[str, Any]) -> 
         "auth_links_retried": sum(1 for link in links if link.get("_auth_retry")),
         "resolved": 0,
         "skipped_links": 0,
+        "retryable_links_unresolved": 0,
         "queued": 0,
         "skipped_items": 0,
         "skipped_healthy": 0,
@@ -866,6 +1100,12 @@ async def inbox_sync_links(context: ToolContext, input_data: dict[str, Any]) -> 
         resolutions.append({"link": _safe_link_record(link), "resolution": sanitize_link_resolution_for_output(resolution)})
         if resolution.get("status") != "resolved":
             summary["skipped_links"] += 1
+            if db.link_resolution_retryable(
+                status=str(resolution.get("status") or "skipped"),
+                resolution=resolution,
+                skip_reason=resolution.get("skip_reason"),
+            ):
+                summary["retryable_links_unresolved"] += 1
             if not context.dry_run and link.get("id") is not None:
                 db.update_link_resolution(
                     db_path,
@@ -1035,6 +1275,16 @@ async def inbox_sync_links(context: ToolContext, input_data: dict[str, Any]) -> 
         "telegram_message_links": telegram_link_results,
         "packages": comic_route["packages"],
     }
+    if include_asset_ids:
+        data["asset_ids"] = list(
+            dict.fromkeys(
+                [
+                    *comic_route["asset_ids"],
+                    *assets.asset_ids_for_media_items(db_path, resolved_items),
+                    *(telegram_result.data.get("asset_ids", []) if telegram_result else []),
+                ]
+            )
+        )
     if run_status == "success":
         return ToolResult.success(data, artifacts=artifacts, warnings=warnings)
     return ToolResult.failure(
@@ -1081,6 +1331,7 @@ async def _inbox_collect_links(
     if not context.dry_run:
         db.initialize_database(db_path)
     after_by_source = _link_after_by_source(db_path, chats, input_data)
+    scan_limit = _message_scan_limit(input_data, allow_full_sync=True)
     try:
         payload = await _telegram_call(
             context,
@@ -1088,7 +1339,7 @@ async def _inbox_collect_links(
             "telegram_collect_messages",
             chats=chats,
             after_by_source=after_by_source,
-            limit=_message_scan_limit(input_data, allow_full_sync=True),
+            limit=scan_limit,
             message_ids_by_source={},
             message_links=[],
             include_protected=False,
@@ -1152,9 +1403,16 @@ async def _messages_collect(
     input_data: dict[str, Any],
     *,
     allow_cursor_store: bool,
+    unified_inbox: bool = False,
 ) -> ToolResult:
     db_path = _db_path(context, input_data)
-    chats = _chat_selectors(input_data)
+    chats = _inbox_chat_selectors(context, input_data) if unified_inbox else _chat_selectors(input_data)
+    if unified_inbox and not chats:
+        return ToolResult.failure(
+            "missing_telegram_inbox_chat",
+            "Provide chat/chats or set MEDIAGENT_TELEGRAM_INBOX_CHAT, MEDIAGENT_TELEGRAM_INBOX_CHAT_ID, or MEDIAGENT_TELEGRAM_INBOX_CHAT_USERNAME.",
+            category=ErrorCategory.VALIDATION,
+        )
     if context.dry_run and not _has_telegram_fake_client(context):
         return ToolResult.success(
             {
@@ -1178,8 +1436,13 @@ async def _messages_collect(
     config = config_result
     if not context.dry_run:
         db.initialize_database(db_path)
-    after_by_source = _after_by_source(db_path, chats, input_data)
+    after_by_source = (
+        _inbox_after_by_source(db_path, chats, input_data)
+        if unified_inbox
+        else _after_by_source(db_path, chats, input_data)
+    )
     message_ids_by_source = _message_ids_by_source(chats, input_data)
+    scan_limit = _message_scan_limit(input_data, allow_full_sync=True)
     try:
         payload = await _telegram_call(
             context,
@@ -1187,7 +1450,7 @@ async def _messages_collect(
             "telegram_collect_messages",
             chats=chats,
             after_by_source=after_by_source,
-            limit=_message_scan_limit(input_data, allow_full_sync=True),
+            limit=scan_limit,
             message_ids_by_source=message_ids_by_source,
             message_links=input_data.get("message_links") or [],
             include_protected=input_data.get("include_protected", False),
@@ -1200,6 +1463,13 @@ async def _messages_collect(
         )
     messages = payload.get("messages", []) if isinstance(payload, dict) else []
     source_summaries = payload.get("source_summaries", []) if isinstance(payload, dict) else []
+    incomplete_album_keys = (
+        _root_scan_incomplete_album_keys(messages, source_summaries, root_source_count=len(chats), scan_limit=scan_limit)
+        if unified_inbox
+        else set()
+    )
+    if unified_inbox:
+        messages = [{**message, "_inbox_delivery": "direct"} for message in messages]
     extracted_message_links: list[str] = []
     linked_messages_count = 0
     message_link_depth_reached = 0
@@ -1236,6 +1506,11 @@ async def _messages_collect(
                 category=ErrorCategory.NETWORK,
             )
         linked_messages = linked_payload.get("messages", []) if isinstance(linked_payload, dict) else []
+        if unified_inbox:
+            linked_messages = [
+                {**message, "_inbox_delivery": "message_link"}
+                for message in linked_messages
+            ]
         linked_messages_count += len(linked_messages)
         messages.extend(linked_messages)
         for source in linked_payload.get("source_summaries", []) if isinstance(linked_payload, dict) else []:
@@ -1247,11 +1522,17 @@ async def _messages_collect(
         )
     if pending_message_links:
         message_link_depth_limit_reached = len(pending_message_links)
+    duplicate_messages = 0
+    if unified_inbox:
+        messages, duplicate_messages = _dedupe_collected_messages(messages)
     items, parser_summary = telegram_parser.normalize_messages(
         messages,
         media_types=input_data.get("media_types"),
         include_protected=input_data.get("include_protected", False),
+        include_intake_metadata=unified_inbox,
     )
+    if incomplete_album_keys:
+        items = [item for item in items if _telegram_item_album_key(item) not in incomplete_album_keys]
     stored_cursors: list[dict[str, Any]] = []
     if input_data.get("store_cursor", False) and allow_cursor_store and not _has_explicit_message_selection(input_data):
         db.initialize_database(db_path)
@@ -1260,8 +1541,7 @@ async def _messages_collect(
             input_data=input_data,
             source_summaries=source_summaries,
         )
-    return ToolResult.success(
-        {
+    data = {
             "platform": "telegram",
             "db_path": str(db_path),
             "items": items,
@@ -1284,7 +1564,60 @@ async def _messages_collect(
             "source_summaries": source_summaries,
             "cursors": stored_cursors,
         }
-    )
+    if unified_inbox:
+        links, telegram_message_links, duplicate_count = _inbox_link_records_from_messages(
+            context,
+            db_path,
+            messages,
+        )
+        data["links"] = links
+        data["telegram_message_links"] = telegram_message_links
+        data["summary"].update(
+            {
+                "links_found": len(links),
+                "links_queued": len(links),
+                "telegram_message_links_found": len(telegram_message_links),
+                "duplicates_in_run": duplicate_count,
+                "incomplete_album_groups": len(incomplete_album_keys),
+                "duplicate_messages": duplicate_messages,
+            }
+        )
+    return ToolResult.success(data)
+
+
+def _inbox_link_records_from_messages(
+    context: ToolContext,
+    db_path: Path,
+    messages: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], int]:
+    # Extract one message at a time so duplicate URLs preserve every inbox
+    # provenance when db.upsert_link merges source records.
+    discovered = [
+        link
+        for message in messages
+        for link in extract_external_links_from_messages([message])
+    ]
+    queued_by_url: dict[str, dict[str, Any]] = {}
+    seen: set[str] = set()
+    duplicate_count = 0
+    for link in discovered:
+        normalized_url = str(link.get("normalized_url") or "")
+        record = {**link, "collector_run_id": context.run_id}
+        if normalized_url in seen:
+            duplicate_count += 1
+            if not context.dry_run:
+                queued_by_url[normalized_url] = db.upsert_link(db_path, record)
+            continue
+        seen.add(normalized_url)
+        if context.dry_run:
+            queued_by_url[normalized_url] = {**record, "id": None, "is_new": None}
+        else:
+            queued_by_url[normalized_url] = db.upsert_link(db_path, record)
+    message_links = [
+        {**record, "collector_run_id": context.run_id}
+        for record in telegram_parser.extract_message_link_records(messages)
+    ]
+    return list(queued_by_url.values()), message_links, duplicate_count
 
 
 async def _sync_one_telegram_item(
@@ -1913,6 +2246,26 @@ def _after_by_source(db_path: Path, chats: list[Any], input_data: dict[str, Any]
     return after
 
 
+def _inbox_after_by_source(db_path: Path, chats: list[Any], input_data: dict[str, Any]) -> dict[str, int | None]:
+    explicit = input_data.get("after_message_id")
+    after: dict[str, int | None] = {}
+    for chat in chats:
+        source_key = telegram_client.source_key_for_chat(chat)
+        if explicit is not None:
+            after[source_key] = int(explicit)
+            continue
+        if input_data.get("full_sync"):
+            after[source_key] = None
+            continue
+        cursor = db.get_sync_cursor(
+            db_path,
+            platform="telegram",
+            cursor_name=_telegram_inbox_cursor_name(source_key),
+        )
+        after[source_key] = int(cursor["cursor_value"]) if cursor and cursor.get("cursor_value") else None
+    return after
+
+
 def _link_after_by_source(db_path: Path, chats: list[Any], input_data: dict[str, Any]) -> dict[str, int | None]:
     explicit = input_data.get("after_message_id")
     after: dict[str, int | None] = {}
@@ -2081,6 +2434,135 @@ def _merge_telegram_sync_summary(summary: dict[str, Any], telegram_summary: dict
         "bytes_written",
     ):
         summary[key] += int(telegram_summary.get(key, 0) or 0)
+
+
+def _unified_inbox_counters(
+    collected_items: list[dict[str, Any]],
+    item_results: list[dict[str, Any]],
+    external_summary: dict[str, Any],
+    *,
+    external_links: int,
+    telegram_links: int,
+) -> dict[str, int]:
+    direct_ids: set[str] = set()
+    message_link_ids: set[str] = set()
+    forwarded_ids: set[str] = set()
+    album_keys: set[tuple[str, str]] = set()
+    for item in collected_items:
+        remote_id = str(item.get("remote_id") or "")
+        telegram = (item.get("metadata") or {}).get("telegram") or {}
+        delivery = telegram.get("inbox_delivery")
+        if delivery == "message_link":
+            message_link_ids.add(remote_id)
+        else:
+            direct_ids.add(remote_id)
+        if telegram.get("forward_origin"):
+            forwarded_ids.add(remote_id)
+        grouped_id = telegram.get("grouped_id")
+        if grouped_id not in (None, ""):
+            album_keys.add((str(telegram.get("chat_id") or ""), str(grouped_id)))
+    downloaded_ids = {
+        str(result.get("remote_id") or "")
+        for result in item_results
+        if result.get("status") == "downloaded"
+    }
+    external_downloaded = int(external_summary.get("downloaded", 0) or 0)
+    telegram_link_downloaded = len(message_link_ids & downloaded_ids)
+    direct_downloaded = len(direct_ids & downloaded_ids)
+    return {
+        "direct_media_items": len(direct_ids),
+        "forwarded_media_items": len(forwarded_ids),
+        "external_links": external_links,
+        "telegram_message_links": telegram_links,
+        "telegram_link_media_items": len(message_link_ids),
+        "album_groups": len(album_keys),
+        "direct_downloaded": direct_downloaded,
+        "forwarded_downloaded": len(forwarded_ids & downloaded_ids),
+        "link_downloaded": telegram_link_downloaded + external_downloaded,
+        "downloaded": direct_downloaded + telegram_link_downloaded + external_downloaded,
+        "failed": sum(1 for result in item_results if result.get("status") in {"failed", "partial"})
+        + int(external_summary.get("failed", 0) or 0)
+        + int(external_summary.get("partial", 0) or 0),
+    }
+
+
+def _root_scan_incomplete_album_keys(
+    messages: list[dict[str, Any]],
+    source_summaries: list[dict[str, Any]],
+    *,
+    root_source_count: int,
+    scan_limit: int | None,
+) -> set[tuple[str, str]]:
+    """Conservatively detect a root scan that may have cut through an album.
+
+    Telegram clients concatenate root-source messages in the same order as
+    their source summaries.  When a bounded scan returns exactly its limit and
+    the last message is grouped, the following sibling may be outside the
+    window.  The group is withheld and the unified cursor remains unchanged so
+    an operator can retry with a larger limit or ``full_sync``.
+    """
+
+    if scan_limit is None:
+        return set()
+    incomplete: set[tuple[str, str]] = set()
+    offset = 0
+    for source in source_summaries[:root_source_count]:
+        count = max(0, int(source.get("messages", 0) or 0))
+        source_messages = messages[offset : offset + count]
+        offset += count
+        if count < scan_limit or not source_messages:
+            continue
+        last = source_messages[-1]
+        grouped_id = last.get("grouped_id")
+        if grouped_id in (None, ""):
+            continue
+        chat = last.get("chat") if isinstance(last.get("chat"), dict) else {}
+        chat_id = str(chat.get("id") or last.get("chat_id") or source.get("source_key") or "")
+        incomplete.add((chat_id, str(grouped_id)))
+    return incomplete
+
+
+def _dedupe_collected_messages(messages: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int]:
+    """Deduplicate root and recursively fetched copies of one Telegram message."""
+
+    output: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    duplicates = 0
+    for message in messages:
+        chat = message.get("chat") if isinstance(message.get("chat"), dict) else {}
+        chat_key = str(chat.get("id") or chat.get("username") or message.get("chat_id") or "")
+        message_id = message.get("id")
+        if not chat_key or message_id in (None, ""):
+            output.append(message)
+            continue
+        key = (chat_key, str(message_id))
+        if key in seen:
+            duplicates += 1
+            continue
+        seen.add(key)
+        output.append(message)
+    return output, duplicates
+
+
+def _telegram_item_album_key(item: dict[str, Any]) -> tuple[str, str] | None:
+    metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+    telegram = metadata.get("telegram") if isinstance(metadata.get("telegram"), dict) else {}
+    grouped_id = telegram.get("grouped_id")
+    if grouped_id in (None, ""):
+        return None
+    return (str(telegram.get("chat_id") or ""), str(grouped_id))
+
+
+def _unique_artifacts(artifacts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    output: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for artifact in artifacts:
+        key = (str(artifact.get("type") or ""), str(artifact.get("path") or ""))
+        if key in seen:
+            continue
+        seen.add(key)
+        output.append(artifact)
+    return output
 
 
 def _planned_downloads(
@@ -2558,6 +3040,27 @@ def _telegram_link_cursor_decision(input_data: dict[str, Any], *, run_status: st
     return {"should_store": True, "reason": "ready", "warning": None}
 
 
+def _telegram_inbox_cursor_decision(
+    input_data: dict[str, Any],
+    *,
+    run_status: str,
+    dry_run: bool,
+) -> dict[str, Any]:
+    if dry_run:
+        return {"should_store": False, "reason": "dry_run", "warning": None}
+    if not input_data.get("store_cursor", True):
+        return {"should_store": False, "reason": "disabled", "warning": None}
+    if input_data.get("after_message_id") is not None:
+        return {"should_store": False, "reason": "explicit_after_message_id", "warning": None}
+    if run_status != "success":
+        return {
+            "should_store": False,
+            "reason": "run_not_successful",
+            "warning": "Telegram inbox cursors were not advanced because every intake branch did not complete successfully.",
+        }
+    return {"should_store": True, "reason": "ready", "warning": None}
+
+
 def _store_telegram_sync_cursors(
     db_path: Path,
     *,
@@ -2582,6 +3085,31 @@ def _store_telegram_sync_cursors(
                     "messages": source.get("messages", 0),
                     "media_types": input_data.get("media_types") or MEDIA_TYPES,
                 },
+            )
+        )
+    return stored
+
+
+def _store_telegram_inbox_cursors(
+    db_path: Path,
+    *,
+    source_summaries: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    stored = []
+    for source in source_summaries:
+        source_key = source.get("source_key")
+        cursor_value = source.get("next_message_id")
+        if source.get("cursor_eligible") is False:
+            continue
+        if not source_key or cursor_value in (None, ""):
+            continue
+        stored.append(
+            db.set_sync_cursor(
+                db_path,
+                platform="telegram",
+                cursor_name=_telegram_inbox_cursor_name(str(source_key)),
+                cursor_value=str(cursor_value),
+                metadata={"messages": source.get("messages", 0), "kind": "unified_inbox"},
             )
         )
     return stored
@@ -2625,6 +3153,10 @@ def _telegram_link_cursor_name(source_key: str) -> str:
     return f"links:{safe_storage_segment(source_key, max_length=80)}"
 
 
+def _telegram_inbox_cursor_name(source_key: str) -> str:
+    return f"inbox:{safe_storage_segment(source_key, max_length=80)}"
+
+
 def _record_telegram_sync_run(
     db_path: Path,
     *,
@@ -2657,6 +3189,23 @@ def _record_telegram_link_sync_run(
         status=run_status,
         summary=summary,
         error=error,
+        dry_run=False,
+    )
+
+
+def _record_telegram_inbox_run(
+    db_path: Path,
+    *,
+    run_status: str,
+    summary: dict[str, Any],
+) -> str:
+    return db.insert_run(
+        db_path,
+        run_type="tool",
+        name="telegram.inbox.sync",
+        status=run_status,
+        summary=summary,
+        error=None,
         dry_run=False,
     )
 

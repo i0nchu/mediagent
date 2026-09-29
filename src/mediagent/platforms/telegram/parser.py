@@ -22,8 +22,11 @@ def normalize_messages(
     *,
     media_types: list[str] | None = None,
     include_protected: bool = False,
+    include_intake_metadata: bool = False,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     allowed = set(media_types or SUPPORTED_MEDIA_TYPES)
+    if include_intake_metadata:
+        messages = _with_album_metadata(messages)
     items: list[dict[str, Any]] = []
     summary = {
         "messages_scanned": len(messages),
@@ -38,6 +41,7 @@ def normalize_messages(
             message,
             media_types=allowed,
             include_protected=include_protected,
+            include_intake_metadata=include_intake_metadata,
         )
         for key, value in message_summary.items():
             summary[key] = summary.get(key, 0) + value
@@ -51,6 +55,7 @@ def normalize_message(
     *,
     media_types: set[str],
     include_protected: bool,
+    include_intake_metadata: bool = False,
 ) -> tuple[list[dict[str, Any]], dict[str, int]]:
     counters = {
         "messages_with_media": 0,
@@ -70,7 +75,12 @@ def normalize_message(
         counters["messages_with_media"] += 1
     items: list[dict[str, Any]] = []
     for index, media in enumerate(media_entries):
-        item = normalize_media(message, media, index=index)
+        item = normalize_media(
+            message,
+            media,
+            index=index,
+            include_intake_metadata=include_intake_metadata,
+        )
         if item is None:
             counters["skipped_unsupported"] += 1
             continue
@@ -86,6 +96,7 @@ def normalize_media(
     media: dict[str, Any],
     *,
     index: int,
+    include_intake_metadata: bool = False,
 ) -> dict[str, Any] | None:
     media_type = media_type_for(media)
     if media_type is None:
@@ -115,6 +126,26 @@ def normalize_media(
         "source_timestamp": source_timestamp,
         "download_ref": download_ref,
     }
+    telegram_metadata: dict[str, Any] = {
+        "chat_id": chat_id,
+        "chat_title": chat.get("title"),
+        "chat_type": chat.get("type"),
+        "chat_username": chat.get("username"),
+        "message_id": message_id,
+        "grouped_id": message.get("grouped_id"),
+        "media_id": media_id,
+        "protected_content": bool(message.get("protected_content")),
+        "edited_at": message.get("edited_at"),
+    }
+    if include_intake_metadata:
+        album = _album_metadata(message, media_index=index)
+        if album is not None:
+            telegram_metadata["album"] = album
+        forward_origin = _forward_origin(message.get("forward"))
+        if forward_origin is not None:
+            telegram_metadata["forward_origin"] = forward_origin
+        if message.get("_inbox_delivery"):
+            telegram_metadata["inbox_delivery"] = message["_inbox_delivery"]
     return {
         "platform": "telegram",
         "remote_id": remote_id,
@@ -125,21 +156,65 @@ def normalize_media(
         "metadata": {
             "caption": message.get("caption"),
             "text_present": bool(message.get("text") or message.get("caption")),
-            "telegram": {
-                "chat_id": chat_id,
-                "chat_title": chat.get("title"),
-                "chat_type": chat.get("type"),
-                "chat_username": chat.get("username"),
-                "message_id": message_id,
-                "grouped_id": message.get("grouped_id"),
-                "media_id": media_id,
-                "protected_content": bool(message.get("protected_content")),
-                "edited_at": message.get("edited_at"),
-            },
+            "telegram": telegram_metadata,
             "source_timestamp": source_timestamp,
             "files": [file_info],
         },
     }
+
+
+def _with_album_metadata(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Attach deterministic album positions without changing caller-owned fixtures."""
+
+    groups: dict[tuple[str, str], list[tuple[int, int]]] = {}
+    for message_index, message in enumerate(messages):
+        grouped_id = message.get("grouped_id")
+        media_entries = _media_entries(message.get("media"))
+        if grouped_id not in (None, "") and media_entries:
+            chat = message.get("chat") if isinstance(message.get("chat"), dict) else {}
+            chat_id = str(chat.get("id") or message.get("chat_id") or "unknown-chat")
+            group = groups.setdefault((chat_id, str(grouped_id)), [])
+            group.extend((message_index, media_index) for media_index in range(len(media_entries)))
+    positions: dict[int, dict[int, tuple[int, int]]] = {}
+    for members in groups.values():
+        for position, (message_index, media_index) in enumerate(members, start=1):
+            positions.setdefault(message_index, {})[media_index] = (position, len(members))
+    output: list[dict[str, Any]] = []
+    for index, message in enumerate(messages):
+        if index not in positions:
+            output.append(message)
+            continue
+        output.append({**message, "_album_positions": positions[index]})
+    return output
+
+
+def _album_metadata(message: dict[str, Any], *, media_index: int) -> dict[str, Any] | None:
+    grouped_id = message.get("grouped_id")
+    if grouped_id in (None, ""):
+        return None
+    position, size = (message.get("_album_positions") or {}).get(media_index, (None, None))
+    return {
+        "group_id": str(grouped_id),
+        "position": position,
+        "size": size,
+    }
+
+
+def _forward_origin(value: Any) -> dict[str, Any] | None:
+    """Keep only bounded, non-secret forward provenance fields."""
+
+    if not isinstance(value, dict):
+        return None
+    output: dict[str, Any] = {}
+    for key in ("type", "id", "message_id", "date"):
+        item = value.get(key)
+        if item not in (None, ""):
+            output[key] = str(item)[:256]
+    for key in ("name", "author"):
+        item = value.get(key)
+        if isinstance(item, str) and item.strip():
+            output[key] = item.strip()[:256]
+    return output or None
 
 
 def media_type_for(media: dict[str, Any]) -> str | None:
