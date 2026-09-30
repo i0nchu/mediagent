@@ -174,6 +174,16 @@ async def package_pixiv_comics(context: ToolContext, input_data: dict[str, Any])
                 }
             )
             continue
+        if package.get("suppressed"):
+            applied_summary["skipped"] += 1
+            results.append(
+                {
+                    **_public_package_plan(plan),
+                    "status": "skipped",
+                    "reason": package["reason"],
+                }
+            )
+            continue
         if plan["status"] == "ready":
             applied_summary["packaged"] += 1
         applied_summary["legacy_cbz_retired"] += int(package.get("legacy_cbz_retired", 0))
@@ -558,7 +568,15 @@ def _comic_package_plan(
     refresh_tracked: bool = False,
 ) -> dict[str, Any]:
     cbz_records = [record for record in item["files"] if _is_cbz_file(record)]
-    removed_cbz = [record for record in cbz_records if record.get("library_state") == "removed"]
+    inactive_cbz = [
+        record
+        for record in cbz_records
+        if record.get("library_state") in {"removed", "purged"}
+        or (
+            record.get("status") == "skipped"
+            and record.get("file_health") in {"removed", "purged"}
+        )
+    ]
     renamed_cbz = next(
         (
             record
@@ -592,6 +610,32 @@ def _comic_package_plan(
         ),
         "legacy_cbz": [],
     }
+    source_records = [
+        record
+        for record in item["files"]
+        if not _is_cbz_file(record) and not _is_ignored_comic_spacer(record)
+    ]
+    inactive_sources = [
+        record
+        for record in source_records
+        if record.get("library_state") in {"removed", "purged"}
+        or (
+            record.get("status") == "skipped"
+            and record.get("file_health") in {"removed", "purged"}
+        )
+    ]
+    if inactive_sources:
+        plan["status"] = "skipped"
+        plan["reason"] = (
+            "comic content was permanently purged"
+            if any(
+                record.get("library_state") == "purged"
+                or record.get("file_health") == "purged"
+                for record in inactive_sources
+            )
+            else "comic source content was explicitly removed"
+        )
+        return plan
     try:
         ensure_inside(target_path, [library_root])
     except PathSafetyError as exc:
@@ -616,13 +660,21 @@ def _comic_package_plan(
         ),
         None,
     )
-    if removed_cbz and existing_cbz is None:
+    if inactive_cbz and existing_cbz is None:
         plan["status"] = "skipped"
-        plan["reason"] = "comic archive was explicitly removed"
+        plan["reason"] = (
+            "comic archive was permanently purged"
+            if any(
+                record.get("library_state") == "purged"
+                or record.get("file_health") == "purged"
+                for record in inactive_cbz
+            )
+            else "comic archive was explicitly removed"
+        )
         return plan
     legacy_cbz: list[dict[str, Any]] = []
     for record in cbz_records:
-        if record.get("library_state") == "removed":
+        if record in inactive_cbz:
             continue
         try:
             legacy_path = _source_path(record, library_root)
@@ -808,6 +860,13 @@ def _apply_comic_package(
             file_key="archive:cbz" if item["platform"] != "pixiv" else None,
         )
         adoption = library_content.adopt_media_file(db_path, file_id=int(file_record["id"]))
+        if adoption.get("suppressed"):
+            return {
+                "target_path": None,
+                "pages": package["pages"],
+                "suppressed": True,
+                "reason": "comic archive matches a permanently purged Asset",
+            }
         if adoption.get("target_path"):
             package["target_path"] = adoption["target_path"]
             package["deduplicated"] = adoption.get("deduplicated", False)
@@ -1027,6 +1086,12 @@ def package_one_comic(
             "status": "failed",
             "reason": f"CBZ packaging failed: {exc}",
             "error": {"code": "comic_package_failed", "exception_type": type(exc).__name__},
+        }
+    if package.get("suppressed"):
+        return {
+            **public,
+            "status": "skipped",
+            "reason": package["reason"],
         }
     status = "packaged" if plan["status"] == "ready" else "legacy_migrated"
     return {**public, "status": status, **package}

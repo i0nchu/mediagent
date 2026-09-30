@@ -15,6 +15,22 @@ from mediagent.platforms.instagram import auth as instagram_auth
 
 INSTAGRAM_HOSTS = {"instagram.com", "www.instagram.com"}
 SUPPORTED_POST_KINDS = {"p", "reel", "tv"}
+PROFILE_FALLBACK_CODES = {
+    "instagram_login_required",
+    "instagram_media_not_found",
+    "instagram_media_private",
+    "instagram_media_unavailable",
+    "instagram_session_invalid",
+    "instagram_session_missing",
+}
+_PROFILE_ERROR_PRIORITY = {
+    "instagram_media_private": 0,
+    "instagram_media_unavailable": 1,
+    "instagram_media_not_found": 2,
+    "instagram_login_required": 3,
+    "instagram_session_invalid": 4,
+    "instagram_session_missing": 5,
+}
 
 
 @dataclass(frozen=True)
@@ -95,33 +111,88 @@ def resolve_post_from_url(
             "Instagram URL is not a supported post, reel, or tv URL.",
             details={"reason": "unsupported_instagram_url"},
         )
-    path = instagram_auth.session_file_path(env=env, cwd=cwd, session_file=session_file)
-    if path is not None and allowed_write_roots is not None:
+    paths = _resolution_session_paths(
+        env=env,
+        cwd=cwd,
+        session_file=session_file,
+        allowed_write_roots=allowed_write_roots,
+    )
+    available = sum(1 for path in paths if path is not None and path.exists())
+    errors: list[instagram_auth.InstagramPlatformError] = []
+    for attempted, path in enumerate(paths, start=1):
+        if path is None or not path.exists():
+            error = instagram_auth.InstagramPlatformError(
+                "instagram_session_missing",
+                "Instagram saved session is missing.",
+            )
+        else:
+            try:
+                return _resolve_post_with_session(
+                    url=url,
+                    shortcode=shortcode,
+                    kind=kind,
+                    path=path,
+                    http_client=http_client,
+                    timeout=timeout,
+                )
+            except instagram_auth.InstagramPlatformError as exc:
+                error = exc
+        errors.append(error)
+        if error.code not in PROFILE_FALLBACK_CODES:
+            raise _with_profile_attempt_summary(
+                error,
+                attempted=attempted,
+                configured=len(paths),
+                available=available,
+            ) from error
+    selected = min(errors, key=lambda error: _PROFILE_ERROR_PRIORITY.get(error.code, 100))
+    raise _with_profile_attempt_summary(
+        selected,
+        attempted=len(paths),
+        configured=len(paths),
+        available=available,
+    ) from selected
+
+
+def _resolve_post_with_session(
+    *,
+    url: str,
+    shortcode: str,
+    kind: str,
+    path: Path,
+    http_client: Any | None,
+    timeout: float,
+) -> InstagramPost:
+    if hasattr(http_client, "instagram_resolve_media"):
         try:
-            ensure_inside(path, list(allowed_write_roots))
-        except PathSafetyError as exc:
+            value = http_client.instagram_resolve_media(
+                url=url,
+                shortcode=shortcode,
+                session_file=str(path),
+                timeout=timeout,
+            )
+        except instagram_auth.InstagramPlatformError:
+            raise
+        except Exception as exc:
+            code = instagram_auth.classify_exception(exc, default_code="instagram_resolve_failed")
             raise instagram_auth.InstagramPlatformError(
-                "unsafe_credential_path",
-                str(exc),
-                details={"session_file": str(path)},
+                code,
+                "Instagram media resolution failed.",
+                details={"exception_type": type(exc).__name__},
                 cause=exc,
             ) from exc
-    if path is None or not path.exists():
-        raise instagram_auth.InstagramPlatformError(
-            "instagram_session_missing",
-            "Instagram saved session is missing.",
-            details={"session_file": str(path) if path else None},
-        )
-    if hasattr(http_client, "instagram_resolve_media"):
-        value = http_client.instagram_resolve_media(
-            url=url,
-            shortcode=shortcode,
-            session_file=str(path),
-            timeout=timeout,
-        )
         return _post_from_mapping(value, url=url, shortcode=shortcode, kind=kind)
     try:
         client = _client_from_session(path, timeout=timeout)
+    except Exception as exc:  # pragma: no cover - covered through fake clients
+        code = instagram_auth.classify_exception(exc, default_code="instagram_session_invalid")
+        raise instagram_auth.InstagramPlatformError(
+            code,
+            "Instagram saved session is invalid.",
+            details={"exception_type": type(exc).__name__},
+            cause=exc,
+        ) from exc
+    try:
         media_pk = client.media_pk_from_code(shortcode)
         media = client.media_info(media_pk)
     except Exception as exc:  # pragma: no cover - covered through fake clients
@@ -133,6 +204,74 @@ def resolve_post_from_url(
             cause=exc,
         ) from exc
     return _post_from_instagrapi_media(media, url=url, shortcode=shortcode, kind=kind)
+
+
+def _resolution_session_paths(
+    *,
+    env: Any,
+    cwd: Path,
+    session_file: str | None,
+    allowed_write_roots: tuple[Path, ...] | list[Path] | None,
+) -> tuple[Path | None, ...]:
+    try:
+        if session_file is not None:
+            paths = (instagram_auth.session_file_path(env=env, cwd=cwd, session_file=session_file),)
+        else:
+            profiles = instagram_auth.load_profiles(env=env, cwd=cwd)
+            paths = tuple(
+                instagram_auth.session_file_path(env=env, cwd=cwd, session_file=profile.session_file)
+                for profile in profiles
+            )
+    except PathSafetyError as exc:
+        raise instagram_auth.InstagramPlatformError(
+            "unsafe_credential_path",
+            str(exc),
+            cause=exc,
+        ) from exc
+    if not paths:
+        paths = (None,)
+    if allowed_write_roots is not None:
+        for path in paths:
+            if path is None:
+                continue
+            try:
+                ensure_inside(path, list(allowed_write_roots))
+            except PathSafetyError as exc:
+                raise instagram_auth.InstagramPlatformError(
+                    "unsafe_credential_path",
+                    str(exc),
+                    cause=exc,
+                ) from exc
+    return paths
+
+
+def _with_profile_attempt_summary(
+    error: instagram_auth.InstagramPlatformError,
+    *,
+    attempted: int,
+    configured: int,
+    available: int,
+) -> instagram_auth.InstagramPlatformError:
+    # Provider and fake-client details are not a stable public contract. Keep
+    # only diagnostic fields that cannot contain credentials or session data.
+    details = {
+        key: error.details[key]
+        for key in ("reason", "exception_type", "missing_dependency")
+        if key in error.details
+    }
+    details.update(
+        {
+            "profiles_attempted": attempted,
+            "profiles_configured": configured,
+            "profiles_available": available,
+        }
+    )
+    return instagram_auth.InstagramPlatformError(
+        error.code,
+        str(error),
+        details=details,
+        cause=error,
+    )
 
 
 def _post_from_mapping(value: Any, *, url: str, shortcode: str, kind: str) -> InstagramPost:

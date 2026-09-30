@@ -61,7 +61,7 @@ def managed_trash_status(library_root: Path) -> dict[str, Any]:
         "managed": {**namespace_status, "safe": namespace_safe},
         "retention": {
             "automatic_purge": False,
-            "policy": "retained_until_explicit_restore_or_external_retention_policy",
+            "policy": "retained_until_explicit_mediagent_purge",
         },
     }
 
@@ -165,7 +165,7 @@ def adopt_media_file(db_path: Path, *, file_id: int) -> dict[str, Any]:
     if row.get("status") != "downloaded" or not checksum:
         return {"adopted": False, "reason": "not_downloaded_or_missing_checksum", **row}
 
-    current_path = Path(str(row["local_path"])).resolve() if row.get("local_path") else None
+    current_path = _lexical_path(Path(str(row["local_path"]))) if row.get("local_path") else None
     relative_path = str(row.get("library_relative_path") or "") or None
     key = presentation_key(
         platform=str(row["platform"]),
@@ -178,6 +178,7 @@ def adopt_media_file(db_path: Path, *, file_id: int) -> dict[str, Any]:
     blob_id = f"blob_{checksum.removeprefix('sha256:')}"
     entry: dict[str, Any] | None = None
     entry_content_changed = False
+    inactive_asset_id: str | None = None
 
     with db.connect(db_path) as connection:
         existing_blob = connection.execute(
@@ -203,6 +204,40 @@ def adopt_media_file(db_path: Path, *, file_id: int) -> dict[str, Any]:
             (checksum,),
         ).fetchone()
         blob_id = str(blob["id"])
+        inactive = connection.execute(
+            """
+            SELECT ar.asset_id, a.state AS asset_state, le.state,
+                   le.id AS entry_id, le.trash_path
+            FROM asset_representations ar
+            JOIN assets a ON a.id = ar.asset_id
+            JOIN library_entries le ON le.id = ar.library_entry_id
+            WHERE le.content_blob_id = ?
+              AND le.state IN ('removed', 'purged')
+              AND NOT EXISTS (
+                  SELECT 1 FROM library_entries active
+                  WHERE active.content_blob_id = le.content_blob_id
+                    AND active.state = 'active'
+              )
+            ORDER BY CASE le.state WHEN 'purged' THEN 0 ELSE 1 END, ar.asset_id
+            LIMIT 1
+            """,
+            (blob_id,),
+        ).fetchone()
+        if inactive is not None:
+            inactive_asset_id = str(inactive["asset_id"])
+            connection.commit()
+            return _suppress_inactive_media_file(
+                db_path,
+                row=row,
+                file_id=file_id,
+                blob_id=blob_id,
+                checksum=checksum,
+                current_path=current_path,
+                inactive_asset_id=inactive_asset_id,
+                inactive_state=str(inactive["state"]),
+                inactive_path=(str(inactive["trash_path"]) if inactive["trash_path"] else None),
+                updated_at=now,
+            )
         existing_entry = None
         if row.get("library_entry_id"):
             existing_entry = connection.execute(
@@ -224,8 +259,8 @@ def adopt_media_file(db_path: Path, *, file_id: int) -> dict[str, Any]:
                         (existing_entry["id"],),
                     ).fetchone()[0]
                 )
-                if str(existing_entry["state"]) == "removed":
-                    raise ValueError("Removed library entry received different content and remains suppressed.")
+                if str(existing_entry["state"]) in {"removed", "purged"}:
+                    raise ValueError("Inactive library entry received different content and remains suppressed.")
                 if reference_count > 1:
                     raise ValueError("Shared library content changed in place; refusing to alter other source references.")
                 connection.execute(
@@ -307,7 +342,7 @@ def adopt_media_file(db_path: Path, *, file_id: int) -> dict[str, Any]:
                     """,
                     (entry_id, stored_path, stored_relative, checksum, now, file_id),
                 )
-            return {
+            return _asset_adoption_result(db_path, file_id=file_id, result={
                 "adopted": True,
                 "file_id": file_id,
                 "blob_id": blob_id,
@@ -319,7 +354,7 @@ def adopt_media_file(db_path: Path, *, file_id: int) -> dict[str, Any]:
                 "deduplicated": False,
                 "hardlinked": hardlinked,
                 "bytes_reclaimed": bytes_reclaimed,
-            }
+            })
 
     if entry is not None:
         canonical_path = Path(str(entry["local_path"])).resolve()
@@ -372,7 +407,7 @@ def adopt_media_file(db_path: Path, *, file_id: int) -> dict[str, Any]:
             """,
             (entry["id"], stored_path, stored_relative, checksum, now, file_id),
         )
-    return {
+    return _asset_adoption_result(db_path, file_id=file_id, result={
         "adopted": True,
         "file_id": file_id,
         "blob_id": blob_id,
@@ -384,7 +419,19 @@ def adopt_media_file(db_path: Path, *, file_id: int) -> dict[str, Any]:
         "deduplicated": deduplicated,
         "hardlinked": hardlinked,
         "bytes_reclaimed": bytes_reclaimed,
-    }
+    })
+
+
+def _asset_adoption_result(
+    db_path: Path,
+    *,
+    file_id: int,
+    result: dict[str, Any],
+) -> dict[str, Any]:
+    from mediagent.core import assets
+
+    asset = assets.attach_media_file(db_path, file_id=file_id)
+    return {**result, "asset_id": asset["id"]}
 
 
 def scan_plan(db_path: Path) -> dict[str, Any]:
@@ -492,6 +539,72 @@ def scan_plan(db_path: Path) -> dict[str, Any]:
     }
 
 
+def _suppress_inactive_media_file(
+    db_path: Path,
+    *,
+    row: dict[str, Any],
+    file_id: int,
+    blob_id: str,
+    checksum: str,
+    current_path: Path | None,
+    inactive_asset_id: str,
+    inactive_state: str,
+    inactive_path: str | None,
+    updated_at: str,
+) -> dict[str, Any]:
+    if current_path is not None:
+        try:
+            current_path.lstat()
+        except FileNotFoundError:
+            pass
+        else:
+            _require_adoption_path(
+                current_path,
+                library_relative_path=str(row.get("library_relative_path") or ""),
+                checksum=checksum,
+            )
+            current_path.unlink()
+    with db.connect(db_path) as connection:
+        connection.execute(
+            """
+            UPDATE media_files
+            SET library_entry_id = NULL, local_path = NULL, status = 'skipped',
+                file_health = ?, checksum = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                inactive_state,
+                checksum,
+                updated_at,
+                file_id,
+            ),
+        )
+    from mediagent.core import assets
+
+    asset = assets.attach_media_item_to_inactive_asset(
+        db_path,
+        media_item_id=int(row["media_item_id"]),
+        asset_id=inactive_asset_id,
+    )
+    return {
+        "adopted": False,
+        "suppressed": True,
+        "reason": f"{inactive_state}_content_tombstone",
+        "file_id": file_id,
+        "blob_id": blob_id,
+        "asset_id": asset["id"],
+        "state": inactive_state,
+        "entry_id": None,
+        # A removed representation still has recoverable bytes, but the new
+        # skipped source file must not claim ownership of that library entry.
+        "target_path": inactive_path if inactive_state == "removed" else None,
+        "library_relative_path": None,
+        "deduplicated": True,
+        "hardlinked": False,
+        "bytes_reclaimed": int(row.get("size_bytes") or 0),
+    }
+
+
 def apply_scan_plan(db_path: Path, plan: dict[str, Any]) -> dict[str, Any]:
     db.initialize_database(db_path)
     adopted = 0
@@ -546,7 +659,8 @@ def legacy_trash_plan(db_path: Path, *, library_root: Path) -> dict[str, Any]:
     """
 
     root = library_root.resolve()
-    trash_root = (root / ".trash").resolve()
+    trash_root = _lexical_path(root / ".trash")
+    _require_safe_path(trash_root, root, allow_missing=True)
     rows = _downloaded_rows(db_path)
     missing: list[dict[str, Any]] = []
     blocked: list[dict[str, Any]] = []
@@ -811,15 +925,33 @@ def apply_legacy_trash_plan(db_path: Path, plan: dict[str, Any]) -> dict[str, An
     if blocked:
         raise ValueError("Legacy trash reconciliation is blocked; review the dry-run report.")
     actions = list(plan.get("actions") or [])
+    trash_root = _lexical_path(Path(str(plan.get("trash_root") or "")))
+    if trash_root.name != ".trash":
+        raise ValueError("Legacy trash plan has an invalid trash root.")
+    library_root = trash_root.parent
+    _require_safe_path(trash_root, library_root, allow_missing=False)
     for action in actions:
-        trash_path = Path(str(action["trash_path"])).resolve()
-        checksum, size_bytes = sha256_checksum(trash_path)
-        if checksum != action["checksum"] or size_bytes != int(action["size_bytes"]):
+        trash_path = _lexical_path(Path(str(action["trash_path"])))
+        original_paths = [
+            _lexical_path(Path(str(value)))
+            for value in action.get("source_original_paths", [])
+        ]
+        if not original_paths:
+            raise ValueError("Legacy trash plan has no source paths.")
+        for original_path in original_paths:
+            _require_safe_path(original_path, library_root, allow_missing=True)
+        _require_safe_regular_content(
+            trash_path,
+            trash_root,
+            str(action["checksum"]),
+        )
+        if trash_path.stat().st_size != int(action["size_bytes"]):
             raise ValueError(f"Legacy trash content changed after planning: {trash_path}")
 
     now = datetime.now(UTC).isoformat()
     source_rows_linked = 0
     entries_imported = 0
+    linked_file_ids: list[int] = []
     with db.connect(db_path) as connection:
         for action in actions:
             checksum = str(action["checksum"])
@@ -904,6 +1036,7 @@ def apply_legacy_trash_plan(db_path: Path, plan: dict[str, Any]) -> dict[str, An
                 ),
             )
             file_ids = [int(value) for value in action["source_file_ids"]]
+            linked_file_ids.extend(file_ids)
             placeholders = ",".join("?" for _ in file_ids)
             connection.execute(
                 f"""
@@ -923,6 +1056,10 @@ def apply_legacy_trash_plan(db_path: Path, plan: dict[str, Any]) -> dict[str, An
                 ),
             )
             source_rows_linked += len(file_ids)
+    from mediagent.core import assets
+
+    for file_id in linked_file_ids:
+        assets.attach_inactive_media_file(db_path, file_id=file_id)
     return {
         **plan,
         "applied": {
@@ -1090,15 +1227,30 @@ def remove_entry(
             "entry": entry,
             "removal_id": operation["id"] if operation else None,
         }
+    if entry["state"] == "purged":
+        raise ValueError("A permanently purged library entry cannot be removed or restored.")
+    if entry["state"] != "active":
+        raise ValueError("Only an active library entry can be removed.")
 
-    source = Path(str(entry["local_path"])).resolve()
+    root = library_root.expanduser().resolve()
+    source = _lexical_path(Path(str(entry["local_path"])))
+    _require_safe_path(source, root, allow_missing=True)
+    if source.exists():
+        _require_safe_regular_content(source, root, str(entry["checksum"]))
     planned = _latest_operation(db_path, entry_id=entry_id, operation_type="remove")
     if planned and planned["state"] == "planned" and planned.get("target_path"):
-        planned_target = Path(str(planned["target_path"])).resolve()
-        if planned_target.is_file():
-            _require_checksum(planned_target, str(entry["checksum"]))
-            if source.is_file() and not _same_file(source, planned_target):
-                _require_checksum(source, str(entry["checksum"]))
+        namespace = _lexical_path(managed_trash_path(root))
+        planned_source = _lexical_path(Path(str(planned.get("original_path") or "")))
+        planned_target = _lexical_path(Path(str(planned["target_path"])))
+        if planned_source != source:
+            raise ValueError("Remove recovery journal does not match the managed source path.")
+        _require_safe_path(planned_target, namespace, allow_missing=True)
+        if planned_target.exists():
+            _require_safe_regular_content(
+                planned_target, namespace, str(entry["checksum"])
+            )
+            if source.exists() and not _same_file(source, planned_target):
+                _require_safe_regular_content(source, root, str(entry["checksum"]))
                 source.unlink()
             recovered_at = datetime.now(UTC).isoformat()
             _complete_remove(
@@ -1116,16 +1268,12 @@ def remove_entry(
                 "trash_path": str(planned_target),
                 "entry": _entry_details(db_path, entry_id),
             }
-    if not source.is_file():
-        raise FileNotFoundError(str(source))
+    _require_safe_regular_content(source, root, str(entry["checksum"]))
     trash_namespace = Path(str(prepare_managed_trash(library_root)["managed_path"]))
     operation_id = f"rmv_{uuid.uuid4().hex}"
     relative = _safe_relative_path(entry, source=source, library_root=library_root)
-    trash = (trash_namespace / operation_id / relative).resolve()
-    try:
-        trash.relative_to(trash_namespace.resolve())
-    except ValueError as exc:
-        raise ValueError("Managed trash target escaped its configured namespace.") from exc
+    trash = _lexical_path(trash_namespace / operation_id / relative)
+    _require_safe_path(trash, trash_namespace, allow_missing=True)
     now = datetime.now(UTC).isoformat()
     with db.connect(db_path) as connection:
         connection.execute(
@@ -1174,22 +1322,31 @@ def restore_entry(
         raise ValueError(f"Unknown library entry: {entry_id}")
     if entry["state"] == "active":
         return {"changed": False, "result": "already_active", "entry": entry, "removal_id": removal_id}
+    if entry["state"] == "purged":
+        raise ValueError("A permanently purged library entry cannot be restored.")
+    if entry["state"] != "removed":
+        raise ValueError("Only a removed library entry can be restored.")
     if removal is not None:
         current_trash = Path(str(entry.get("trash_path") or "")).resolve()
         removal_target = Path(str(removal.get("target_path") or "")).resolve()
         if current_trash != removal_target:
             raise ValueError("Removal identifier is stale for the entry's current removed state.")
 
-    source = Path(str(entry["trash_path"])).resolve() if entry.get("trash_path") else None
-    target = Path(str(entry["local_path"])).resolve()
+    source = _lexical_path(Path(str(entry["trash_path"]))) if entry.get("trash_path") else None
+    target = _lexical_path(Path(str(entry["local_path"])))
     checksum = str(entry["checksum"])
-    if target.is_file():
-        _require_checksum(target, checksum)
-        if source is not None and source.is_file() and not _same_file(source, target):
-            _require_checksum(source, checksum)
+    if source is None:
+        raise FileNotFoundError(str(target))
+    root, namespace = _managed_boundaries_from_trash_path(source)
+    _require_safe_path(target, root, allow_missing=True)
+    _require_safe_path(source, namespace, allow_missing=True)
+    if target.exists():
+        _require_safe_regular_content(target, root, checksum)
+        if source.exists() and not _same_file(source, target):
+            _require_safe_regular_content(source, namespace, checksum)
             source.unlink()
-    elif source is not None and source.is_file():
-        _require_checksum(source, checksum)
+    elif source.exists():
+        _require_safe_regular_content(source, namespace, checksum)
         _move_file(source, target)
     else:
         raise FileNotFoundError(str(source or target))
@@ -1226,6 +1383,9 @@ def restore_entry(
             "UPDATE media_files SET local_path = ?, updated_at = ? WHERE library_entry_id = ?",
             (str(target), now, entry_id),
         )
+    from mediagent.core import assets
+
+    assets.refresh_for_library_entry(db_path, entry_id)
     return {
         "changed": True,
         "result": "restored",
@@ -1359,6 +1519,9 @@ def _complete_remove(
             "UPDATE library_operations SET state = 'completed', completed_at = ? WHERE id = ?",
             (completed_at, operation_id),
         )
+    from mediagent.core import assets
+
+    assets.refresh_for_library_entry(db_path, entry_id)
 
 
 def _complete_rename(
@@ -1451,10 +1614,11 @@ def _entry_details(db_path: Path, entry_id: str) -> dict[str, Any] | None:
         row = connection.execute(
             """
             SELECT le.*, cb.checksum, cb.size_bytes, cb.mime_type,
-                   COUNT(mf.id) AS source_file_count
+                   ar.asset_id, COUNT(mf.id) AS source_file_count
             FROM library_entries le
             JOIN content_blobs cb ON cb.id = le.content_blob_id
             LEFT JOIN media_files mf ON mf.library_entry_id = le.id
+            LEFT JOIN asset_representations ar ON ar.library_entry_id = le.id
             WHERE le.id = ?
             GROUP BY le.id
             """,
@@ -1531,6 +1695,88 @@ def _require_checksum(path: Path, expected: str) -> None:
     actual, _ = sha256_checksum(path)
     if actual != expected:
         raise ValueError(f"Content checksum changed for tracked library file: {path}")
+
+
+def _lexical_path(path: Path) -> Path:
+    return Path(os.path.abspath(os.fspath(path.expanduser())))
+
+
+def _require_adoption_path(
+    path: Path,
+    *,
+    library_relative_path: str,
+    checksum: str,
+) -> None:
+    """Validate a downloaded path using its persisted relative library identity."""
+
+    candidate = _lexical_path(path)
+    relative = Path(library_relative_path)
+    if (
+        not library_relative_path
+        or relative.is_absolute()
+        or any(part in {"", ".", ".."} for part in relative.parts)
+        or len(candidate.parents) < len(relative.parts)
+    ):
+        raise ValueError("Downloaded content has no safe managed library path.")
+    root = candidate.parents[len(relative.parts) - 1]
+    if candidate != _lexical_path(root / relative):
+        raise ValueError("Downloaded content path does not match its library identity.")
+    _require_safe_regular_content(candidate, root, checksum)
+
+
+def _require_safe_path(path: Path, boundary: Path, *, allow_missing: bool) -> None:
+    candidate = _lexical_path(path)
+    root = _lexical_path(boundary)
+    try:
+        relative = candidate.relative_to(root)
+    except ValueError as exc:
+        raise ValueError("Managed content path is outside its configured boundary.") from exc
+    current = root
+    components = [
+        root,
+        *(root / Path(*relative.parts[:index]) for index in range(1, len(relative.parts) + 1)),
+    ]
+    for index, component in enumerate(components):
+        try:
+            metadata = component.lstat()
+        except FileNotFoundError:
+            if allow_missing:
+                return
+            raise ValueError("Managed content is missing or is not a regular file.")
+        if stat.S_ISLNK(metadata.st_mode):
+            raise ValueError("Managed content path contains a symbolic link.")
+        if index < len(components) - 1 and not stat.S_ISDIR(metadata.st_mode):
+            raise ValueError("Managed content parent is not a directory.")
+
+
+def _require_safe_regular_content(path: Path, boundary: Path, checksum: str) -> None:
+    _require_safe_path(path, boundary, allow_missing=False)
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError as exc:
+        raise ValueError("Managed content is missing or is not a regular file.") from exc
+    if not stat.S_ISREG(metadata.st_mode):
+        raise ValueError("Managed content is missing or is not a regular file.")
+    _require_checksum(path, checksum)
+
+
+def _managed_boundaries_from_trash_path(path: Path) -> tuple[Path, Path]:
+    lexical = _lexical_path(path)
+    parts = lexical.parts
+    marker = MANAGED_TRASH_DIRECTORY.parts
+    for index in range(len(parts) - len(marker)):
+        if parts[index : index + len(marker)] == marker:
+            root = Path(*parts[:index])
+            namespace = root / MANAGED_TRASH_DIRECTORY
+            _require_safe_path(lexical, namespace, allow_missing=True)
+            return root, namespace
+    for index, part in enumerate(parts):
+        if part == ".trash":
+            root = Path(*parts[:index])
+            namespace = root / ".trash"
+            _require_safe_path(lexical, namespace, allow_missing=True)
+            return root, namespace
+    raise ValueError("Removed content is outside a recognized library trash namespace.")
 
 
 def _require_cbz_title(path: Path, expected: str) -> None:

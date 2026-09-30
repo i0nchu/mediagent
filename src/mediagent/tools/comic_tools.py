@@ -7,8 +7,9 @@ import json
 from pathlib import Path
 from typing import Any
 
-from mediagent.core import db
+from mediagent.core import assets, db
 from mediagent.core.filesystem import PathSafetyError, ensure_inside, normalize_path, resolve_placeholders
+from mediagent.core.operational_logging import ProgressLogger
 from mediagent.core.storage import default_library_root
 from mediagent.core.tooling import (
     ErrorCategory,
@@ -1065,6 +1066,7 @@ async def _sync_items(context: ToolContext, input_data: dict[str, Any], items: l
                 "dry_run": True,
                 "db_path": str(db_path),
                 "library_root": str(library_root),
+                "asset_ids": [],
                 "summary": {
                     "resolved_items": len(items),
                     "queued": len(candidates),
@@ -1079,10 +1081,19 @@ async def _sync_items(context: ToolContext, input_data: dict[str, Any], items: l
         db.upsert_media_item(db_path, item)
     item_results = []
     artifacts: list[dict[str, str]] = []
+    progress = ProgressLogger(context.operation_log)
+    failed_items = 0
     for item in candidates:
         item_result = await link_tools._sync_one_link_item(context, db_path, item, input_data)
         item_results.append(item_result)
         artifacts.extend({"type": "file", "path": path} for path in item_result["artifacts"])
+        if item_result["status"] in {"failed", "partial"}:
+            failed_items += 1
+        progress.report(
+            completed=len(item_results),
+            pending=len(candidates) - len(item_results),
+            failed=failed_items,
+        )
     packages = []
     refreshed_identities = {(item["platform"], item["remote_id"]) for item in candidates}
     for item in _load_comic_items(db_path, {(item["platform"], item["remote_id"]) for item in items}):
@@ -1097,6 +1108,15 @@ async def _sync_items(context: ToolContext, input_data: dict[str, Any], items: l
         if plan["status"] == "ready":
             try:
                 package = _apply_comic_package(db_path=db_path, item=item, plan=plan, library_root=library_root)
+                if package.get("suppressed"):
+                    packages.append(
+                        {
+                            **_public_package_plan(plan),
+                            "status": "skipped",
+                            "reason": package["reason"],
+                        }
+                    )
+                    continue
                 packages.append({**_public_package_plan(plan), "status": "packaged", **package})
                 artifacts.append({"type": "file", "path": package["target_path"]})
             except Exception as exc:
@@ -1104,6 +1124,7 @@ async def _sync_items(context: ToolContext, input_data: dict[str, Any], items: l
         else:
             packages.append(_public_package_plan(plan))
     downloaded = sum(result["status"] == "downloaded" for result in item_results)
+    skipped_items = sum(result["status"] == "skipped" for result in item_results)
     failed = sum(result["status"] == "failed" for result in item_results)
     partial = sum(result["status"] == "partial" for result in item_results)
     files_skipped = sum(int(result.get("files_skipped", 0)) for result in item_results)
@@ -1112,6 +1133,7 @@ async def _sync_items(context: ToolContext, input_data: dict[str, Any], items: l
         "resolved_items": len(items),
         "queued": len(candidates),
         "downloaded": downloaded,
+        "skipped": skipped_items,
         "partial": partial,
         "failed": failed,
         "files_skipped": files_skipped,
@@ -1122,7 +1144,15 @@ async def _sync_items(context: ToolContext, input_data: dict[str, Any], items: l
     }
     run_status = "success" if not (failed or partial or package_failed) else "partial"
     db.insert_run(db_path, run_type="tool", name="comic.sync", status=run_status, summary=summary, error=None, dry_run=False)
-    data = {"dry_run": False, "db_path": str(db_path), "library_root": str(library_root), "summary": summary, "items": item_results, "packages": packages}
+    data = {
+        "dry_run": False,
+        "db_path": str(db_path),
+        "library_root": str(library_root),
+        "asset_ids": assets.asset_ids_for_media_items(db_path, items),
+        "summary": summary,
+        "items": item_results,
+        "packages": packages,
+    }
     if run_status == "success":
         return ToolResult.success(data, artifacts=artifacts)
     return ToolResult.failure("comic_sync_partial", "Comic sync completed with incomplete downloads or packages.", data=data, category=ErrorCategory.NETWORK)

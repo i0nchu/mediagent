@@ -8,6 +8,7 @@ public tool contract can stay stable if the underlying client changes later.
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -20,6 +21,8 @@ from mediagent.core.redaction import redact_secrets
 INSTAGRAM_ACCOUNT_ENV = "INSTAGRAM_ACCOUNT"
 INSTAGRAM_SECRET_ENV = "INSTAGRAM_SECRET"
 INSTAGRAM_SESSION_FILE_ENV = "INSTAGRAM_SESSION_FILE"
+INSTAGRAM_PROFILES_ENV = "MEDIAGENT_INSTAGRAM_PROFILES"
+INSTAGRAM_PROFILE_ENV_PREFIX = "MEDIAGENT_INSTAGRAM_PROFILE_"
 DEFAULT_LOGIN_COOLDOWN_SECONDS = 6 * 60 * 60
 
 SESSION_REPAIR_CODES = {
@@ -50,6 +53,21 @@ class InstagramConfig:
             "secret_present": bool(self.secret),
             "session_file": self.session_file,
         }
+
+
+@dataclass(frozen=True)
+class InstagramProfile:
+    """One ordered Instagram credential profile.
+
+    Profile names and environment variable names are safe configuration
+    identifiers. Credential values must never be included in public results.
+    """
+
+    name: str
+    account: str | None
+    secret: str | None
+    session_file: str | None
+    credential_env_names: tuple[str, ...]
 
 
 class InstagramPlatformError(Exception):
@@ -84,6 +102,85 @@ def load_config(*, env: Any, cwd: Path) -> InstagramConfig:
         account=env.get(INSTAGRAM_ACCOUNT_ENV) or None,
         secret=env.get(INSTAGRAM_SECRET_ENV) or None,
         session_file=session_file or None,
+    )
+
+
+def load_profiles(*, env: Any, cwd: Path) -> tuple[InstagramProfile, ...]:
+    """Load the legacy default followed by explicitly ordered named profiles."""
+
+    raw_names = env.get(INSTAGRAM_PROFILES_ENV) or ""
+    aliases = _parse_profile_aliases(str(raw_names))
+    default = load_config(env=env, cwd=cwd)
+    profiles: list[InstagramProfile] = []
+    if default.session_file or not aliases:
+        profiles.append(
+            InstagramProfile(
+                name="default",
+                account=default.account,
+                secret=default.secret,
+                session_file=default.session_file,
+                credential_env_names=(
+                    INSTAGRAM_ACCOUNT_ENV,
+                    INSTAGRAM_SECRET_ENV,
+                    INSTAGRAM_SESSION_FILE_ENV,
+                ),
+            )
+        )
+    for alias, suffix in aliases:
+        prefix = f"{INSTAGRAM_PROFILE_ENV_PREFIX}{suffix}_"
+        account_env = f"{prefix}ACCOUNT"
+        secret_env = f"{prefix}SECRET"
+        session_env = f"{prefix}SESSION_FILE"
+        raw_session_file = env.get(session_env)
+        if not raw_session_file:
+            raise InstagramPlatformError(
+                "instagram_profile_config_invalid",
+                "An Instagram profile session file is not configured.",
+                details={"profile": alias, "missing": [session_env]},
+            )
+        profiles.append(
+            InstagramProfile(
+                name=alias,
+                account=env.get(account_env) or None,
+                secret=env.get(secret_env) or None,
+                session_file=str(resolve_credential_path(raw_session_file, env=env, cwd=cwd)),
+                credential_env_names=(account_env, secret_env, session_env),
+            )
+        )
+    return tuple(profiles)
+
+
+def load_profile(*, env: Any, cwd: Path, name: str) -> InstagramProfile:
+    """Load one explicitly selected auth profile without changing defaults."""
+
+    selected = name.strip()
+    if not selected:
+        raise InstagramPlatformError(
+            "instagram_profile_config_invalid",
+            "An Instagram profile name is required.",
+            details={"environment_variable": INSTAGRAM_PROFILES_ENV},
+        )
+    _parse_profile_aliases(str(env.get(INSTAGRAM_PROFILES_ENV) or ""))
+    if selected.casefold() == "default":
+        config = load_config(env=env, cwd=cwd)
+        return InstagramProfile(
+            name="default",
+            account=config.account,
+            secret=config.secret,
+            session_file=config.session_file,
+            credential_env_names=(
+                INSTAGRAM_ACCOUNT_ENV,
+                INSTAGRAM_SECRET_ENV,
+                INSTAGRAM_SESSION_FILE_ENV,
+            ),
+        )
+    for profile in load_profiles(env=env, cwd=cwd):
+        if profile.name.casefold() == selected.casefold():
+            return profile
+    raise InstagramPlatformError(
+        "instagram_profile_config_invalid",
+        "The selected Instagram profile is not configured.",
+        details={"profile": selected},
     )
 
 
@@ -429,3 +526,34 @@ def _parse_datetime(value: Any) -> datetime | None:
     except ValueError:
         return None
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+
+
+def _parse_profile_aliases(value: str) -> list[tuple[str, str]]:
+    if not value.strip():
+        return []
+    aliases: list[tuple[str, str]] = []
+    seen_suffixes: set[str] = set()
+    for raw_alias in value.split(","):
+        alias = raw_alias.strip()
+        if not alias or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", alias) is None:
+            raise InstagramPlatformError(
+                "instagram_profile_config_invalid",
+                "Instagram profile names may contain only letters, digits, underscores, and hyphens.",
+                details={"environment_variable": INSTAGRAM_PROFILES_ENV},
+            )
+        if alias.casefold() == "default":
+            raise InstagramPlatformError(
+                "instagram_profile_config_invalid",
+                "The Instagram profile name 'default' is reserved for legacy configuration.",
+                details={"environment_variable": INSTAGRAM_PROFILES_ENV},
+            )
+        suffix = alias.upper().replace("-", "_")
+        if suffix in seen_suffixes:
+            raise InstagramPlatformError(
+                "instagram_profile_config_invalid",
+                "Instagram profile names must be unique after environment-name normalization.",
+                details={"environment_variable": INSTAGRAM_PROFILES_ENV},
+            )
+        seen_suffixes.add(suffix)
+        aliases.append((alias, suffix))
+    return aliases

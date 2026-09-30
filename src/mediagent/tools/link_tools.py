@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -10,7 +11,7 @@ from collections.abc import Callable
 from typing import Any
 from urllib.parse import urlparse
 
-from mediagent.core import db, library_content
+from mediagent.core import assets, db, library_content
 from mediagent.core.comics import IGNORED_COMIC_SPACER_HEALTH
 from mediagent.core.filesystem import PathSafetyError, ensure_inside, normalize_path, resolve_placeholders
 from mediagent.core.links import (
@@ -27,9 +28,11 @@ from mediagent.core.links import (
     resolution_to_media_item,
     sanitize_link_resolution_for_output,
 )
+from mediagent.core.operational_logging import ProgressLogger
 from mediagent.core.storage import default_library_root, plan_storage_path, platform_library_env_name
 from mediagent.core.sync import TERMINAL_ITEM_STATUSES, item_status_from_file_counts
 from mediagent.core.tooling import ErrorCategory, Permission, ToolContext, ToolDefinition, ToolResult, ToolSpec
+from mediagent.platforms.pornhub import client as pornhub_client
 from mediagent.tools.metadata_tools import metadata_write
 
 
@@ -301,9 +304,11 @@ async def media_sync(context: ToolContext, input_data: dict[str, Any]) -> ToolRe
         "repaired": 0,
         "still_missing_files": 0,
         "downloaded": 0,
+        "skipped": 0,
         "partial": 0,
         "failed": 0,
         "files_downloaded": 0,
+        "files_skipped": 0,
         "files_deduplicated": 0,
         "dedup_bytes_reclaimed": 0,
         "files_failed": 0,
@@ -315,6 +320,7 @@ async def media_sync(context: ToolContext, input_data: dict[str, Any]) -> ToolRe
         "cbz_failed_or_incomplete": 0,
     }
     warnings: list[str] = []
+    fatal_resolution_errors: list[dict[str, Any]] = []
     comic_route = await sync_dedicated_comic_links(
         context,
         input_data,
@@ -347,6 +353,17 @@ async def media_sync(context: ToolContext, input_data: dict[str, Any]) -> ToolRe
             )
         if resolution.get("status") != "resolved":
             summary["skipped_links"] += 1
+            details = resolution.get("details") if isinstance(resolution.get("details"), dict) else {}
+            if details.get("tool_failure"):
+                summary["failed"] += 1
+                error_code = str(details.get("error_code") or resolution.get("skip_reason") or "resolver_error")
+                warnings.append(f"Exact-video resolver failed with {error_code}.")
+                fatal_resolution_errors.append(
+                    {
+                        "code": error_code,
+                        "category": str(details.get("error_category") or "network"),
+                    }
+                )
             continue
         summary["resolved"] += 1
         item = resolution_to_media_item(resolution, ingest_provenance=_link_ingest_provenance(link))
@@ -374,13 +391,23 @@ async def media_sync(context: ToolContext, input_data: dict[str, Any]) -> ToolRe
         data = {
             "db_path": str(db_path),
             "summary": summary,
+            "asset_ids": [],
             "links": resolutions,
             "planned_downloads": planned_downloads,
         }
-        if comic_route["failed"]:
+        if fatal_resolution_errors and not summary["resolved"] and not comic_route["summary"]["resolved"]:
+            error = fatal_resolution_errors[0]
+            return ToolResult.failure(
+                error["code"],
+                "Exact-video source could not be resolved.",
+                data=data,
+                warnings=warnings,
+                category=_error_category(error["category"]),
+            )
+        if comic_route["failed"] or summary["failed"]:
             return ToolResult.failure(
                 "link_media_sync_partial" if summary["resolved"] else "link_media_sync_failed",
-                "Link media sync preview could not resolve every dedicated comic source.",
+                "Link media sync preview could not resolve every dedicated source.",
                 data=data,
                 warnings=warnings,
                 category=ErrorCategory.NETWORK,
@@ -393,11 +420,14 @@ async def media_sync(context: ToolContext, input_data: dict[str, Any]) -> ToolRe
 
     item_results: list[dict[str, Any]] = list(comic_route["items"])
     artifacts: list[dict[str, str]] = list(comic_route["artifacts"])
-    for item in items_to_sync:
+    progress = ProgressLogger(context.operation_log)
+    failed_items = 0
+    for completed_items, item in enumerate(items_to_sync, start=1):
         result = await _sync_one_link_item(context, db_path, item, input_data)
         item_results.append(result)
         summary[result["status"]] += 1
         summary["files_downloaded"] += result["files_downloaded"]
+        summary["files_skipped"] += result.get("files_skipped", 0)
         summary["files_deduplicated"] += result.get("files_deduplicated", 0)
         summary["dedup_bytes_reclaimed"] += result.get("dedup_bytes_reclaimed", 0)
         summary["files_failed"] += result["files_failed"]
@@ -408,6 +438,13 @@ async def media_sync(context: ToolContext, input_data: dict[str, Any]) -> ToolRe
             summary["still_missing_files"] += result["files_failed"]
         artifacts.extend({"type": "file", "path": path} for path in result["artifacts"])
         warnings.extend(result["warnings"])
+        if result["status"] in {"failed", "partial"}:
+            failed_items += 1
+        progress.report(
+            completed=completed_items,
+            pending=len(items_to_sync) - completed_items,
+            failed=failed_items,
+        )
 
     run_status = "success"
     if summary["failed"] or summary["partial"] or comic_route["failed"]:
@@ -424,12 +461,27 @@ async def media_sync(context: ToolContext, input_data: dict[str, Any]) -> ToolRe
     data = {
         "db_path": str(db_path),
         "summary": summary,
+        "asset_ids": _unique_strings(
+            [
+                *comic_route["asset_ids"],
+                *assets.asset_ids_for_media_items(db_path, resolved_items),
+            ]
+        ),
         "links": resolutions,
         "items": item_results,
         "packages": comic_route["packages"],
     }
     if run_status == "success":
         return ToolResult.success(data, artifacts=artifacts, warnings=warnings)
+    if fatal_resolution_errors and not summary["resolved"] and not comic_route["summary"]["resolved"]:
+        error = fatal_resolution_errors[0]
+        return ToolResult.failure(
+            error["code"],
+            "Exact-video source could not be resolved.",
+            data=data,
+            warnings=warnings,
+            category=_error_category(error["category"]),
+        )
     return ToolResult.failure(
         "link_media_sync_partial" if run_status == "partial" else "link_media_sync_failed",
         "Link media sync finished with failed or partially downloaded items.",
@@ -437,6 +489,13 @@ async def media_sync(context: ToolContext, input_data: dict[str, Any]) -> ToolRe
         warnings=warnings,
         category=ErrorCategory.NETWORK,
     )
+
+
+def _error_category(value: str) -> ErrorCategory:
+    try:
+        return ErrorCategory(value)
+    except ValueError:
+        return ErrorCategory.NETWORK
 
 
 async def sync_dedicated_comic_links(
@@ -465,6 +524,7 @@ async def sync_dedicated_comic_links(
         "resolved": 0,
         "skipped_links": 0,
         "queued": 0,
+        "skipped": 0,
         "skipped_items": 0,
         "skipped_healthy": 0,
         "repair_items": 0,
@@ -477,7 +537,9 @@ async def sync_dedicated_comic_links(
         "partial": 0,
         "failed": 0,
         "files_downloaded": 0,
+        "files_skipped": 0,
         "files_failed": 0,
+        "blocked_purged": 0,
         "bytes_written": 0,
         "cbz_packaged": 0,
         "cbz_existing": 0,
@@ -489,6 +551,7 @@ async def sync_dedicated_comic_links(
     planned_downloads: list[dict[str, Any]] = []
     artifacts: list[dict[str, Any]] = []
     warnings: list[str] = []
+    asset_ids: list[str] = []
     route_failed = False
 
     for link, provider in comic_links:
@@ -543,6 +606,7 @@ async def sync_dedicated_comic_links(
         comic_summary = result.data.get("summary", {}) if isinstance(result.data, dict) else {}
         for key in (
             "queued",
+            "skipped",
             "skipped_items",
             "skipped_healthy",
             "repair_items",
@@ -554,6 +618,8 @@ async def sync_dedicated_comic_links(
             "downloaded",
             "partial",
             "failed",
+            "files_skipped",
+            "blocked_purged",
             "cbz_packaged",
             "cbz_existing",
             "cbz_failed_or_incomplete",
@@ -566,6 +632,7 @@ async def sync_dedicated_comic_links(
             summary["files_failed"] += int(item_result.get("files_failed", 0) or 0)
             summary["bytes_written"] += int(item_result.get("bytes_written", 0) or 0)
         packages.extend(result.data.get("packages", []) if isinstance(result.data, dict) else [])
+        asset_ids.extend(result.data.get("asset_ids", []) if isinstance(result.data, dict) else [])
         planned_downloads.extend(result.data.get("planned_downloads", []) if isinstance(result.data, dict) else [])
         artifacts.extend(result.artifacts)
         warnings.extend(result.warnings)
@@ -576,11 +643,16 @@ async def sync_dedicated_comic_links(
         "links": output_links,
         "items": item_results,
         "packages": packages,
+        "asset_ids": _unique_strings(asset_ids),
         "planned_downloads": planned_downloads,
         "artifacts": artifacts,
         "warnings": warnings,
         "failed": route_failed,
     }
+
+
+def _unique_strings(values: list[Any]) -> list[str]:
+    return list(dict.fromkeys(str(value) for value in values if str(value or "").strip()))
 
 
 def merge_comic_route_summary(summary: dict[str, Any], comic_summary: dict[str, Any]) -> None:
@@ -753,8 +825,14 @@ def _sync_candidates(
         "repair_files_missing": 0,
         "repair_files_corrupt": 0,
         "repair_files_unhealthy": 0,
+        "blocked_purged": 0,
     }
+    purged = assets.purged_assets_for_media_items(db_path, items)
     for item in items:
+        if (str(item["platform"]), str(item["remote_id"])) in purged:
+            summary["skipped_items"] += 1
+            summary["blocked_purged"] += 1
+            continue
         status = statuses.get((item["platform"], item["remote_id"]))
         if status == "failed" and retry_failed:
             candidates.append(item)
@@ -801,7 +879,10 @@ def _repair_assessment(db_path: Path, item: dict[str, Any]) -> dict[str, Any]:
             health = str(record.get("file_health") or "unknown")
             status = str(record.get("status") or "")
             local_path = record.get("local_path")
-            if record.get("library_state") == "removed":
+            if record.get("library_state") in {"removed", "purged"} or health in {
+                "removed",
+                "purged",
+            }:
                 pass
             elif status == "skipped" and health == IGNORED_COMIC_SPACER_HEALTH:
                 pass
@@ -935,20 +1016,23 @@ async def _sync_one_link_item(
                 )
                 continue
             file_record = _existing_file_record(db_path, item, file_info, plan)
+            if file_record.get("suppressed"):
+                result["files_skipped"] += 1
+                result["warnings"].append(
+                    "Skipped content that belongs to a removed Asset."
+                )
+                continue
             final_target = Path(str(file_record.get("local_path") or target_path))
             result["files_downloaded"] += 1
             result["bytes_written"] += file_record.get("size_bytes") or 0
             result["artifacts"].append(str(final_target))
             continue
-        download_result = _download_file_safely(
+        download_result = await download_resolved_file_safely(
             context,
             input_data,
-            url=_file_download_url(file_info),
-            headers=_file_download_headers(file_info),
+            file_info=file_info,
             target_path=target_path,
             overwrite=overwrite,
-            expected_mime_prefix=_expected_mime_prefix(file_info),
-            content_transform=_file_content_transform(file_info),
         )
         if download_result.is_success:
             if download_result.data.get("skipped"):
@@ -992,6 +1076,12 @@ async def _sync_one_link_item(
                 file_key=_stable_file_key(file_info),
             )
             adoption = library_content.adopt_media_file(db_path, file_id=int(file_record["id"]))
+            if adoption.get("suppressed"):
+                result["files_skipped"] += 1
+                result["warnings"].append(
+                    "Skipped content that belongs to a removed Asset."
+                )
+                continue
             final_target = Path(str(adoption.get("target_path") or download_result.data["target_path"]))
             if adoption.get("deduplicated"):
                 result["files_deduplicated"] += 1
@@ -1199,6 +1289,72 @@ def _download_file_safely(
     )
 
 
+def _download_pornhub_file_safely(
+    context: ToolContext,
+    input_data: dict[str, Any],
+    *,
+    url: str,
+    target_path: Path,
+    overwrite: bool,
+) -> ToolResult:
+    try:
+        materialized = pornhub_client.materialize_exact_video(
+            url,
+            target_path=target_path,
+            allowed_write_roots=context.allowed_write_roots(),
+            overwrite=overwrite,
+            timeout_seconds=float(input_data.get("timeout_seconds", pornhub_client.DEFAULT_TIMEOUT_SECONDS)),
+            max_media_bytes=int(input_data.get("max_media_bytes", pornhub_client.DEFAULT_MAX_MEDIA_BYTES)),
+            max_redirects=max(0, int(input_data.get("max_redirects", pornhub_client.DEFAULT_MAX_REDIRECTS))),
+        )
+    except pornhub_client.PornhubClientError as exc:
+        return ToolResult.failure(
+            exc.code,
+            str(exc),
+            details=exc.details,
+            category=exc.category,
+        )
+    return ToolResult.success(
+        {
+            "target_path": materialized.target_path,
+            "mime_type": materialized.mime_type,
+            "size_bytes": materialized.size_bytes,
+            "checksum": materialized.checksum,
+        }
+    )
+
+
+async def download_resolved_file_safely(
+    context: ToolContext,
+    input_data: dict[str, Any],
+    *,
+    file_info: dict[str, Any],
+    target_path: Path,
+    overwrite: bool,
+) -> ToolResult:
+    """Materialize one normalized link candidate through its declared strategy."""
+
+    if _file_download_strategy(file_info) == "pornhub_yt_dlp":
+        return await asyncio.to_thread(
+            _download_pornhub_file_safely,
+            context,
+            input_data,
+            url=_file_download_url(file_info),
+            target_path=target_path,
+            overwrite=overwrite,
+        )
+    return _download_file_safely(
+        context,
+        input_data,
+        url=_file_download_url(file_info),
+        headers=_file_download_headers(file_info),
+        target_path=target_path,
+        overwrite=overwrite,
+        expected_mime_prefix=_expected_mime_prefix(file_info),
+        content_transform=_file_content_transform(file_info),
+    )
+
+
 def _target_dir_for_item(
     context: ToolContext,
     input_data: dict[str, Any],
@@ -1275,6 +1431,14 @@ def _file_download_url(file_info: dict[str, Any]) -> str:
     if isinstance(download_context, dict) and download_context.get("url"):
         return str(download_context["url"])
     return _file_remote_url(file_info)
+
+
+def _file_download_strategy(file_info: dict[str, Any]) -> str | None:
+    download_context = file_info.get("download_context")
+    if not isinstance(download_context, dict):
+        return None
+    value = str(download_context.get("strategy") or "").strip()
+    return value or None
 
 
 def _file_download_headers(file_info: dict[str, Any]) -> dict[str, str] | None:
@@ -1358,6 +1522,8 @@ def _existing_file_record(
         file_key=_stable_file_key(file_info),
     )
     adoption = library_content.adopt_media_file(db_path, file_id=int(record["id"]))
+    if adoption.get("suppressed"):
+        return {**record, "suppressed": True, "local_path": None, "status": "skipped"}
     if adoption.get("adopted"):
         record["local_path"] = adoption.get("target_path")
         record["library_relative_path"] = adoption.get("library_relative_path")

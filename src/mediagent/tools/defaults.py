@@ -4,12 +4,15 @@ from __future__ import annotations
 
 from mediagent.core.tooling import ToolRegistry
 from mediagent.tools import (
+    add_tools,
+    asset_tools,
     auth_tools,
     cleanup_tools,
     comic_tools,
     core_tools,
     download_tools,
     instagram_tools,
+    local_import_tools,
     library_content_tools,
     library_tools,
     link_tools,
@@ -19,6 +22,7 @@ from mediagent.tools import (
     pixiv_library_tools,
     reddit_tools,
     storage_tools,
+    tagging_tools,
     telegram_tools,
     x_tools,
 )
@@ -27,16 +31,20 @@ from mediagent.tools import (
 def create_default_registry() -> ToolRegistry:
     registry = ToolRegistry()
     for module in (
+        add_tools,
+        asset_tools,
         core_tools,
         cleanup_tools,
         comic_tools,
         auth_tools,
         media_tools,
         storage_tools,
+        tagging_tools,
         download_tools,
         library_content_tools,
         library_tools,
         link_tools,
+        local_import_tools,
         metadata_tools,
         instagram_tools,
         x_tools,

@@ -1,6 +1,7 @@
 import asyncio
 import json
 import unittest
+from unittest.mock import patch
 from zipfile import ZipFile
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -781,7 +782,18 @@ class PixivToolTests(unittest.TestCase):
                 "include_ugoira_metadata": False,
                 "package_comics": True,
             }
-            result = asyncio.run(registry.run("pixiv.bookmarks.sync", sync_input, context))
+            progress_reports = []
+
+            class FakeProgressLogger:
+                def __init__(self, operation_log) -> None:
+                    self.operation_log = operation_log
+
+                def report(self, **counts) -> bool:
+                    progress_reports.append(counts)
+                    return False
+
+            with patch("mediagent.tools.pixiv_tools.ProgressLogger", FakeProgressLogger):
+                result = asyncio.run(registry.run("pixiv.bookmarks.sync", sync_input, context))
             first_cbz = next(target_dir.rglob("*.cbz"))
             first_cbz.unlink()
             second_result = asyncio.run(registry.run("pixiv.bookmarks.sync", sync_input, context))
@@ -800,6 +812,13 @@ class PixivToolTests(unittest.TestCase):
         self.assertEqual(result.data["summary"]["downloaded"], 2)
         self.assertEqual(result.data["summary"]["files_downloaded"], 3)
         self.assertEqual(result.data["summary"]["comic_packages"], 1)
+        self.assertEqual(
+            progress_reports,
+            [
+                {"completed": 1, "pending": 1, "failed": 0},
+                {"completed": 2, "pending": 0, "failed": 0},
+            ],
+        )
         self.assertTrue(second_result.is_success)
         self.assertEqual(second_result.data["summary"]["queued"], 0)
         self.assertEqual(second_result.data["summary"]["comic_packages"], 1)
@@ -1408,17 +1427,28 @@ class PixivToolTests(unittest.TestCase):
                 http_client=fake,
             )
 
-            result = asyncio.run(
-                registry.run(
-                    "pixiv.bookmarks.sync",
-                    {
-                        "target_dir": str(target_dir),
-                        "limit": 2,
-                        "include_ugoira_metadata": False,
-                    },
-                    context,
+            progress_reports = []
+
+            class FakeProgressLogger:
+                def __init__(self, operation_log) -> None:
+                    self.operation_log = operation_log
+
+                def report(self, **counts) -> bool:
+                    progress_reports.append(counts)
+                    return False
+
+            with patch("mediagent.tools.pixiv_tools.ProgressLogger", FakeProgressLogger):
+                result = asyncio.run(
+                    registry.run(
+                        "pixiv.bookmarks.sync",
+                        {
+                            "target_dir": str(target_dir),
+                            "limit": 2,
+                            "include_ugoira_metadata": False,
+                        },
+                        context,
+                    )
                 )
-            )
             statuses = _media_item_statuses(db_path)
 
         self.assertFalse(result.is_success)
@@ -1426,6 +1456,13 @@ class PixivToolTests(unittest.TestCase):
         self.assertEqual(result.data["summary"]["downloaded"], 1)
         self.assertEqual(result.data["summary"]["partial"], 1)
         self.assertEqual(result.data["summary"]["files_failed"], 1)
+        self.assertEqual(
+            progress_reports,
+            [
+                {"completed": 1, "pending": 1, "failed": 0},
+                {"completed": 2, "pending": 0, "failed": 1},
+            ],
+        )
         self.assertEqual(statuses[("pixiv", "1001")], "downloaded")
         self.assertEqual(statuses[("pixiv", "1002")], "partial")
 

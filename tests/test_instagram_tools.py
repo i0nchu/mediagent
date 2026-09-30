@@ -81,6 +81,59 @@ class FakeInstagramClient:
         )
 
 
+class ProfileAwareInstagramClient(FakeInstagramClient):
+    def __init__(self) -> None:
+        super().__init__()
+        self.profile_payloads: dict[str, dict[str, Any]] = {}
+        self.resolution_session_paths: list[str] = []
+        self.saved_session_paths: list[str] = []
+        self.login_arguments: list[tuple[str, str, str]] = []
+
+    def instagram_login(
+        self,
+        *,
+        username: str,
+        password: str,
+        session_file: str,
+        timeout: float = 30.0,
+    ) -> dict[str, Any]:
+        self.login_arguments.append((username, password, session_file))
+        return super().instagram_login(
+            username=username,
+            password=password,
+            session_file=session_file,
+            timeout=timeout,
+        )
+
+    def instagram_resolve_media(
+        self,
+        *,
+        url: str,
+        shortcode: str,
+        session_file: str,
+        timeout: float = 30.0,
+    ) -> dict[str, Any]:
+        self.calls.append(("instagram_resolve_media", shortcode))
+        self.resolution_session_paths.append(session_file)
+        return self.profile_payloads[Path(session_file).name]
+
+    def instagram_saved_page(
+        self,
+        *,
+        session_file: str,
+        cursor: str | None,
+        amount: int,
+        timeout: float,
+    ) -> dict[str, Any]:
+        self.saved_session_paths.append(session_file)
+        return super().instagram_saved_page(
+            session_file=session_file,
+            cursor=cursor,
+            amount=amount,
+            timeout=timeout,
+        )
+
+
 class InstagramToolTests(unittest.TestCase):
     def test_saved_tool_examples_are_direct_cli_inputs(self) -> None:
         registry = create_default_registry()
@@ -249,6 +302,26 @@ class InstagramToolTests(unittest.TestCase):
         self.assertTrue(first.is_success); self.assertEqual(first.data["summary"]["files"], 3)
         self.assertTrue(second.is_success); self.assertEqual(second.data["summary"]["queued"], 0)
         self.assertEqual([call[0] for call in fake.calls].count("GET_LIMITED"), 3)
+
+    def test_saved_sync_reports_aggregate_item_progress(self) -> None:
+        registry = create_default_registry()
+        fake = FakeInstagramClient()
+        fake.saved_pages = {None: {"items": [_saved_post("Progress", resources=1)], "next_cursor": None}}
+        url = f"https://{PUBLIC_TEST_IP}/0.jpg"
+        fake.gets[url] = HttpResponse(200, {"Content-Type": "image/jpeg"}, b"media", url)
+        with TemporaryDirectory() as temp_dir, patch(
+            "mediagent.tools.instagram_tools.ProgressLogger"
+        ) as progress_factory:
+            result = asyncio.run(
+                registry.run("instagram.saved.sync", {}, _ready_saved_context(temp_dir, fake))
+            )
+
+        self.assertTrue(result.is_success)
+        progress_factory.return_value.report.assert_called_once_with(
+            completed=1,
+            pending=0,
+            failed=0,
+        )
 
     def test_saved_sync_stops_on_known_but_full_sync_scans_past_it(self) -> None:
         registry = create_default_registry(); fake = FakeInstagramClient()
@@ -420,6 +493,113 @@ class InstagramToolTests(unittest.TestCase):
         self.assertIn("next_attempt_at", second.error.details)
         self.assertEqual([call[0] for call in fake.calls].count("instagram_login"), 1)
 
+    def test_named_profile_auth_status_login_and_ensure_use_selected_configuration(self) -> None:
+        registry = create_default_registry()
+        with TemporaryDirectory() as temp_dir:
+            default = _write_instagram_session(temp_dir, "default.json")
+            named = Path(temp_dir) / "data" / "credentials" / "named.json"
+            account = "named-private-account"
+            secret = "named-private-secret"
+            env = {
+                "INSTAGRAM_SESSION_FILE": str(default),
+                "MEDIAGENT_INSTAGRAM_PROFILES": "named",
+                "MEDIAGENT_INSTAGRAM_PROFILE_NAMED_ACCOUNT": account,
+                "MEDIAGENT_INSTAGRAM_PROFILE_NAMED_SECRET": secret,
+                "MEDIAGENT_INSTAGRAM_PROFILE_NAMED_SESSION_FILE": str(named),
+            }
+
+            login_fake = ProfileAwareInstagramClient()
+            login_result = asyncio.run(
+                registry.run(
+                    "instagram.auth.login",
+                    {"profile": "NAMED"},
+                    _instagram_context(temp_dir, http_client=login_fake, extra_env=env),
+                )
+            )
+
+            status_fake = ProfileAwareInstagramClient()
+            status_result = asyncio.run(
+                registry.run(
+                    "instagram.auth.status",
+                    {"profile": "named"},
+                    _instagram_context(temp_dir, http_client=status_fake, extra_env=env),
+                )
+            )
+
+            named.unlink()
+            ensure_fake = ProfileAwareInstagramClient()
+            ensure_fake.status_payload = {
+                "status": "login_required",
+                "error_code": "instagram_login_required",
+            }
+            ensure_result = asyncio.run(
+                registry.run(
+                    "instagram.auth.ensure_session",
+                    {"profile": "named", "force_login": True},
+                    _instagram_context(temp_dir, http_client=ensure_fake, extra_env=env),
+                )
+            )
+
+        self.assertTrue(login_result.is_success)
+        self.assertEqual(login_fake.login_arguments, [(account, secret, str(named))])
+        self.assertEqual(login_result.data["session"]["profile"], "named")
+        self.assertTrue(status_result.is_success)
+        self.assertEqual(status_fake.calls[0], ("instagram_auth_status", str(named)))
+        self.assertEqual(status_result.data["session"]["profile"], "named")
+        self.assertTrue(ensure_result.is_success)
+        self.assertTrue(ensure_result.data["login_attempted"])
+        self.assertEqual(ensure_fake.login_arguments, [(account, secret, str(named))])
+        serialized = json.dumps(
+            {
+                "login": login_result.to_dict(),
+                "status": status_result.to_dict(),
+                "ensure": ensure_result.to_dict(),
+            },
+            sort_keys=True,
+        )
+        self.assertNotIn(account, serialized)
+        self.assertNotIn(secret, serialized)
+        self.assertIn("MEDIAGENT_INSTAGRAM_PROFILE_NAMED_ACCOUNT", serialized)
+        self.assertIn("MEDIAGENT_INSTAGRAM_PROFILE_NAMED_SESSION_FILE", serialized)
+        self.assertNotIn("MEDIAGENT_INSTAGRAM_PROFILE_NAMED_SECRET", serialized)
+
+    def test_named_profile_auth_rejects_unknown_reserved_and_explicit_conflicts_before_network(self) -> None:
+        registry = create_default_registry()
+        cases = (
+            (
+                "unknown",
+                {"MEDIAGENT_INSTAGRAM_PROFILES": "configured"},
+                {"profile": "unknown"},
+            ),
+            (
+                "reserved",
+                {"MEDIAGENT_INSTAGRAM_PROFILES": "default"},
+                {"profile": "default"},
+            ),
+            (
+                "conflict",
+                {
+                    "MEDIAGENT_INSTAGRAM_PROFILES": "configured",
+                    "MEDIAGENT_INSTAGRAM_PROFILE_CONFIGURED_SESSION_FILE": "${MEDIAGENT_DATA_DIR}/credentials/configured.json",
+                },
+                {"profile": "configured", "username": "override"},
+            ),
+        )
+        for label, env, input_data in cases:
+            with self.subTest(label=label), TemporaryDirectory() as temp_dir:
+                fake = ProfileAwareInstagramClient()
+                result = asyncio.run(
+                    registry.run(
+                        "instagram.auth.login",
+                        input_data,
+                        _instagram_context(temp_dir, http_client=fake, extra_env=env),
+                    )
+                )
+
+                self.assertFalse(result.is_success)
+                self.assertEqual(result.error.code, "instagram_profile_config_invalid")
+                self.assertEqual(fake.calls, [])
+
     def test_instagram_link_resolver_keeps_img_index_as_metadata_and_resolves_full_post(self) -> None:
         fake = FakeInstagramClient()
         _add_instagram_carousel(fake, shortcode="DSpCqHBiUI1")
@@ -442,6 +622,300 @@ class InstagramToolTests(unittest.TestCase):
         self.assertEqual([candidate["media_type"] for candidate in result["media_candidates"]], ["photo", "photo", "video"])
         self.assertEqual([file["part"] for file in item["metadata"]["files"]], ["p0", "p1", "v0"])
         self.assertIn("_runtime", item)
+
+    def test_instagram_link_resolver_tries_profiles_in_order_for_access_and_session_failures(self) -> None:
+        fake = ProfileAwareInstagramClient()
+        with TemporaryDirectory() as temp_dir:
+            default = _write_instagram_session(temp_dir, "default.json")
+            first = _write_instagram_session(temp_dir, "first.json")
+            second = _write_instagram_session(temp_dir, "second.json")
+            fake.profile_payloads = {
+                default.name: {"status": "failure", "error_code": "instagram_session_invalid"},
+                first.name: {
+                    "status": "failure",
+                    "error_code": "instagram_media_private",
+                    "details": {"account": "must-not-leak", "sessionid": "must-not-leak"},
+                },
+                second.name: _instagram_carousel_payload("FallbackPost"),
+            }
+            env = _instagram_env(
+                temp_dir,
+                {
+                    "INSTAGRAM_SESSION_FILE": str(default),
+                    "MEDIAGENT_INSTAGRAM_PROFILES": "first,second",
+                    "MEDIAGENT_INSTAGRAM_PROFILE_FIRST_ACCOUNT": "private-account-one",
+                    "MEDIAGENT_INSTAGRAM_PROFILE_FIRST_SECRET": "private-secret-one",
+                    "MEDIAGENT_INSTAGRAM_PROFILE_FIRST_SESSION_FILE": str(first),
+                    "MEDIAGENT_INSTAGRAM_PROFILE_SECOND_ACCOUNT": "private-account-two",
+                    "MEDIAGENT_INSTAGRAM_PROFILE_SECOND_SECRET": "private-secret-two",
+                    "MEDIAGENT_INSTAGRAM_PROFILE_SECOND_SESSION_FILE": str(second),
+                },
+            )
+
+            result = default_link_resolver_registry().resolve(
+                "https://www.instagram.com/p/FallbackPost/",
+                request=ResolveRequest(
+                    http_client=fake,
+                    env=env,
+                    cwd=Path(temp_dir),
+                    allowed_write_roots=(Path(temp_dir) / "data",),
+                ),
+            )
+
+        self.assertEqual(result["status"], "resolved")
+        self.assertEqual(fake.resolution_session_paths, [str(default), str(first), str(second)])
+        serialized = json.dumps(result, sort_keys=True)
+        self.assertNotIn("private-account", serialized)
+        self.assertNotIn("private-secret", serialized)
+        self.assertNotIn("must-not-leak", serialized)
+        self.assertNotIn("first.json", serialized)
+        self.assertNotIn("second.json", serialized)
+
+    def test_instagram_link_resolver_stops_on_non_fallback_error_and_redacts_details(self) -> None:
+        fake = ProfileAwareInstagramClient()
+        with TemporaryDirectory() as temp_dir:
+            default = _write_instagram_session(temp_dir, "default.json")
+            fallback = _write_instagram_session(temp_dir, "fallback.json")
+            fake.profile_payloads = {
+                default.name: {
+                    "status": "failure",
+                    "error_code": "instagram_rate_limited",
+                    "details": {
+                        "reason": "provider_limit",
+                        "account": "private-account",
+                        "sessionid": "private-session",
+                    },
+                },
+                fallback.name: _instagram_carousel_payload("StopPost"),
+            }
+            env = _instagram_env(
+                temp_dir,
+                {
+                    "INSTAGRAM_SESSION_FILE": str(default),
+                    "MEDIAGENT_INSTAGRAM_PROFILES": "fallback",
+                    "MEDIAGENT_INSTAGRAM_PROFILE_FALLBACK_SESSION_FILE": str(fallback),
+                },
+            )
+
+            result = default_link_resolver_registry().resolve(
+                "https://www.instagram.com/p/StopPost/",
+                request=ResolveRequest(
+                    http_client=fake,
+                    env=env,
+                    cwd=Path(temp_dir),
+                    allowed_write_roots=(Path(temp_dir) / "data",),
+                ),
+            )
+
+        self.assertEqual(result["status"], "skipped")
+        self.assertEqual(result["skip_reason"], "rate_limited")
+        self.assertEqual(result["details"]["error_code"], "instagram_rate_limited")
+        self.assertEqual(result["details"]["reason"], "provider_limit")
+        self.assertEqual(result["details"]["profiles_attempted"], 1)
+        self.assertEqual(result["details"]["profiles_configured"], 2)
+        self.assertEqual(fake.resolution_session_paths, [str(default)])
+        serialized = json.dumps(result, sort_keys=True)
+        self.assertNotIn("private-account", serialized)
+        self.assertNotIn("private-session", serialized)
+
+    def test_instagram_link_resolver_continue_and_stop_code_matrix(self) -> None:
+        continue_codes = (
+            "instagram_session_invalid",
+            "instagram_login_required",
+            "instagram_media_private",
+            "instagram_media_not_found",
+            "instagram_media_unavailable",
+        )
+        stop_codes = (
+            "instagram_rate_limited",
+            "instagram_temporarily_blocked",
+            "instagram_checkpoint_required",
+            "instagram_two_factor_required",
+            "instagram_resolve_failed",
+            "instagram_media_unsupported",
+        )
+        for code in (*continue_codes, *stop_codes):
+            with self.subTest(code=code), TemporaryDirectory() as temp_dir:
+                fake = ProfileAwareInstagramClient()
+                default = _write_instagram_session(temp_dir, "default.json")
+                fallback = _write_instagram_session(temp_dir, "fallback.json")
+                fake.profile_payloads = {
+                    default.name: {"status": "failure", "error_code": code},
+                    fallback.name: _instagram_carousel_payload("CodeMatrixPost"),
+                }
+                env = _instagram_env(
+                    temp_dir,
+                    {
+                        "INSTAGRAM_SESSION_FILE": str(default),
+                        "MEDIAGENT_INSTAGRAM_PROFILES": "fallback",
+                        "MEDIAGENT_INSTAGRAM_PROFILE_FALLBACK_SESSION_FILE": str(fallback),
+                    },
+                )
+                result = default_link_resolver_registry().resolve(
+                    "https://www.instagram.com/p/CodeMatrixPost/",
+                    request=ResolveRequest(
+                        http_client=fake,
+                        env=env,
+                        cwd=Path(temp_dir),
+                        allowed_write_roots=(Path(temp_dir) / "data",),
+                    ),
+                )
+
+                if code in continue_codes:
+                    self.assertEqual(result["status"], "resolved")
+                    self.assertEqual(fake.resolution_session_paths, [str(default), str(fallback)])
+                else:
+                    self.assertEqual(result["status"], "skipped")
+                    self.assertEqual(result["details"]["error_code"], code)
+                    self.assertEqual(fake.resolution_session_paths, [str(default)])
+
+    def test_instagram_link_resolver_skips_missing_session_before_named_profile(self) -> None:
+        fake = ProfileAwareInstagramClient()
+        with TemporaryDirectory() as temp_dir:
+            missing = Path(temp_dir) / "data" / "credentials" / "missing.json"
+            named = _write_instagram_session(temp_dir, "named.json")
+            fake.profile_payloads = {named.name: _instagram_carousel_payload("MissingSessionPost")}
+            env = _instagram_env(
+                temp_dir,
+                {
+                    "INSTAGRAM_SESSION_FILE": str(missing),
+                    "MEDIAGENT_INSTAGRAM_PROFILES": "named",
+                    "MEDIAGENT_INSTAGRAM_PROFILE_NAMED_SESSION_FILE": str(named),
+                },
+            )
+
+            result = default_link_resolver_registry().resolve(
+                "https://www.instagram.com/p/MissingSessionPost/",
+                request=ResolveRequest(
+                    http_client=fake,
+                    env=env,
+                    cwd=Path(temp_dir),
+                    allowed_write_roots=(Path(temp_dir) / "data",),
+                ),
+            )
+
+        self.assertEqual(result["status"], "resolved")
+        self.assertEqual(fake.resolution_session_paths, [str(named)])
+
+    def test_instagram_explicit_session_file_pins_resolution_without_profile_fallback(self) -> None:
+        fake = ProfileAwareInstagramClient()
+        with TemporaryDirectory() as temp_dir:
+            default = _write_instagram_session(temp_dir, "default.json")
+            named = _write_instagram_session(temp_dir, "named.json")
+            pinned = _write_instagram_session(temp_dir, "pinned.json")
+            fake.profile_payloads = {
+                default.name: _instagram_carousel_payload("PinnedPost"),
+                named.name: _instagram_carousel_payload("PinnedPost"),
+                pinned.name: {"status": "failure", "error_code": "instagram_media_private"},
+            }
+            env = _instagram_env(
+                temp_dir,
+                {
+                    "INSTAGRAM_SESSION_FILE": str(default),
+                    "MEDIAGENT_INSTAGRAM_PROFILES": "named",
+                    "MEDIAGENT_INSTAGRAM_PROFILE_NAMED_SESSION_FILE": str(named),
+                },
+            )
+
+            result = default_link_resolver_registry().resolve(
+                "https://www.instagram.com/p/PinnedPost/",
+                request=ResolveRequest(
+                    http_client=fake,
+                    env=env,
+                    cwd=Path(temp_dir),
+                    allowed_write_roots=(Path(temp_dir) / "data",),
+                    platform_options={"instagram": {"session_file": str(pinned)}},
+                ),
+            )
+
+        self.assertEqual(result["status"], "skipped")
+        self.assertEqual(result["details"]["error_code"], "instagram_media_private")
+        self.assertEqual(result["details"]["profiles_configured"], 1)
+        self.assertEqual(fake.resolution_session_paths, [str(pinned)])
+
+    def test_instagram_profile_paths_are_all_validated_before_resolution(self) -> None:
+        fake = ProfileAwareInstagramClient()
+        with TemporaryDirectory() as temp_dir, TemporaryDirectory() as outside_dir:
+            default = _write_instagram_session(temp_dir, "default.json")
+            safe = _write_instagram_session(temp_dir, "safe.json")
+            outside = Path(outside_dir) / "outside.json"
+            outside.write_text("{}", encoding="utf-8")
+            fake.profile_payloads = {
+                default.name: _instagram_carousel_payload("UnsafeProfilePost"),
+                safe.name: _instagram_carousel_payload("UnsafeProfilePost"),
+                outside.name: _instagram_carousel_payload("UnsafeProfilePost"),
+            }
+            env = _instagram_env(
+                temp_dir,
+                {
+                    "INSTAGRAM_SESSION_FILE": str(default),
+                    "MEDIAGENT_INSTAGRAM_PROFILES": "safe,outside",
+                    "MEDIAGENT_INSTAGRAM_PROFILE_SAFE_SESSION_FILE": str(safe),
+                    "MEDIAGENT_INSTAGRAM_PROFILE_OUTSIDE_SESSION_FILE": str(outside),
+                },
+            )
+
+            result = default_link_resolver_registry().resolve(
+                "https://www.instagram.com/p/UnsafeProfilePost/",
+                request=ResolveRequest(
+                    http_client=fake,
+                    env=env,
+                    cwd=Path(temp_dir),
+                    allowed_write_roots=(Path(temp_dir) / "data",),
+                ),
+            )
+
+        self.assertEqual(result["status"], "skipped")
+        self.assertEqual(result["skip_reason"], "unsafe_credential_path")
+        self.assertEqual(fake.resolution_session_paths, [])
+
+    def test_instagram_profile_configuration_is_validated_before_resolution(self) -> None:
+        cases = {
+            "invalid_alias": {"MEDIAGENT_INSTAGRAM_PROFILES": "not valid"},
+            "normalized_duplicate": {"MEDIAGENT_INSTAGRAM_PROFILES": "same-name,same_name"},
+            "missing_session": {"MEDIAGENT_INSTAGRAM_PROFILES": "missing"},
+        }
+        for label, extra_env in cases.items():
+            with self.subTest(label=label), TemporaryDirectory() as temp_dir:
+                fake = ProfileAwareInstagramClient()
+                default = _write_instagram_session(temp_dir, "default.json")
+                env = _instagram_env(temp_dir, {"INSTAGRAM_SESSION_FILE": str(default), **extra_env})
+                result = default_link_resolver_registry().resolve(
+                    "https://www.instagram.com/p/InvalidProfilePost/",
+                    request=ResolveRequest(
+                        http_client=fake,
+                        env=env,
+                        cwd=Path(temp_dir),
+                        allowed_write_roots=(Path(temp_dir) / "data",),
+                    ),
+                )
+
+                self.assertEqual(result["status"], "skipped")
+                self.assertEqual(result["details"]["error_code"], "instagram_profile_config_invalid")
+                self.assertEqual(fake.resolution_session_paths, [])
+
+    def test_instagram_saved_collect_ignores_named_link_profiles(self) -> None:
+        registry = create_default_registry()
+        fake = ProfileAwareInstagramClient()
+        fake.saved_pages = {None: {"items": [], "next_cursor": None}}
+        with TemporaryDirectory() as temp_dir:
+            default = _write_instagram_session(temp_dir, "default.json")
+            named = _write_instagram_session(temp_dir, "named.json")
+            context = _instagram_context(
+                temp_dir,
+                http_client=fake,
+                extra_env={
+                    "INSTAGRAM_SESSION_FILE": str(default),
+                    "MEDIAGENT_INSTAGRAM_PROFILES": "named",
+                    "MEDIAGENT_INSTAGRAM_PROFILE_NAMED_SESSION_FILE": str(named),
+                },
+            )
+
+            result = asyncio.run(registry.run("instagram.saved.collect", {}, context))
+
+        self.assertTrue(result.is_success)
+        self.assertEqual(fake.saved_session_paths, [str(default)])
+        self.assertEqual(fake.resolution_session_paths, [])
 
     def test_instagram_link_resolve_tool_sanitizes_runtime_download_context(self) -> None:
         registry = create_default_registry()
@@ -678,7 +1152,11 @@ def _instagram_context(
 
 
 def _add_instagram_carousel(fake: FakeInstagramClient, *, shortcode: str) -> None:
-    fake.resolution_payloads[shortcode] = {
+    fake.resolution_payloads[shortcode] = _instagram_carousel_payload(shortcode)
+
+
+def _instagram_carousel_payload(shortcode: str) -> dict[str, Any]:
+    return {
         "status": "resolved",
         "media_type": "photo",
         "source_timestamp": "2026-07-28T00:00:00+00:00",
@@ -714,6 +1192,13 @@ def _add_instagram_carousel(fake: FakeInstagramClient, *, shortcode: str) -> Non
             },
         ],
     }
+
+
+def _write_instagram_session(temp_dir: str, name: str) -> Path:
+    path = Path(temp_dir) / "data" / "credentials" / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("{}", encoding="utf-8")
+    return path
 
 
 def _saved_post(shortcode: str, *, resources: int) -> dict[str, Any]:

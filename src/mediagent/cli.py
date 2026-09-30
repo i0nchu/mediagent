@@ -7,21 +7,25 @@ import asyncio
 import json
 import os
 import sys
+import time
+import unicodedata
 from pathlib import Path
 from typing import Any
 
 from mediagent.agent import AgentRunner
-from mediagent.agent.core import LLMClient
-from mediagent.agent.llm import OllamaClient, OpenAICompatibleClient
+from mediagent.agent.llm import build_llm_client
 from mediagent.agent.skills import default_skill_registry
 from mediagent.core.config import EnvFileError, load_env_file
-from mediagent.core.tooling import ErrorCategory, ToolContext, ToolRegistryError
+from mediagent.core.operational_logging import OperationLogger, await_with_heartbeat, sanitize_log_text
+from mediagent.core.redaction import redact_secrets
+from mediagent.core.tooling import ErrorCategory, ToolContext, ToolRegistryError, ToolResult
 from mediagent.tools.defaults import create_default_registry
 
 
 EXIT_SUCCESS = 0
 EXIT_RUNTIME_FAILURE = 1
 EXIT_VALIDATION_ERROR = 2
+MAX_LOGGED_WARNINGS = 3
 
 VALIDATION_ERROR_CATEGORIES = {
     ErrorCategory.VALIDATION.value,
@@ -31,10 +35,22 @@ VALIDATION_ERROR_CATEGORIES = {
     ErrorCategory.DATABASE.value,
 }
 
-SIMPLE_COMMANDS = {"init", "add", "sync", "status", "agent"}
+SIMPLE_COMMANDS = {
+    "init",
+    "add",
+    "sync",
+    "status",
+    "agent",
+    "remove",
+    "restore",
+    "search",
+    "tag",
+    "trash",
+    "untag",
+}
 SOURCE_SYNC_TOOLS = {
     "pixiv": "pixiv.bookmarks.sync",
-    "telegram": "telegram.inbox.sync_links",
+    "telegram": "telegram.inbox.sync",
     "jmcomic": "jmcomic.favorites.sync",
     "nhentai": "nhentai.favorites.sync",
     "instagram": "instagram.saved.sync",
@@ -63,10 +79,12 @@ def run(argv: list[str] | None = None) -> int:
         try:
             _load_simple_command_env()
         except EnvFileError as exc:
-            return print_error(
-                {"code": "invalid_env_file", "message": str(exc), "details": {}},
+            return emit_tool_failure(
+                tool=argv[0],
+                code="invalid_env_file",
+                message=str(exc),
                 json_output="--json" in argv or "--summary-json" in argv,
-                exit_code=EXIT_VALIDATION_ERROR,
+                compact_human=True,
             )
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -91,8 +109,8 @@ def build_parser() -> argparse.ArgumentParser:
     initialize.add_argument("--json", action="store_true", help="Emit complete machine-readable JSON.")
     initialize.set_defaults(handler=handle_init)
 
-    add = subcommands.add_parser("add", help="Download one explicit media or post URL.")
-    add.add_argument("url", help="Explicit URL to resolve and download.")
+    add = subcommands.add_parser("add", help="Add a URL, local media file, or directory.")
+    add.add_argument("input", help="URL, local media file, or directory to add.")
     add.add_argument("--overwrite", action="store_true", help="Replace an existing target file.")
     add.add_argument(
         "--repair",
@@ -103,6 +121,43 @@ def build_parser() -> argparse.ArgumentParser:
     add.add_argument("--dry-run", action="store_true", help="Preview without writing files or SQLite.")
     add.add_argument("--json", action="store_true", help="Emit complete machine-readable JSON.")
     add.set_defaults(handler=handle_add)
+
+    remove = subcommands.add_parser("remove", help="Move one Asset into managed trash.")
+    remove.add_argument("asset_id", help="Stable Mediagent Asset identifier.")
+    remove.add_argument("--reason", default=None, help="Optional removal reason.")
+    remove.add_argument("--json", action="store_true", help="Emit complete machine-readable JSON.")
+    remove.set_defaults(handler=handle_asset_remove)
+
+    restore = subcommands.add_parser("restore", help="Restore one removed Asset.")
+    restore.add_argument("asset_id", help="Stable Mediagent Asset identifier.")
+    restore.add_argument("--json", action="store_true", help="Emit complete machine-readable JSON.")
+    restore.set_defaults(handler=handle_asset_restore)
+
+    tag = subcommands.add_parser("tag", help="Add manual tags or run configured automatic tagging.")
+    tag.add_argument("asset_id", nargs="?", help="Stable Asset identifier; omit to retry pending jobs.")
+    tag.add_argument("tags", nargs="*", help="Manual tags; omit to generate tags with the configured LLM.")
+    tag.add_argument("--json", action="store_true", help="Emit complete machine-readable JSON.")
+    tag.set_defaults(handler=handle_asset_tag)
+
+    untag = subcommands.add_parser("untag", help="Remove tags from one Asset.")
+    untag.add_argument("asset_id", help="Stable Mediagent Asset identifier.")
+    untag.add_argument("tags", nargs="+", help="One or more tags to remove.")
+    untag.add_argument("--json", action="store_true", help="Emit complete machine-readable JSON.")
+    untag.set_defaults(handler=handle_asset_untag)
+
+    search = subcommands.add_parser("search", help="Search managed Assets.")
+    search.add_argument("terms", nargs="*", help="Terms matched across tags, metadata, sources, and filenames.")
+    search.add_argument("--all", action="store_true", help="Include removed and permanently purged Assets.")
+    search.add_argument("--limit", type=int, default=50, help="Maximum results (default: 50; maximum: 200).")
+    search.add_argument("--json", action="store_true", help="Emit complete machine-readable JSON.")
+    search.set_defaults(handler=handle_asset_search)
+
+    trash = subcommands.add_parser("trash", help="Manage retained removed content.")
+    trash_commands = trash.add_subparsers(dest="trash_command")
+    trash_purge = trash_commands.add_parser("purge", help="Permanently purge content past retention.")
+    trash_purge.add_argument("--dry-run", action="store_true", help="Preview without deleting content.")
+    trash_purge.add_argument("--json", action="store_true", help="Emit complete machine-readable JSON.")
+    trash_purge.set_defaults(handler=handle_trash_purge)
 
     sync = subcommands.add_parser("sync", help="Synchronize one configured source.")
     sync.add_argument(
@@ -310,18 +365,97 @@ def handle_init(args: argparse.Namespace) -> int:
 
 
 def handle_add(args: argparse.Namespace) -> int:
-    comic_link = _is_comic_link(args.url)
-    input_data: dict[str, Any] = {
-        "url": args.url,
-        "overwrite": args.overwrite,
-        "retry_failed": args.repair,
-        "repair_missing_files": args.repair,
-    }
-    if not comic_link:
-        input_data["write_sidecar_metadata"] = False
     return run_tool_command(
-        tool="comic.link.sync" if comic_link else "link.media.sync",
-        input_data=input_data,
+        tool="media.add",
+        input_data={
+            "input": args.input,
+            "overwrite": args.overwrite,
+            "repair": args.repair,
+        },
+        json_output=args.json,
+        summary_json=False,
+        dry_run=args.dry_run,
+        compact_human=True,
+    )
+
+
+def handle_asset_remove(args: argparse.Namespace) -> int:
+    return run_tool_command(
+        tool="library.asset.remove",
+        input_data={
+            "asset_id": args.asset_id,
+            **({"reason": args.reason} if args.reason else {}),
+        },
+        json_output=args.json,
+        summary_json=False,
+        dry_run=False,
+        compact_human=True,
+    )
+
+
+def handle_asset_restore(args: argparse.Namespace) -> int:
+    return run_tool_command(
+        tool="library.asset.restore",
+        input_data={"asset_id": args.asset_id},
+        json_output=args.json,
+        summary_json=False,
+        dry_run=False,
+        compact_human=True,
+    )
+
+
+def handle_asset_tag(args: argparse.Namespace) -> int:
+    if not args.tags:
+        return run_tool_command(
+            tool="library.asset.tags.auto",
+            input_data={
+                **({"asset_ids": [args.asset_id], "force": True} if args.asset_id else {}),
+            },
+            json_output=args.json,
+            summary_json=False,
+            dry_run=False,
+            compact_human=True,
+        )
+    return run_tool_command(
+        tool="library.asset.tags.update",
+        input_data={"asset_id": args.asset_id, "add": args.tags},
+        json_output=args.json,
+        summary_json=False,
+        dry_run=False,
+        compact_human=True,
+    )
+
+
+def handle_asset_untag(args: argparse.Namespace) -> int:
+    return run_tool_command(
+        tool="library.asset.tags.update",
+        input_data={"asset_id": args.asset_id, "remove": args.tags},
+        json_output=args.json,
+        summary_json=False,
+        dry_run=False,
+        compact_human=True,
+    )
+
+
+def handle_asset_search(args: argparse.Namespace) -> int:
+    return run_tool_command(
+        tool="library.asset.search",
+        input_data={
+            "terms": args.terms,
+            "include_inactive": args.all,
+            "limit": args.limit,
+        },
+        json_output=args.json,
+        summary_json=False,
+        dry_run=False,
+        compact_human=True,
+    )
+
+
+def handle_trash_purge(args: argparse.Namespace) -> int:
+    return run_tool_command(
+        tool="library.trash.purge",
+        input_data={},
         json_output=args.json,
         summary_json=False,
         dry_run=args.dry_run,
@@ -331,14 +465,15 @@ def handle_add(args: argparse.Namespace) -> int:
 
 def handle_source_sync(args: argparse.Namespace) -> int:
     if args.folder and args.source != "jmcomic":
-        return print_error(
-            {
-                "code": "unsupported_source_option",
-                "message": "--folder is only supported for the jmcomic source.",
-                "details": {"source": args.source},
-            },
+        return emit_tool_failure(
+            tool=SOURCE_SYNC_TOOLS[args.source],
+            code="unsupported_source_option",
+            message="--folder is only supported for the jmcomic source.",
+            details={"source": args.source},
             json_output=args.json or args.summary_json,
-            exit_code=EXIT_VALIDATION_ERROR,
+            summary_json=args.summary_json,
+            dry_run=args.dry_run,
+            compact_human=True,
         )
     input_data: dict[str, Any] = {
         "overwrite": args.overwrite,
@@ -404,11 +539,14 @@ def handle_tools_inspect(args: argparse.Namespace) -> int:
 def handle_tools_run(args: argparse.Namespace) -> int:
     try:
         input_data = read_input(args.input)
-    except ValueError as exc:
-        return print_error(
-            {"code": "invalid_input_file", "message": str(exc), "details": {}},
+    except (OSError, ValueError) as exc:
+        return print_tool_input_error(
+            tool=args.tool,
+            input_path=args.input,
+            exc=exc,
             json_output=args.json,
-            exit_code=EXIT_VALIDATION_ERROR,
+            summary_json=args.summary_json,
+            dry_run=args.dry_run,
         )
 
     return run_tool_command(
@@ -600,20 +738,35 @@ def handle_agent_run(args: argparse.Namespace) -> int:
             exit_code=EXIT_VALIDATION_ERROR,
         )
     execute = not args.dry_run
-    context = ToolContext.from_env(dry_run=args.dry_run)
+    operation_log = OperationLogger.create("agent.run", env=os.environ)
+    context = ToolContext.from_env(dry_run=args.dry_run, operation_log=operation_log)
     runner = AgentRunner.default(
         llm_client,
         max_steps=args.max_steps,
         allow_experimental=args.allow_experimental,
     )
+    operation_log.started(dry_run=args.dry_run)
+    started_at = time.monotonic()
     result = asyncio.run(
-        runner.run(
-            task=args.task,
-            context=context,
-            skill_name=args.skill,
-            execute=execute,
+        await_with_heartbeat(
+            runner.run(
+                task=args.task,
+                context=context,
+                skill_name=args.skill,
+                execute=execute,
+            ),
+            operation_log,
         )
     )
+    elapsed_seconds = time.monotonic() - started_at
+    if result.is_success:
+        operation_log.completed(elapsed_seconds=elapsed_seconds)
+    else:
+        operation_log.failed(
+            elapsed_seconds=elapsed_seconds,
+            reason=result.error.message if result.error else "The agent operation did not complete.",
+            next_action="Review the command result and try again.",
+        )
     payload = result.to_dict()
     if args.json:
         print_json(payload)
@@ -637,23 +790,76 @@ def run_tool_command(
     compact_human: bool = False,
 ) -> int:
     registry = create_default_registry()
-    context = ToolContext.from_env(dry_run=dry_run)
+    operation_log = OperationLogger.create(tool, env=os.environ)
+    context = ToolContext.from_env(dry_run=dry_run, operation_log=operation_log)
+    started_at = time.monotonic()
+    operation_log.started(dry_run=dry_run)
     try:
         result = asyncio.run(
-            registry.run(
-                tool,
-                input_data,
-                context,
-                allow_experimental=allow_experimental,
+            await_with_heartbeat(
+                registry.run(
+                    tool,
+                    input_data,
+                    context,
+                    allow_experimental=allow_experimental,
+                ),
+                operation_log,
             )
         )
     except ToolRegistryError as exc:
-        return print_error(exc.error.to_dict(), json_output=json_output, exit_code=exc.exit_code)
+        result = ToolResult.failure(
+            exc.error.code,
+            exc.error.message,
+            category=exc.error.category,
+            details=exc.error.details,
+        )
     payload = {
         "tool": tool,
         "run_id": context.run_id,
         **result.to_dict(),
     }
+    elapsed_seconds = time.monotonic() - started_at
+    log_tool_warnings(operation_log, result.warnings)
+    if result.is_success:
+        operation_log.completed(
+            elapsed_seconds=elapsed_seconds,
+            warning_count=len(result.warnings),
+        )
+    else:
+        operation_log.failed(
+            elapsed_seconds=elapsed_seconds,
+            reason=result.error.message if result.error else "The operation did not complete.",
+            next_action=_failure_next_action(result.error.category if result.error else ErrorCategory.RUNTIME),
+        )
+    present_tool_result(
+        payload,
+        json_output=json_output,
+        summary_json=summary_json,
+        compact_human=compact_human,
+    )
+    return tool_result_exit_code(result)
+
+
+def log_tool_warnings(operation_log: OperationLogger, warnings: list[str]) -> None:
+    for warning in warnings[:MAX_LOGGED_WARNINGS]:
+        operation_log.warning(warning)
+    remaining = len(warnings) - MAX_LOGGED_WARNINGS
+    if remaining > 0:
+        operation_log.warning(
+            f"{remaining} additional warning{'s were' if remaining != 1 else ' was'} omitted from the log. "
+            "Use JSON output to inspect the complete result."
+        )
+
+
+def present_tool_result(
+    payload: dict[str, Any],
+    *,
+    json_output: bool,
+    summary_json: bool,
+    compact_human: bool,
+) -> None:
+    """Render one tool result without changing its outcome semantics."""
+
     if summary_json:
         print_json(_summary_tool_payload(payload))
     elif json_output:
@@ -662,11 +868,29 @@ def run_tool_command(
         print_compact_human_result(payload)
     else:
         print_human_result(payload)
+
+
+def tool_result_exit_code(result: ToolResult) -> int:
+    """Keep the established public exit mapping explicit and testable."""
+
     if result.is_success:
         return EXIT_SUCCESS
     if result.error and result.error.category.value in VALIDATION_ERROR_CATEGORIES:
         return EXIT_VALIDATION_ERROR
     return EXIT_RUNTIME_FAILURE
+
+
+def _failure_next_action(category: ErrorCategory) -> str:
+    return {
+        ErrorCategory.VALIDATION: "Correct the command input and try again.",
+        ErrorCategory.AUTH: "Check the configured credentials or session and try again.",
+        ErrorCategory.PERMISSION: "Check file ownership and permissions, then try again.",
+        ErrorCategory.NETWORK: "Check network access and try again.",
+        ErrorCategory.RATE_LIMIT: "Wait before trying the command again.",
+        ErrorCategory.FILESYSTEM: "Check the configured paths and permissions, then try again.",
+        ErrorCategory.DATABASE: "Check database availability and try again.",
+        ErrorCategory.RUNTIME: "Review the command result and try again.",
+    }[category]
 
 
 def _summary_tool_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -705,6 +929,73 @@ def _summary_tool_payload(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def print_tool_input_error(
+    *,
+    tool: str,
+    input_path: str | None,
+    exc: OSError | ValueError,
+    json_output: bool,
+    summary_json: bool,
+    dry_run: bool,
+) -> int:
+    message = str(exc)
+    if isinstance(exc, OSError):
+        message = f"Could not read tool input: {message}"
+    return emit_tool_failure(
+        tool=tool,
+        code="invalid_input_file",
+        message=message,
+        details={
+            "exception_type": type(exc).__name__,
+            "input": input_path,
+        },
+        json_output=json_output,
+        summary_json=summary_json,
+        dry_run=dry_run,
+    )
+
+
+def emit_tool_failure(
+    *,
+    tool: str,
+    code: str,
+    message: str,
+    details: dict[str, Any] | None = None,
+    category: ErrorCategory = ErrorCategory.VALIDATION,
+    json_output: bool,
+    summary_json: bool = False,
+    dry_run: bool = False,
+    compact_human: bool = False,
+) -> int:
+    """Emit one structured preflight failure through the normal result boundary."""
+
+    result = ToolResult.failure(
+        code,
+        message,
+        category=category,
+        details=details,
+    )
+    operation_log = OperationLogger.create(tool, env=os.environ)
+    context = ToolContext.from_env(dry_run=dry_run, operation_log=operation_log)
+    payload = {
+        "tool": tool,
+        "run_id": context.run_id,
+        **result.to_dict(),
+    }
+    operation_log.failed(
+        elapsed_seconds=0.0,
+        reason=message,
+        next_action=_failure_next_action(category),
+    )
+    present_tool_result(
+        payload,
+        json_output=json_output,
+        summary_json=summary_json,
+        compact_human=compact_human,
+    )
+    return tool_result_exit_code(result)
+
+
 def _load_simple_command_env() -> None:
     configured = os.environ.get("MEDIAGENT_ENV_FILE")
     if configured == "":
@@ -713,28 +1004,6 @@ def _load_simple_command_env() -> None:
     if not env_path.is_absolute():
         env_path = Path.cwd() / env_path
     load_env_file(env_path.resolve())
-
-
-def build_llm_client() -> LLMClient:
-    import os
-
-    provider = os.environ.get("MEDIAGENT_LLM_PROVIDER", "ollama").strip().lower()
-    if provider == "ollama":
-        return OllamaClient(
-            base_url=os.environ.get("MEDIAGENT_OLLAMA_BASE_URL", "http://127.0.0.1:11434"),
-            model=os.environ.get("MEDIAGENT_OLLAMA_MODEL", "qwen3:8b"),
-            timeout=float(os.environ.get("MEDIAGENT_OLLAMA_TIMEOUT_SECONDS", "60")),
-            num_predict=int(os.environ.get("MEDIAGENT_OLLAMA_NUM_PREDICT", "512")),
-        )
-    if provider == "openai_compatible":
-        return OpenAICompatibleClient(
-            base_url=os.environ.get("MEDIAGENT_OPENAI_BASE_URL", "http://127.0.0.1:11435/v1"),
-            model=os.environ.get("MEDIAGENT_OPENAI_MODEL", "qwen3-8b"),
-            api_key=os.environ.get("MEDIAGENT_OPENAI_API_KEY", ""),
-            timeout=float(os.environ.get("MEDIAGENT_OPENAI_TIMEOUT_SECONDS", "60")),
-            max_tokens=int(os.environ.get("MEDIAGENT_OPENAI_MAX_TOKENS", "512")),
-        )
-    raise ValueError(f"Unsupported LLM provider: {provider}")
 
 
 def handle_experimental_telegram_sync_links(args: argparse.Namespace) -> int:
@@ -788,9 +1057,9 @@ def print_json(payload: dict[str, Any]) -> None:
 
 def print_error(error: dict[str, Any], *, json_output: bool, exit_code: int) -> int:
     if json_output:
-        print_json({"status": "failure", "error": error})
+        print_json({"status": "failure", "error": redact_secrets(error)})
     else:
-        print(f"error: {error['message']}", file=sys.stderr)
+        print(f"error: {sanitize_log_text(error['message'])}", file=sys.stderr)
     return exit_code
 
 
@@ -798,37 +1067,167 @@ def print_human_result(payload: dict[str, Any]) -> None:
     print(f"status: {payload['status']}")
     if payload.get("data"):
         print(json.dumps(payload["data"], ensure_ascii=False, indent=2, sort_keys=True))
-    if payload.get("warnings"):
-        for warning in payload["warnings"]:
-            print(f"warning: {warning}", file=sys.stderr)
-    if payload.get("error"):
-        print(f"error: {payload['error']['message']}", file=sys.stderr)
 
 
 def print_compact_human_result(payload: dict[str, Any]) -> None:
-    compact = _summary_tool_payload(payload)
     source_data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
-    for key in (
-        "auth_status",
-        "authenticated",
-        "remote_verified",
-        "reusable",
-        "credentials_configured",
-        "session_configured",
-        "session_present",
-        "missing",
-        "paths",
-    ):
-        if key in source_data:
-            compact["data"][key] = source_data[key]
-    print(f"status: {compact['status']}")
-    print(f"operation: {compact['tool']}")
-    if compact["data"]:
-        print(json.dumps(compact["data"], ensure_ascii=False, indent=2, sort_keys=True))
-    for warning in compact["warnings"]:
-        print(f"warning: {warning}", file=sys.stderr)
-    if compact["error"]:
-        print(f"error: {compact['error']['message']}", file=sys.stderr)
+    tool = str(payload.get("tool") or "")
+    if payload.get("status") == "success":
+        print(_compact_success_message(tool, source_data))
+        if tool == "library.asset.search":
+            _print_asset_search_results(source_data)
+            return
+        metric_line = _compact_metric_line(source_data)
+        if metric_line:
+            print(metric_line)
+        asset_ids = source_data.get("asset_ids")
+        if isinstance(asset_ids, list) and len(asset_ids) == 1:
+            print(f"Asset ID: {asset_ids[0]}")
+        elif isinstance(asset_ids, list) and len(asset_ids) > 1:
+            print("Asset IDs are available in JSON output.")
+    else:
+        print("The operation did not complete.")
+
+
+def _compact_success_message(tool: str, data: dict[str, Any]) -> str:
+    if tool == "core.db.init":
+        schema = data.get("schema_version")
+        if data.get("would_initialize"):
+            return f"Database initialization is ready to use schema {schema}."
+        return f"Database schema {schema} is ready."
+    if tool == "core.env.check":
+        return "Configuration is ready."
+    if tool == "library.asset.remove":
+        return (
+            "The Asset is already in trash."
+            if data.get("result") == "already_removed"
+            else "The Asset was moved to trash."
+        )
+    if tool == "library.asset.restore":
+        return (
+            "The Asset is already active."
+            if data.get("result") == "already_active"
+            else "The Asset was restored."
+        )
+    if tool == "library.trash.purge":
+        if data.get("dry_run"):
+            return (
+                f"Trash purge preview found {int(data.get('assets_ready') or 0)} "
+                "Assets ready for permanent removal."
+            )
+        return f"Permanently purged {int(data.get('assets_purged') or 0)} Assets."
+    if tool == "library.asset.tags.update":
+        added = len(data.get("tags_added") or [])
+        removed = len(data.get("tags_removed") or [])
+        if added and removed:
+            return f"Updated {added + removed} tags on the Asset."
+        if added:
+            return f"Added {added} tag{'s' if added != 1 else ''} to the Asset."
+        if removed:
+            return f"Removed {removed} tag{'s' if removed != 1 else ''} from the Asset."
+        return "The Asset tags were already up to date."
+    if tool == "library.asset.tags.auto":
+        tagging = data.get("tagging") if isinstance(data.get("tagging"), dict) else {}
+        tagged = int(tagging.get("tagged") or 0)
+        unchanged = int(tagging.get("unchanged") or 0)
+        if tagged:
+            return f"Generated tags for {tagged} Asset{'s' if tagged != 1 else ''}."
+        if unchanged:
+            return f"Verified tags for {unchanged} Asset{'s' if unchanged != 1 else ''}."
+        return "No automatic tagging jobs were ready."
+    if tool == "library.asset.search":
+        return f"Found {int(data.get('count') or 0)} Assets."
+    if tool.endswith(".auth.status"):
+        return _authentication_status_message(data)
+    return "The operation completed successfully."
+
+
+def _authentication_status_message(data: dict[str, Any]) -> str:
+    status = data.get("auth_status")
+    if isinstance(status, dict):
+        status = status.get("status")
+    if data.get("authenticated") is True or data.get("usable") is True or status == "usable":
+        return "Authentication is ready."
+    if data.get("reusable") is True:
+        if data.get("remote_verified") is False:
+            return "A reusable session is available but has not been verified remotely."
+        return "A reusable authentication session is available."
+    messages = {
+        "credentials_available_login_required": "Credentials are configured, but login is required.",
+        "session_available_unverified": "A session is available but has not been verified remotely.",
+        "session_missing": "Authentication is configured, but the session file is missing.",
+        "unconfigured": "Authentication is not configured.",
+        "expired": "The authentication session has expired.",
+        "invalid": "The authentication session is invalid.",
+    }
+    if isinstance(status, str) and status in messages:
+        return messages[status]
+    session = data.get("session")
+    if isinstance(session, dict):
+        nested_status = session.get("status")
+        if nested_status == "usable":
+            return "Authentication is ready."
+        if isinstance(nested_status, str) and nested_status in messages:
+            return messages[nested_status]
+    return "The authentication check completed, but readiness was not confirmed."
+
+
+def _print_asset_search_results(data: dict[str, Any]) -> None:
+    for asset in data.get("assets") or []:
+        if not isinstance(asset, dict):
+            continue
+        paths = asset.get("paths") if isinstance(asset.get("paths"), list) else []
+        first_path = paths[0].get("path") if paths and isinstance(paths[0], dict) else ""
+        label = asset.get("title") or (Path(str(first_path)).name if first_path else "Untitled")
+        tags = ", ".join(str(tag) for tag in asset.get("tags") or [])
+        suffix = f" | {_one_line(tags)}" if tags else ""
+        print(
+            f"{_one_line(asset.get('asset_id'))} | {_one_line(asset.get('state'))} | "
+            f"{_one_line(asset.get('media_type'))} | {_one_line(label)}{suffix}"
+        )
+
+
+def _one_line(value: Any, *, max_length: int = 160) -> str:
+    characters: list[str] = []
+    for character in str(value or ""):
+        category = unicodedata.category(character)
+        if category == "Cc":
+            characters.append(" ")
+        elif not category.startswith("C"):
+            characters.append(character)
+    safe = "".join(characters)
+    text = " ".join(safe.split())
+    return text if len(text) <= max_length else f"{text[: max_length - 3]}..."
+
+
+def _compact_metric_line(data: dict[str, Any]) -> str | None:
+    summary = data.get("summary")
+    if not isinstance(summary, dict):
+        return None
+    preferred = (
+        "imported",
+        "adopted",
+        "existing",
+        "repaired",
+        "blocked",
+        "unsupported",
+        "downloaded",
+        "queued",
+        "skipped",
+        "failed",
+        "partial",
+        "repaired",
+        "targets_processed",
+        "targets_failed",
+        "files_moved",
+        "bytes_reclaimed",
+    )
+    metrics = [
+        f"{key.replace('_', ' ').capitalize()}: {summary[key]}"
+        for key in preferred
+        if isinstance(summary.get(key), int | float)
+    ]
+    return "; ".join(metrics) + "." if metrics else None
 
 
 def print_agent_human_result(payload: dict[str, Any]) -> None:
@@ -844,7 +1243,3 @@ def print_agent_human_result(payload: dict[str, Any]) -> None:
             print(f"  tool: {action['tool']}")
         if step.get("tool_result"):
             print(json.dumps(step["tool_result"], ensure_ascii=False, indent=2, sort_keys=True))
-        if step.get("error"):
-            print(f"  error: {step['error']['message']}", file=sys.stderr)
-    if payload.get("error"):
-        print(f"error: {payload['error']['message']}", file=sys.stderr)

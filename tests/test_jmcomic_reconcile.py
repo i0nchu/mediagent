@@ -10,7 +10,7 @@ from zipfile import ZipFile
 
 from PIL import Image
 
-from mediagent.core import db
+from mediagent.core import db, library_content
 from mediagent.core.comics import CBZ_MIME_TYPE, build_cbz_atomic, comic_archive_relative_path
 from mediagent.core.tooling import ToolContext
 from mediagent.platforms.jmcomic.parser import parse_album
@@ -192,6 +192,42 @@ class JMComicReconcileTests(unittest.TestCase):
             self.assertEqual(manifest["summary"]["blocked"], 1)
             self.assertEqual(manifest["actions"], [])
             self.assertTrue(old_archive.is_file())
+
+    def test_rebuild_reports_a_tombstone_suppressed_archive_as_skipped(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            database, library, _old_archive, resolved = _seed_wrong_chapter(root)
+            manifest = jmcomic_reconcile.build_manifest(
+                db_path=database,
+                library_root=library,
+                quarantine_dir=library / ".trash" / "reconcile-test",
+                resolved_by_album={"1215913": [resolved]},
+                failed_albums={},
+                include_platform_layer=True,
+            )
+            desired = Path(manifest["actions"][0]["desired_path"])
+
+            def suppress(_db_path: Path, *, file_id: int) -> dict:
+                with db.connect(database) as connection:
+                    path = connection.execute(
+                        "SELECT local_path FROM media_files WHERE id = ?",
+                        (file_id,),
+                    ).fetchone()[0]
+                Path(str(path)).unlink()
+                return {"suppressed": True, "asset_id": "asset_tombstone"}
+
+            with patch.object(library_content, "adopt_media_file", side_effect=suppress):
+                applied = jmcomic_reconcile.apply_manifest(
+                    db_path=database,
+                    library_root=library,
+                    manifest=manifest,
+                )
+
+            result = applied["apply_results"][0]
+            self.assertEqual(result["status"], "skipped")
+            self.assertTrue(result["suppressed"])
+            self.assertIsNone(result["target_path"])
+            self.assertFalse(desired.exists())
 
 
 def _seed_wrong_chapter(root: Path) -> tuple[Path, Path, Path, dict]:

@@ -561,7 +561,7 @@ def _message_to_dict(message: Any, *, entity: Any) -> dict[str, Any]:
         "username": getattr(entity, "username", None),
     }
     media = _media_to_dict(message)
-    return {
+    payload = {
         "id": getattr(message, "id", None),
         "date": getattr(message, "date", None).isoformat() if getattr(message, "date", None) else None,
         "edited_at": getattr(message, "edit_date", None).isoformat() if getattr(message, "edit_date", None) else None,
@@ -573,6 +573,32 @@ def _message_to_dict(message: Any, *, entity: Any) -> dict[str, Any]:
         "protected_content": bool(getattr(message, "noforwards", False)),
         "media": [media] if media else [],
     }
+    forward = _forward_to_dict(getattr(message, "fwd_from", None))
+    if forward is not None:
+        payload["forward"] = forward
+    return payload
+
+
+def _forward_to_dict(header: Any) -> dict[str, Any] | None:
+    """Return a bounded subset of Telegram's forward header."""
+
+    if header is None:
+        return None
+    peer = getattr(header, "from_id", None) or getattr(header, "saved_from_peer", None)
+    peer_type = type(peer).__name__.removeprefix("Peer").lower() if peer is not None else None
+    peer_id = _peer_id(peer, None) if peer is not None else None
+    forwarded_at = getattr(header, "date", None)
+    name = getattr(header, "from_name", None)
+    author = getattr(header, "post_author", None)
+    output = {
+        "type": peer_type,
+        "id": str(peer_id) if peer_id is not None else None,
+        "name": str(name)[:256] if name else None,
+        "author": str(author)[:256] if author else None,
+        "message_id": getattr(header, "channel_post", None) or getattr(header, "saved_from_msg_id", None),
+        "date": forwarded_at.isoformat() if forwarded_at else None,
+    }
+    return {key: value for key, value in output.items() if value not in (None, "")} or None
 
 
 def _media_to_dict(message: Any) -> dict[str, Any] | None:
