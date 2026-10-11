@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from mediagent.core.config import EnvFileError, load_env_file
+from mediagent.core.config import load_env_file
 
 
 class EnvFileTests(unittest.TestCase):

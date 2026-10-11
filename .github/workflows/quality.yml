@@ -1,0 +1,81 @@
+name: PR quality
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: quality-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint and lockfile
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@d0d8abe699bfb85fec6de9f7adb5ae17292296ff # v6
+        with:
+          version: "0.12.20"
+          python-version: "3.12"
+          enable-cache: true
+      - name: Check lockfile
+        run: uv lock --check
+      - name: Install locked development dependencies
+        run: uv sync --locked --group dev
+      - name: Review Python code with inline annotations
+        run: uv run --locked ruff check --output-format=github .
+      - name: Check whitespace in the proposed changes
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if [ -n "$BASE_SHA" ] && [ "$BASE_SHA" != "0000000000000000000000000000000000000000" ]; then
+            git diff --check "$BASE_SHA" HEAD
+          else
+            git show --format= --check HEAD
+          fi
+
+  tests:
+    name: Tests (Python ${{ matrix.python }}, ${{ matrix.dependencies }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - python: "3.12"
+            dependencies: base
+          - python: "3.12"
+            dependencies: video
+          - python: "3.13"
+            dependencies: video
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@d0d8abe699bfb85fec6de9f7adb5ae17292296ff # v6
+        with:
+          version: "0.12.20"
+          python-version: ${{ matrix.python }}
+          enable-cache: true
+          cache-suffix: ${{ matrix.dependencies }}
+      - name: Install locked base dependencies
+        if: matrix.dependencies == 'base'
+        run: uv sync --locked --no-dev
+      - name: Install locked video dependencies
+        if: matrix.dependencies == 'video'
+        run: uv sync --locked --no-dev --extra video
+      - name: Run offline regression tests
+        run: uv run --no-sync python -m unittest discover -s tests
+      - name: Build distributions
+        run: uv build

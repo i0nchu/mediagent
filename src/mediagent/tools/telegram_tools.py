@@ -15,7 +15,6 @@ from mediagent.core.filesystem import PathSafetyError, ensure_inside, normalize_
 from mediagent.core.links import (
     LinkSafetyPolicy,
     ResolveRequest,
-    URLSafetyError,
     default_link_resolver_registry,
     extract_external_links_from_messages,
     resolution_to_media_item,

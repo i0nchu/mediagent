@@ -785,7 +785,6 @@ class LinkResolverTests(unittest.TestCase):
     def test_generic_html_resolver_prefers_original_over_preview_candidate(self) -> None:
         page_url = "https://example.com/post/9640226"
         original_url = "https://cdn.example.com/original/fd/0c/file.png"
-        preview_url = "https://cdn.example.com/720x720/fd/0c/file.webp"
         fake = FakeLinkHttpClient()
         fake.heads[page_url] = HttpResponse(200, {"Content-Type": "text/html"}, b"")
         fake.gets[page_url] = HttpResponse(

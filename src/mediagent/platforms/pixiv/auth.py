@@ -24,7 +24,6 @@ from mediagent.core.auth import (
 )
 from mediagent.core.http import UrllibHttpClient
 from mediagent.core.rate_limit import extract_rate_limit
-from mediagent.core.redaction import redact_secrets
 
 
 LOGIN_URL = "https://app-api.pixiv.net/web/v1/login"

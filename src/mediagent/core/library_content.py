@@ -1731,7 +1731,6 @@ def _require_safe_path(path: Path, boundary: Path, *, allow_missing: bool) -> No
         relative = candidate.relative_to(root)
     except ValueError as exc:
         raise ValueError("Managed content path is outside its configured boundary.") from exc
-    current = root
     components = [
         root,
         *(root / Path(*relative.parts[:index]) for index in range(1, len(relative.parts) + 1)),

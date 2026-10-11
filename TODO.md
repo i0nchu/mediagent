@@ -14,3 +14,5 @@
 - [x] Pornhub exact-video support through a dedicated yt-dlp-backed adapter
 
 ## Bugs
+
+- [ ] Close SQLite connections explicitly after transactions; running the offline suite on Python 3.13 emits `ResourceWarning: unclosed database` from connections returned by `core.db.connect`.

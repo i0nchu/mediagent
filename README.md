@@ -78,3 +78,22 @@ the configured LLM. `tag ASSET_ID` runs automatic tagging again; bare `tag`
 processes one ready batch of pending jobs. LLM failures never change a
 successful download into a failure.
 Run `uv run mediagent --help` for the complete command reference.
+
+## Contributing
+
+Follow `AGENT.md`. Develop on a focused branch and open a pull request against
+`main`. Run `uv sync --locked --group dev`, `uv run --locked ruff check .`,
+`uv run --locked python -m unittest discover -s tests`, `uv lock --check`, and
+`git diff --check` before review.
+
+The PR quality workflow checks lint, the lockfile, and changed-line whitespace,
+then runs offline tests on Python 3.12 with base dependencies and on Python
+3.12/3.13 with the optional video backend. It also builds the distributions.
+No production credentials or live accounts are needed.
+
+Codex follows the review rules in `AGENTS.md`. Enable automatic review for this
+repository in [Codex Code Review settings](https://app.chatgpt.com/settings/code-review)
+after connecting its GitHub repository; this account setting cannot be enabled
+by committing a workflow. To request an individual review, comment
+`@codex review` on the PR. AI reviews complement the required CI checks and
+human approval; they do not merge or deploy changes.

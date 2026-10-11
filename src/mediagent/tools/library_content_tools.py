@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from mediagent.core import db, library_content, lifecycle
+from mediagent.core import library_content, lifecycle
 from mediagent.core.filesystem import PathSafetyError, ensure_inside, normalize_path
 from mediagent.core.storage import default_library_root
 from mediagent.core.tooling import ErrorCategory, Permission, ToolContext, ToolDefinition, ToolResult, ToolSpec

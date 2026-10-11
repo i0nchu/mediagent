@@ -1658,8 +1658,8 @@ def extract_external_links_from_messages(messages: list[dict[str, Any]]) -> list
     seen: set[str] = set()
     for message in messages:
         chat = message.get("chat") if isinstance(message.get("chat"), dict) else {}
-        for field in ("text", "caption"):
-            value = message.get(field)
+        for text_field in ("text", "caption"):
+            value = message.get(text_field)
             if not isinstance(value, str):
                 continue
             for original_url in extract_urls(value):

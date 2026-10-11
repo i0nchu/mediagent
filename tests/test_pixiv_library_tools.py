@@ -1,6 +1,5 @@
 import asyncio
 import json
-import sqlite3
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
