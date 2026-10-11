@@ -2,6 +2,8 @@
 
 ## Features
 
+- [ ] Phase 2 next, highest priority: exact X/Twitter post URLs in `add`, with explicit public/self-hosted FxEmbed v2 modes, NSFW support, session-authorized protected posts in self-hosted mode, and the existing managed Asset download, deduplication, and provenance flows; no paid X Developer API.
+
 - [x] Phase 2 Stage 0: consistent operational logging and CLI result semantics
 - [x] Phase 2 Stage 1: stable Asset identity and migration foundation
 - [x] Phase 2 Stage 2: universal add for URLs and local media
