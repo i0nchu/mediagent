@@ -33,6 +33,7 @@ from mediagent.core.storage import default_library_root, plan_storage_path, plat
 from mediagent.core.sync import TERMINAL_ITEM_STATUSES, item_status_from_file_counts
 from mediagent.core.tooling import ErrorCategory, Permission, ToolContext, ToolDefinition, ToolResult, ToolSpec
 from mediagent.platforms.pornhub import client as pornhub_client
+from mediagent.platforms.x import fxembed
 from mediagent.tools.metadata_tools import metadata_write
 
 
@@ -357,7 +358,7 @@ async def media_sync(context: ToolContext, input_data: dict[str, Any]) -> ToolRe
             if details.get("tool_failure"):
                 summary["failed"] += 1
                 error_code = str(details.get("error_code") or resolution.get("skip_reason") or "resolver_error")
-                warnings.append(f"Exact-video resolver failed with {error_code}.")
+                warnings.append(f"Source resolver failed with {error_code}.")
                 fatal_resolution_errors.append(
                     {
                         "code": error_code,
@@ -399,7 +400,7 @@ async def media_sync(context: ToolContext, input_data: dict[str, Any]) -> ToolRe
             error = fatal_resolution_errors[0]
             return ToolResult.failure(
                 error["code"],
-                "Exact-video source could not be resolved.",
+                "Source could not be resolved.",
                 data=data,
                 warnings=warnings,
                 category=_error_category(error["category"]),
@@ -477,7 +478,7 @@ async def media_sync(context: ToolContext, input_data: dict[str, Any]) -> ToolRe
         error = fatal_resolution_errors[0]
         return ToolResult.failure(
             error["code"],
-            "Exact-video source could not be resolved.",
+            "Source could not be resolved.",
             data=data,
             warnings=warnings,
             category=_error_category(error["category"]),
@@ -1139,6 +1140,8 @@ def _download_file_safely(
     overwrite: bool,
     expected_mime_prefix: str | None,
     content_transform: Callable[[bytes], bytes | _ContentTransformOutcome] | None = None,
+    url_validator: Callable[[str], Any] | None = None,
+    content_validator: Callable[[bytes, str], bool] | None = None,
 ) -> ToolResult:
     partial_path = target_path.with_name(target_path.name + ".partial")
     try:
@@ -1168,6 +1171,7 @@ def _download_file_safely(
             request=request,
             max_bytes=policy.max_media_bytes + 1,
             headers=headers,
+            url_validator=url_validator,
         )
     except URLSafetyError as exc:
         return ToolResult.failure(
@@ -1231,6 +1235,15 @@ def _download_file_safely(
             category=ErrorCategory.NETWORK,
         )
     content = response.content
+    if content_validator is not None and (
+        (content_length is not None and content_length != len(content))
+        or not content_validator(content, mime_type)
+    ):
+        return ToolResult.failure(
+            "download_validation_failed",
+            "Downloaded attachment is incomplete or has an invalid media format.",
+            category=ErrorCategory.NETWORK,
+        )
     if content_transform is not None:
         try:
             transformed = content_transform(content)
@@ -1343,6 +1356,7 @@ async def download_resolved_file_safely(
             target_path=target_path,
             overwrite=overwrite,
         )
+    x_cdn = _file_download_strategy(file_info) == "x_cdn"
     return _download_file_safely(
         context,
         input_data,
@@ -1352,6 +1366,10 @@ async def download_resolved_file_safely(
         overwrite=overwrite,
         expected_mime_prefix=_expected_mime_prefix(file_info),
         content_transform=_file_content_transform(file_info),
+        url_validator=fxembed.validate_media_url if x_cdn else None,
+        content_validator=(
+            lambda content, mime: mime == file_info.get("mime_type") and fxembed.valid_media_bytes(content, mime)
+        ) if x_cdn else None,
     )
 
 

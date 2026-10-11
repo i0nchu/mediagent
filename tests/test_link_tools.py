@@ -810,19 +810,11 @@ class LinkResolverTests(unittest.TestCase):
         self.assertEqual(result["resolver"], "generic_html_media")
         self.assertEqual(result["resolved_media_url"], original_url)
 
-    def test_generic_html_resolver_skips_x_age_wall_without_downloading_preview_image(self) -> None:
+    def test_x_resolver_skips_endpoint_auth_wall_without_downloading_preview_image(self) -> None:
         page_url = "https://x.com/user/status/123"
         fake = FakeLinkHttpClient()
-        fake.heads[page_url] = HttpResponse(200, {"Content-Type": "text/html"}, b"")
-        fake.gets[page_url] = HttpResponse(
-            200,
-            {"Content-Type": "text/html"},
-            (
-                b'<meta property="og:image" content="https://abs.twimg.com/rweb/ssr/default/v2/og/image.png">'
-                b'Age-restricted adult content. To view this media, you need to log in to X.'
-                b'"blurred_image_url":"https://pbs.twimg.com/media/Gx.jpg?format=jpg&name=240x240"'
-                b'"image_url":"https://pbs.twimg.com/profile_images/123/avatar_normal.jpg"'
-            ),
+        fake.gets["https://api.fxtwitter.com/2/status/123"] = HttpResponse(
+            401, {"Content-Type": "application/json"}, b'{"code":401,"message":"PRIVATE_TWEET"}',
         )
 
         result = default_link_resolver_registry().resolve(
@@ -831,9 +823,9 @@ class LinkResolverTests(unittest.TestCase):
         )
 
         self.assertEqual(result["status"], "skipped")
-        self.assertEqual(result["resolver"], "generic_html_media")
-        self.assertEqual(result["skip_reason"], "requires_auth")
-        self.assertEqual(result["details"]["reason"], "login_or_age_gate")
+        self.assertEqual(result["resolver"], "x_exact_post")
+        self.assertEqual(result["skip_reason"], "x_post_requires_auth")
+        self.assertNotIn(page_url, [call[1] for call in fake.calls])
         self.assertNotIn("pbs.twimg.com", [call[1] for call in fake.calls])
 
     def test_pixiv_artwork_link_is_identified_but_blocked_as_requires_auth(self) -> None:
