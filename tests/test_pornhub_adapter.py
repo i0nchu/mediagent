@@ -16,7 +16,7 @@ from mediagent.core import db
 from mediagent.core.links import ResolveRequest, default_link_resolver_registry, sanitize_link_resolution_for_output
 from mediagent.core.tooling import ToolContext
 from mediagent.platforms.pornhub import client as pornhub_client
-from mediagent.platforms.pornhub.links import parse_exact_video_link
+from mediagent.platforms.pornhub.links import is_pornhub_host, parse_exact_video_link
 from mediagent.tools.defaults import create_default_registry
 
 
@@ -76,6 +76,10 @@ class PornhubAdapterTests(unittest.TestCase):
             "https://www.pornhub.com/view_video.php?viewkey=ph123abc&foo=ignored",
             "https://m.pornhub.com/video/show?viewkey=ph123abc",
             "https://pornhub.com/embed/ph123abc/",
+            "https://jp.pornhub.com/view_video.php?viewkey=ph123abc",
+            "https://cn.pornhub.com/video/show?viewkey=ph123abc",
+            "https://de.pornhub.com/embed/ph123abc/",
+            "https://pt-br.pornhub.com/embed/ph123abc/",
         )
         parsed = [parse_exact_video_link(url) for url in urls]
 
@@ -91,6 +95,20 @@ class PornhubAdapterTests(unittest.TestCase):
         self.assertIsNone(parse_exact_video_link("https://www.pornhub.com/playlist/123"))
         self.assertIsNone(parse_exact_video_link("http://www.pornhub.com/view_video.php?viewkey=ph123abc"))
         self.assertIsNone(parse_exact_video_link("https://user:secret@pornhub.com/embed/ph123abc"))
+
+    def test_region_hosts_are_bounded_and_exact_links_are_strict(self) -> None:
+        for host in ("pornhub.com", "www.pornhub.com", "m.pornhub.com", "cn.pornhub.com", "jp.pornhub.com", "PT-BR.pornhub.com"):
+            with self.subTest(host=host):
+                self.assertTrue(is_pornhub_host(host))
+        for host in ("pornhub.com.evil.example", "evilpornhub.com", "www.jp.pornhub.com", "arbitrary.pornhub.com", "jp.pornhub.com.", "jр.pornhub.com"):
+            with self.subTest(host=host):
+                self.assertFalse(is_pornhub_host(host))
+                self.assertIsNone(parse_exact_video_link(f"https://{host}/embed/ph123abc"))
+        for suffix in ("?viewkey=", "?viewkey=bad%2Fkey", "?viewkey=ph123abc&viewkey=", "?viewkey=ph123abc&viewkey=ph456def"):
+            with self.subTest(suffix=suffix):
+                self.assertIsNone(parse_exact_video_link(f"https://jp.pornhub.com/view_video.php{suffix}"))
+        for url in ("https://jp.pornhub.com:8443/embed/ph123abc", "https://jp.pornhub.com/view_video.php;extra?viewkey=ph123abc"):
+            self.assertIsNone(parse_exact_video_link(url))
 
     def test_resolver_uses_dedicated_strategy_and_hides_runtime_context(self) -> None:
         request = ResolveRequest(host_resolver=lambda _host: ["93.184.216.34"])
@@ -122,15 +140,31 @@ class PornhubAdapterTests(unittest.TestCase):
             sanitize_link_resolution_for_output(resolution)["media_candidates"][0]["download_context"]
         )
 
-    def test_other_pornhub_pages_are_reserved_from_generic_html(self) -> None:
-        resolution = default_link_resolver_registry().resolve(
-            "https://www.pornhub.com/playlist/123",
-            request=ResolveRequest(host_resolver=lambda _host: ["93.184.216.34"]),
-        )
+    def test_regional_exact_urls_use_one_provider_identity_and_keep_source(self) -> None:
+        for host in ("pornhub.com", "www.pornhub.com", "m.pornhub.com", "cn.pornhub.com", "jp.pornhub.com", "de.pornhub.com", "pt-br.pornhub.com"):
+            with self.subTest(host=host):
+                original = f"https://{host}/view_video.php?viewkey=ph123abc"
+                with patch("mediagent.platforms.pornhub.client.probe_exact_video", return_value={"viewkey": "ph123abc"}) as probe:
+                    resolution = default_link_resolver_registry().resolve(
+                        original, ResolveRequest(host_resolver=lambda host: ["93.184.216.34"]),
+                    )
+                self.assertEqual(resolution["resolver"], "pornhub_exact_video")
+                self.assertEqual(resolution["original_url"], original)
+                self.assertEqual(resolution["remote_id"], "ph123abc")
+                self.assertEqual(probe.call_args.args[0], "https://www.pornhub.com/view_video.php?viewkey=ph123abc")
+                self.assertEqual(resolution["media_candidates"][0]["content_identity"], "video:ph123abc")
 
-        self.assertEqual(resolution["status"], "skipped")
-        self.assertEqual(resolution["resolver"], "reserved_platform_page")
-        self.assertEqual(resolution["skip_reason"], "pornhub_url_unsupported")
+    def test_other_pornhub_pages_are_reserved_from_generic_html(self) -> None:
+        for host in ("www", "jp", "cn", "de", "pt-br"):
+            for path in ("/playlist/123", "/view_video.php?viewkey=", "/"):
+                with self.subTest(host=host, path=path):
+                    resolution = default_link_resolver_registry().resolve(
+                        f"https://{host}.pornhub.com{path}",
+                        request=ResolveRequest(host_resolver=lambda _host: ["93.184.216.34"]),
+                    )
+                    self.assertEqual(resolution["status"], "skipped")
+                    self.assertEqual(resolution["resolver"], "reserved_platform_page")
+                    self.assertEqual(resolution["skip_reason"], "pornhub_url_unsupported")
 
     def test_explicit_retryability_controls_link_queue_classification(self) -> None:
         permanent = {

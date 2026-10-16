@@ -5,11 +5,14 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import mimetypes
+import threading
+import time
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Mapping
 
-from mediagent.core import assets, db, library_content
+from mediagent.core import assets, db, library_content, link_delivery_jobs
 from mediagent.core.auth import CredentialRef, resolve_credential
 from mediagent.core.filesystem import PathSafetyError, ensure_inside, normalize_path, resolve_placeholders
 from mediagent.core.links import (
@@ -88,6 +91,8 @@ def definitions() -> list[ToolDefinition]:
                         "overwrite": {"type": "boolean"},
                         "retry_failed": {"type": "boolean"},
                         "retry_auth_skipped": {"type": "boolean"},
+                        "link_batch_size": {"type": "integer", "minimum": 0, "maximum": 100},
+                        "link_time_budget_seconds": {"type": "number", "minimum": 1, "maximum": 3600},
                         "repair_missing_files": {"type": "boolean"},
                         "attempts": {"type": "integer"},
                         "timeout_seconds": {"type": "number"},
@@ -133,6 +138,8 @@ def definitions() -> list[ToolDefinition]:
                         "max_message_link_depth": {"type": "integer"},
                         "overwrite": {"type": "boolean"},
                         "retry_auth_skipped": {"type": "boolean"},
+                        "link_batch_size": {"type": "integer", "minimum": 0, "maximum": 100},
+                        "link_time_budget_seconds": {"type": "number", "minimum": 1, "maximum": 3600},
                         "repair_missing_files": {"type": "boolean"},
                         "attempts": {"type": "integer"},
                         "timeout_seconds": {"type": "number"},
@@ -818,6 +825,13 @@ async def inbox_sync(context: ToolContext, input_data: dict[str, Any]) -> ToolRe
     """Synchronize every supported inbox intake kind from one collected message set."""
 
     db_path = _db_path(context, input_data)
+    batch = int(input_data.get("link_batch_size", 20))
+    budget = float(input_data.get("link_time_budget_seconds", 60))
+    if not 0 <= batch <= 100 or not 1 <= budget <= 3600:
+        return ToolResult.failure(
+            "invalid_link_budget", "Link batch must be 0..100 and time budget must be 1..3600 seconds.",
+            category=ErrorCategory.VALIDATION,
+        )
     if not db_path:
         return ToolResult.failure(
             "missing_db_path",
@@ -843,6 +857,12 @@ async def inbox_sync(context: ToolContext, input_data: dict[str, Any]) -> ToolRe
 
     telegram_items = collect_result.data.get("items", [])
     message_link_records = collect_result.data.get("telegram_message_links", [])
+    # Durable handoff precedes both the intake checkpoint and remote delivery.
+    # Replaying a root scan only merges provenance; it never resets retry limits.
+    if not context.dry_run:
+        for link in collect_result.data.get("links", []):
+            link_delivery_jobs.enqueue(db_path, link_id=int(link["id"]))
+            link_delivery_jobs.refresh_provenance(db_path, link_id=int(link["id"]))
     direct_input = {
         **input_data,
         "db_path": str(db_path),
@@ -876,27 +896,36 @@ async def inbox_sync(context: ToolContext, input_data: dict[str, Any]) -> ToolRe
         "store_cursor": False,
     }
     link_input.pop("limit", None)
-    link_result = await inbox_sync_links(
-        context,
-        link_input,
-        precollected_result=external_collect,
-        include_asset_ids=True,
-    )
-
     collect_summary = collect_result.data.get("summary", {})
     pending_message_links = int(collect_summary.get("message_link_depth_limit_reached", 0) or 0)
     incomplete_album_groups = int(collect_summary.get("incomplete_album_groups", 0) or 0)
     legacy_cursor_fallbacks = int(collect_summary.get("legacy_cursor_fallbacks", 0) or 0)
-    retryable_links_unresolved = int(
-        link_result.data.get("summary", {}).get("retryable_links_unresolved", 0) or 0
+    intake_complete = bool(
+        direct_result.is_success and not pending_message_links and not incomplete_album_groups
     )
-    run_status = "success" if direct_result.is_success and link_result.is_success else "partial"
-    if not direct_result.data and not link_result.data:
-        run_status = "failed"
-    if run_status == "success" and (
-        pending_message_links or incomplete_album_groups or retryable_links_unresolved
-    ):
-        run_status = "partial"
+    run_status = "success" if intake_complete else "partial"
+    cursor_decision = _telegram_inbox_cursor_decision(
+        input_data, run_status=run_status, dry_run=context.dry_run,
+    )
+    # Once all intake branches have completed, persisted external work can be
+    # resumed without revisiting Telegram, including after a process is killed.
+    stored_cursors = (
+        _store_telegram_inbox_cursors(
+            db_path, source_summaries=collect_result.data.get("source_summaries", []),
+        ) if cursor_decision["should_store"] else []
+    )
+    cursor_reason = (
+        "stored" if stored_cursors else "no_cursor_value"
+    ) if cursor_decision["should_store"] else cursor_decision["reason"]
+    if context.dry_run:
+        link_result = await inbox_sync_links(
+            context, link_input, precollected_result=external_collect, include_asset_ids=True,
+        )
+        backlog = {}
+    else:
+        link_result = await _deliver_inbox_links(context, link_input, db_path=db_path)
+        backlog = link_delivery_jobs.summary(db_path)
+    retryable_links_unresolved = sum(int(backlog.get(key, 0)) for key in ("pending", "running", "deferred"))
     counters = _unified_inbox_counters(
         telegram_items,
         direct_result.data.get("items", []),
@@ -915,28 +944,14 @@ async def inbox_sync(context: ToolContext, input_data: dict[str, Any]) -> ToolRe
         )
     if retryable_links_unresolved:
         warnings.append(
-            "Telegram inbox cursors were not advanced because one or more external links remain retryable."
+            "External links remain in the durable delivery queue; a later inbox sync will retry due work."
         )
     if legacy_cursor_fallbacks:
         warnings.append(
             "Unified inbox intake continued from an existing link cursor; use a full sync to backfill older direct and forwarded media."
         )
-    cursor_decision = _telegram_inbox_cursor_decision(
-        input_data,
-        run_status=run_status,
-        dry_run=context.dry_run,
-    )
-    stored_cursors: list[dict[str, Any]] = []
-    if cursor_decision["should_store"]:
-        stored_cursors = _store_telegram_inbox_cursors(
-            db_path,
-            source_summaries=collect_result.data.get("source_summaries", []),
-        )
-        cursor_reason = "stored" if stored_cursors else "no_cursor_value"
-    else:
-        cursor_reason = cursor_decision["reason"]
-        if cursor_decision["warning"]:
-            warnings.append(cursor_decision["warning"])
+    if cursor_decision["warning"]:
+        warnings.append(cursor_decision["warning"])
 
     asset_ids = list(
         dict.fromkeys(
@@ -957,6 +972,12 @@ async def inbox_sync(context: ToolContext, input_data: dict[str, Any]) -> ToolRe
         "cursors": stored_cursors,
         "direct_status": direct_result.status.value,
         "link_status": link_result.status.value,
+        "intake_complete": intake_complete,
+        "link_backlog": backlog,
+        "links_pending": retryable_links_unresolved,
+        "links_blocked": int(backlog.get("blocked", 0)),
+        "links_failed": int(backlog.get("failed", 0)),
+        "links_succeeded": int(backlog.get("succeeded", 0)),
     }
     data = {
         "platform": "telegram",
@@ -989,12 +1010,126 @@ async def inbox_sync(context: ToolContext, input_data: dict[str, Any]) -> ToolRe
     )
 
 
+async def _deliver_inbox_links(
+    context: ToolContext, input_data: dict[str, Any], *, db_path: Path,
+    link_ids: list[int] | None = None,
+) -> ToolResult:
+    """Consume bounded, leased delivery work even when Telegram has no new messages."""
+    aggregate: dict[str, Any] = {
+        "summary": {}, "items": [], "links": [], "packages": [], "asset_ids": [],
+    }
+    warnings: list[str] = []
+    artifacts: list[dict[str, Any]] = []
+    deadline = time.monotonic() + float(input_data.get("link_time_budget_seconds", 60))
+    if input_data.get("retry_auth_skipped"):
+        aggregate["summary"]["auth_links_retried"] = link_delivery_jobs.requeue(db_path, blocked_auth=True)
+    for _ in range(int(input_data.get("link_batch_size", 20))):
+        if time.monotonic() >= deadline:
+            break
+        jobs = link_delivery_jobs.claim_ready(db_path, lease_owner=context.run_id, limit=1, link_ids=link_ids)
+        if not jobs:
+            break
+        job = jobs[0]
+        link = db.get_link(db_path, link_id=int(job["link_id"]))
+        if link is None:
+            raise ValueError("Persisted external link is missing.")
+        collected = ToolResult.success({
+            "links": [{**link, "_delivery_job": job}], "telegram_message_links": [], "source_summaries": [],
+            "summary": {"links_found": 1},
+        })
+        # The normal materializer preserves Asset identity, lifecycle suppression,
+        # download validation and CBZ recovery. No runtime credentials enter jobs.
+        try:
+            with _keep_delivery_lease(db_path, job, context.run_id):
+                result = await inbox_sync_links(
+                    context, {**input_data, "store_cursor": False, "retry_auth_skipped": False},
+                    precollected_result=collected, include_asset_ids=True, record_run=False,
+                )
+        except Exception:
+            # An interrupted worker keeps its lease until expiry; an ordinary
+            # delivery exception gets a bounded retry without exposing its text.
+            result = ToolResult.failure(
+                "link_delivery_failed", "External link delivery failed; work remains queued.",
+                category=ErrorCategory.RUNTIME,
+            )
+        outcome, code = _link_delivery_outcome(result)
+        retry_after = max((
+            float((record.get("resolution", {}).get("details") or {}).get("retry_after_seconds") or 0)
+            for record in result.data.get("links", [])
+        ), default=0)
+        finished = link_delivery_jobs.finish(
+            db_path, job_id=job["id"], lease_owner=context.run_id,
+            lease_token=job["lease_token"], outcome=outcome, error_code=code, retry_after_seconds=retry_after,
+        )
+        if finished is None:
+            warnings.append("External link delivery lost its lease; its current owner will reconcile it.")
+        for key in ("items", "links", "packages", "asset_ids"):
+            aggregate[key].extend(result.data.get(key, []))
+        for key, value in result.data.get("summary", {}).items():
+            if isinstance(value, int) and not isinstance(value, bool):
+                aggregate["summary"][key] = aggregate["summary"].get(key, 0) + value
+        warnings.extend(result.warnings)
+        artifacts.extend(result.artifacts)
+    aggregate["asset_ids"] = list(dict.fromkeys(aggregate["asset_ids"]))
+    return ToolResult.success(aggregate, warnings=warnings, artifacts=_unique_artifacts(artifacts))
+
+
+@contextmanager
+def _keep_delivery_lease(db_path: Path, job: dict[str, Any], owner: str):
+    # Synchronous provider calls can block the event loop, so the heartbeat has
+    # its own short-lived connection. Killing the process stops renewals.
+    stop = threading.Event()
+
+    def renew() -> None:
+        while not stop.wait(60):
+            try:
+                if not link_delivery_jobs.renew(db_path, job["id"], owner, job["lease_token"]):
+                    return
+            except Exception:
+                return  # finish() will reject an expired lease; work stays durable.
+
+    heartbeat = threading.Thread(target=renew, name="mediagent-link-lease", daemon=True)
+    heartbeat.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        heartbeat.join(timeout=1)
+
+
+def _link_delivery_outcome(result: ToolResult) -> tuple[str, str | None]:
+    resolutions = [record.get("resolution", {}) for record in result.data.get("links", [])]
+    for resolution in resolutions:
+        if resolution.get("status") == "resolved":
+            continue
+        reason = resolution.get("skip_reason")
+        details = resolution.get("details") or {}
+        code = details.get("error_code") or reason or "link_unresolved"
+        if reason in {"requires_auth", "login_wall"} or details.get("user_action_required"):
+            return "blocked", code
+        retryable = db.link_resolution_retryable(
+            status=str(resolution.get("status") or "skipped"), resolution=resolution, skip_reason=reason,
+        )
+        return ("retry" if retryable else "failed"), code
+    if not result.is_success:
+        error = result.error
+        if error and error.category == ErrorCategory.AUTH:
+            return "blocked", error.code
+        return "retry", error.code if error else "link_delivery_failed"
+    if not resolutions:
+        return "retry", "link_resolution_missing"
+    if result.data.get("summary", {}).get("skipped_links"):
+        return "failed", "link_conversion_failed"
+    return "succeeded", None
+
+
 async def inbox_sync_links(
     context: ToolContext,
     input_data: dict[str, Any],
     *,
     precollected_result: ToolResult | None = None,
     include_asset_ids: bool = False,
+    record_run: bool = True,
 ) -> ToolResult:
     db_path = _db_path(context, input_data)
     if not db_path:
@@ -1013,7 +1148,48 @@ async def inbox_sync_links(
     if not collect_result.is_success:
         return collect_result
 
+    if precollected_result is None and not context.dry_run:
+        # Legacy link-only intake shares the same durable consumer. It must not
+        # become a second route around due times, attempt caps or live leases.
+        for link in collect_result.data.get("links", []):
+            link_delivery_jobs.enqueue(db_path, link_id=int(link["id"]))
+            link_delivery_jobs.refresh_provenance(db_path, link_id=int(link["id"]))
+        delivered = await _deliver_inbox_links(context, input_data, db_path=db_path)
+        bridge = await inbox_sync_links(
+            context, {**input_data, "retry_auth_skipped": False, "store_cursor": False},
+            precollected_result=ToolResult.success({**collect_result.data, "links": []}),
+            include_asset_ids=include_asset_ids, record_run=False,
+        )
+        bridge.data.setdefault("summary", {})
+        for key in ("items", "links", "packages", "asset_ids"):
+            bridge.data[key] = [*bridge.data.get(key, []), *delivered.data.get(key, [])]
+        for key, value in delivered.data.get("summary", {}).items():
+            if isinstance(value, int) and not isinstance(value, bool):
+                bridge.data["summary"][key] = bridge.data["summary"].get(key, 0) + value
+        bridge.data["summary"]["link_backlog"] = link_delivery_jobs.summary(db_path)
+        bridge.warnings.extend(delivered.warnings)
+        bridge.artifacts = _unique_artifacts([*bridge.artifacts, *delivered.artifacts])
+        delivery_failed = any(delivered.data.get("summary", {}).get(key) for key in ("failed", "partial", "comic_links_failed"))
+        status = "success" if bridge.is_success and not delivery_failed else "partial"
+        decision = _telegram_link_cursor_decision(input_data, run_status=status)
+        cursors = _store_telegram_link_cursors(
+            db_path, input_data=input_data, source_summaries=collect_result.data.get("source_summaries", []),
+        ) if decision["should_store"] else []
+        bridge.data["summary"].update({
+            "cursor_stored": bool(cursors), "cursors": cursors,
+            "cursor_reason": ("stored" if cursors else "no_cursor_value") if decision["should_store"] else decision["reason"],
+        })
+        _record_telegram_link_sync_run(db_path, run_status=status, summary=bridge.data["summary"], error=None)
+        if bridge.is_success and delivery_failed:
+            return ToolResult.failure(
+                "telegram_inbox_sync_links_partial" if delivered.data["summary"].get("downloaded") else "telegram_inbox_sync_links_failed",
+                "Telegram link-only delivery has incomplete downloads; inspect the durable backlog.",
+                data=bridge.data, warnings=bridge.warnings, category=ErrorCategory.NETWORK,
+            )
+        return bridge
+
     links = _limited_items(collect_result.data.get("links", []), input_data.get("limit"))
+    links, managed_links = link_tools._delivery_owned_links(context, db_path, links)
     if input_data.get("retry_auth_skipped") and db_path.exists():
         if context.dry_run:
             auth_links = db.list_auth_skipped_links(
@@ -1086,6 +1262,10 @@ async def inbox_sync_links(
         "cbz_failed_or_incomplete": 0,
     }
     warnings: list[str] = []
+    if managed_links:
+        summary["delivery_managed"] = len(managed_links)
+        summary["skipped_links"] += len(managed_links)
+        warnings.append("Some links belong to the durable Telegram queue; inspect mediagent link backlog or explicitly use mediagent link retry ID.")
     comic_route = await link_tools.sync_dedicated_comic_links(
         context,
         input_data,
@@ -1121,6 +1301,8 @@ async def inbox_sync_links(
             summary["skipped_links"] += 1
             continue
         resolved_items.append(item)
+        if link.get("_delivery_job"):
+            item["_delivery_link_id"] = int(link["id"])
         if not context.dry_run and link.get("id") is not None:
             db.update_link_resolution(
                 db_path,
@@ -1207,6 +1389,10 @@ async def inbox_sync_links(
     db.initialize_database(db_path)
     for item in resolved_items:
         db.upsert_media_item(db_path, item)
+        if item.get("_delivery_link_id") is not None:
+            link_delivery_jobs.bind_media(
+                db_path, link_id=item["_delivery_link_id"], identities=[(item["platform"], item["remote_id"])],
+            )
     statuses = db.get_media_statuses(db_path, resolved_items)
     items_to_sync, candidate_summary = _sync_candidates(
         resolved_items,
@@ -1265,7 +1451,8 @@ async def inbox_sync_links(
         summary["cursor_reason"] = cursor_decision["reason"]
         if cursor_decision["warning"]:
             warnings.append(cursor_decision["warning"])
-    _record_telegram_link_sync_run(db_path, run_status=run_status, summary=summary, error=None)
+    if record_run:
+        _record_telegram_link_sync_run(db_path, run_status=run_status, summary=summary, error=None)
     data = {
         "platform": "telegram",
         "db_path": str(db_path),

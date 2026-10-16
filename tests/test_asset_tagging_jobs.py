@@ -24,7 +24,7 @@ class AssetTaggingJobTests(unittest.TestCase):
                 result = db.initialize_database(db_path)
 
             self.assertEqual(result["previous_schema_version"], "13")
-            self.assertEqual(result["schema_version"], "14")
+            self.assertEqual(result["schema_version"], "15")
             self.assertTrue(result["migrated"])
             self.assertFalse(result["asset_reconciled"])
             backfill.assert_not_called()

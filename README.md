@@ -42,6 +42,10 @@ uv run mediagent add 'https://example.com/media-or-post'
 uv run mediagent add /path/to/media-file
 uv run mediagent add /path/to/media-directory
 uv run mediagent sync SOURCE
+uv run mediagent sync telegram --link-batch-size 5 --link-time-budget 60 --summary-json
+uv run mediagent link backlog --json
+uv run mediagent link retry 88
+uv run mediagent link retry 88 --retry-auth
 uv run mediagent status
 uv run mediagent status SOURCE
 uv run mediagent remove ASSET_ID
