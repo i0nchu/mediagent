@@ -3,7 +3,7 @@ import os
 import subprocess
 import sys
 import unittest
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import chdir, redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -18,6 +18,14 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 class CliTests(unittest.TestCase):
+    ENV_COMMANDS = (
+        ("status", "--json"),
+        ("library", "deduplicate", "--dry-run", "--json"),
+        ("tools", "run", "core.env.check", "--json"),
+        ("link", "sync", "https://example.com/media", "--dry-run", "--json"),
+        ("experimental", "telegram", "sync-links", "--dry-run", "--json"),
+    )
+
     def test_human_output_removes_terminal_control_characters(self) -> None:
         self.assertEqual(
             cli._one_line("safe\x1b[2J\u202eINJECT\nnext"),
@@ -327,6 +335,127 @@ class CliTests(unittest.TestCase):
         payload = json.loads(completed.stdout)
         self.assertEqual(payload["status"], "success")
         self.assertEqual(payload["tool"], "core.env.check")
+
+    def test_command_families_share_env_file_selection_and_precedence(self) -> None:
+        for selection in ("default", "absolute", "relative", "disabled", "missing", "environment"):
+            for command in self.ENV_COMMANDS:
+                with self.subTest(selection=selection, command=command), TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    env_file = root / ".env"
+                    env_file.write_text(
+                        "MEDIAGENT_ENV_REGRESSION=from-file\n"
+                        "MEDIAGENT_ENV_DERIVED=${MEDIAGENT_ENV_REGRESSION}/library\n",
+                        encoding="utf-8",
+                    )
+                    env = {}
+                    expected = "from-file"
+                    if selection in {"absolute", "relative"}:
+                        selected = root / "config" / "selected.env"
+                        selected.parent.mkdir()
+                        env_file.rename(selected)
+                        env_file.write_text("INVALID DEFAULT ENV\n", encoding="utf-8")
+                        env["MEDIAGENT_ENV_FILE"] = (
+                            str(selected) if selection == "absolute" else "config/selected.env"
+                        )
+                    elif selection == "disabled":
+                        env["MEDIAGENT_ENV_FILE"] = ""
+                        expected = None
+                    elif selection == "missing":
+                        env_file.unlink()
+                        expected = None
+                    elif selection == "environment":
+                        env["MEDIAGENT_ENV_REGRESSION"] = "from-environment"
+                        expected = "from-environment"
+
+                    def capture_env(**kwargs):
+                        self.assertEqual(os.environ.get("MEDIAGENT_ENV_REGRESSION"), expected)
+                        self.assertEqual(
+                            os.environ.get("MEDIAGENT_ENV_DERIVED"),
+                            f"{expected}/library" if expected else None,
+                        )
+                        return 0
+
+                    with chdir(root), patch.dict(os.environ, env, clear=True), patch(
+                        "mediagent.cli.run_tool_command", side_effect=capture_env
+                    ) as run_tool:
+                        self.assertEqual(cli.run(list(command)), 0)
+                        run_tool.assert_called_once()
+
+    def test_invalid_env_stops_each_command_family_before_tool_execution(self) -> None:
+        with TemporaryDirectory() as directory:
+            env_file = Path(directory) / ".env"
+            env_file.write_text("INVALID ENV LINE\n", encoding="utf-8")
+            for command in self.ENV_COMMANDS:
+                with self.subTest(command=command), chdir(directory), patch.dict(
+                    os.environ, {}, clear=True
+                ), patch("mediagent.cli.run_tool_command") as run_tool:
+                    output = StringIO()
+                    with redirect_stdout(output), redirect_stderr(StringIO()):
+                        self.assertEqual(cli.run(list(command)), 2)
+                    run_tool.assert_not_called()
+                    payload = json.loads(output.getvalue())
+                    self.assertEqual(payload["tool"], command[0])
+                    self.assertEqual(payload["status"], "failure")
+                    self.assertEqual(payload["error"]["code"], "invalid_env_file")
+                    self.assertTrue(payload["run_id"])
+
+    def test_help_and_argument_errors_do_not_read_invalid_env(self) -> None:
+        help_commands = (
+            ("--help",),
+            ("status", "--help"),
+            ("library", "--help"),
+            ("library", "deduplicate", "--help"),
+            ("tools", "--help"),
+            ("tools", "run", "--help"),
+            ("experimental", "telegram", "sync-links", "--help"),
+        )
+        with TemporaryDirectory() as directory:
+            (Path(directory) / ".env").write_text("INVALID ENV LINE\n", encoding="utf-8")
+            for command in help_commands:
+                with self.subTest(command=command), chdir(directory), patch.dict(
+                    os.environ, {}, clear=True
+                ), redirect_stdout(StringIO()) as output:
+                    with self.assertRaises(SystemExit) as raised:
+                        cli.run(list(command))
+                    self.assertEqual(raised.exception.code, 0)
+                    self.assertIn("usage:", output.getvalue())
+            with chdir(directory), patch.dict(os.environ, {}, clear=True), redirect_stderr(StringIO()) as error:
+                with self.assertRaises(SystemExit) as raised:
+                    cli.run(["tools", "run"])
+                self.assertEqual(raised.exception.code, 2)
+                self.assertIn("required", error.getvalue())
+                self.assertNotIn("invalid_env_file", error.getvalue())
+
+    def test_library_tools_and_experimental_use_cwd_env_in_real_cli(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            library = root / "library"
+            library.mkdir()
+            database = root / "mediagent.sqlite3"
+            (root / ".env").write_text(
+                f"MEDIAGENT_LIBRARY_DIR={library}\n"
+                f"MEDIAGENT_DB_PATH={database}\n"
+                "MEDIAGENT_ENV_REGRESSION=from-file\n"
+                "MEDIAGENT_TELEGRAM_INBOX_CHAT=@fixture_inbox\n",
+                encoding="utf-8",
+            )
+            with patch.dict(os.environ, {}, clear=True):
+                tools = self.run_cli(
+                    "tools", "run", "core.env.check", "--json", "--input", "-",
+                    input_text=json.dumps({"required": ["MEDIAGENT_ENV_REGRESSION"]}),
+                    cwd=root,
+                )
+                trash = self.run_cli("library", "trash", "status", "--json", cwd=root)
+                experimental = self.run_cli(
+                    "experimental", "telegram", "sync-links", "--dry-run", "--json", cwd=root
+                )
+            self.assertEqual(tools.returncode, 0, tools.stderr)
+            self.assertEqual(json.loads(tools.stdout)["data"]["present"]["MEDIAGENT_ENV_REGRESSION"], "from-file")
+            self.assertEqual(trash.returncode, 0, trash.stderr)
+            self.assertEqual(json.loads(trash.stdout)["data"]["library_root"], str(library))
+            self.assertEqual(experimental.returncode, 0, experimental.stderr)
+            self.assertEqual(json.loads(experimental.stdout)["tool"], "telegram.inbox.sync_links")
+            self.assertFalse(database.exists())
 
     def test_tools_inspect_unknown_exits_with_validation_error(self) -> None:
         completed = self.run_cli("tools", "inspect", "missing.tool", "--json")
@@ -825,6 +954,7 @@ class CliTests(unittest.TestCase):
         *args: str,
         input_text: str | None = None,
         env_updates: dict[str, str] | None = None,
+        cwd: Path | None = None,
     ) -> subprocess.CompletedProcess[str]:
         env = os.environ.copy()
         env["PYTHONPATH"] = str(PROJECT_ROOT / "src")
@@ -834,7 +964,7 @@ class CliTests(unittest.TestCase):
             input=input_text,
             capture_output=True,
             text=True,
-            cwd=PROJECT_ROOT,
+            cwd=cwd or PROJECT_ROOT,
             env=env,
             check=False,
         )

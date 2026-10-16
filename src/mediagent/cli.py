@@ -35,19 +35,6 @@ VALIDATION_ERROR_CATEGORIES = {
     ErrorCategory.DATABASE.value,
 }
 
-SIMPLE_COMMANDS = {
-    "init",
-    "add",
-    "sync",
-    "status",
-    "agent",
-    "remove",
-    "restore",
-    "search",
-    "tag",
-    "trash",
-    "untag",
-}
 SOURCE_SYNC_TOOLS = {
     "pixiv": "pixiv.bookmarks.sync",
     "telegram": "telegram.inbox.sync",
@@ -75,22 +62,25 @@ def run(argv: list[str] | None = None) -> int:
         argv = sys.argv[1:]
     if argv and argv[0] == "experimental":
         return handle_experimental(argv[1:])
-    if argv and argv[0] in SIMPLE_COMMANDS:
-        try:
-            _load_simple_command_env()
-        except EnvFileError as exc:
-            return emit_tool_failure(
-                tool=argv[0],
-                code="invalid_env_file",
-                message=str(exc),
-                json_output="--json" in argv or "--summary-json" in argv,
-                compact_human=True,
-            )
     parser = build_parser()
     args = parser.parse_args(argv)
     if not hasattr(args, "handler"):
         parser.print_help()
         return EXIT_VALIDATION_ERROR
+    return _run_configured_command(args, argv)
+
+
+def _run_configured_command(args: argparse.Namespace, argv: list[str]) -> int:
+    try:
+        _load_command_env()
+    except EnvFileError as exc:
+        return emit_tool_failure(
+            tool=argv[0],
+            code="invalid_env_file",
+            message=str(exc),
+            json_output="--json" in argv or "--summary-json" in argv,
+            compact_human=True,
+        )
     return args.handler(args)
 
 
@@ -996,7 +986,7 @@ def emit_tool_failure(
     return tool_result_exit_code(result)
 
 
-def _load_simple_command_env() -> None:
+def _load_command_env() -> None:
     configured = os.environ.get("MEDIAGENT_ENV_FILE")
     if configured == "":
         return
@@ -1022,8 +1012,9 @@ def handle_experimental(argv: list[str]) -> int:
         )
         parser.add_argument("--json", action="store_true", help="Emit machine-readable JSON.")
         parser.add_argument("--dry-run", action="store_true", help="Run without tool side effects.")
+        parser.set_defaults(handler=handle_experimental_telegram_sync_links, summary_json=False)
         args = parser.parse_args(argv[2:])
-        return handle_experimental_telegram_sync_links(args)
+        return _run_configured_command(args, ["experimental", *argv])
     return print_error(
         {
             "code": "unknown_experimental_command",
