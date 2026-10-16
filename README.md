@@ -55,9 +55,12 @@ uv run mediagent trash purge --dry-run
 uv run mediagent trash purge
 ```
 
-Commands read `.env` from the current directory; existing environment variables
-take precedence. Use `--dry-run` to preview supported operations and `--json`
-for complete machine-readable output.
+All CLI subcommands, including `library`, `tools`, and `experimental`, read
+`.env` from the current directory; existing environment variables take
+precedence. Set `MEDIAGENT_ENV_FILE` to use another file (relative paths are
+resolved from the current directory), or set it to an empty string to disable
+file loading. Use `--dry-run` to preview supported operations and `--json` for
+complete machine-readable output.
 
 Local files are copied into the managed library. Directories are scanned
 recursively without following symbolic links; original files are left unchanged.
