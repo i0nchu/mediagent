@@ -15,7 +15,5 @@
 
 ## Bugs
 
-- [x] Telegram Inbox durable external-link delivery, regional Pornhub routing, bounded retries, and intake cursor/exit-code isolation (#3).
-- [ ] JMComic Favorites incrementally resolve only new, failed, repairable or audited chapters with durable progress (#4).
 - [x] Consistent `.env` loading across CLI subcommands, including `library`, `tools`, `link`, and `experimental`, preserving `MEDIAGENT_ENV_FILE` and environment precedence.
 - [ ] Close SQLite connections explicitly after transactions; running the offline suite on Python 3.13 emits `ResourceWarning: unclosed database` from connections returned by `core.db.connect`.
