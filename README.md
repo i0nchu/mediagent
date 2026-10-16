@@ -42,6 +42,10 @@ uv run mediagent add 'https://example.com/media-or-post'
 uv run mediagent add /path/to/media-file
 uv run mediagent add /path/to/media-directory
 uv run mediagent sync SOURCE
+uv run mediagent sync telegram --link-batch-size 5 --link-time-budget 60 --summary-json
+uv run mediagent link backlog --json
+uv run mediagent link retry 88
+uv run mediagent link retry 88 --retry-auth
 uv run mediagent status
 uv run mediagent status SOURCE
 uv run mediagent remove ASSET_ID
@@ -61,6 +65,27 @@ precedence. Set `MEDIAGENT_ENV_FILE` to use another file (relative paths are
 resolved from the current directory), or set it to an empty string to disable
 file loading. Use `--dry-run` to preview supported operations and `--json` for
 complete machine-readable output.
+
+Telegram inbox sync exits successfully once native/forwarded media and nested
+Telegram messages are complete and external links are durably queued. Its summary
+reports `intake_complete`, `links_pending`, `links_blocked`, `links_failed` and
+`link_backlog`; link failures do not hold the intake cursor. A later sync processes
+due backlog even with no new messages, using bounded retries and renewable leases.
+`link retry ID` explicitly grants failed/deferred work three more attempts;
+`--retry-auth` instead selects authentication-blocked work after session repair.
+Use `--link-batch-size 0` for intake only. The time budget stops starting new
+links; it does not interrupt an individual download. Keep the shared process lock
+when scheduling multiple sources. Native intake, incomplete albums, unsafe
+handoff and database errors still fail the command.
+
+Pornhub exact links accept the root/www/mobile host and single regional/locale
+subdomains such as cn, jp and pt-br, retaining one canonical video identity.
+Schema 15 adds durable delivery jobs and media bindings. `init` migrates old link
+states without moving or deleting media; regional links previously misrouted to
+generic HTML get a bounded recovery budget, while unsupported Stories stop retrying.
+Stop all writers and back up SQLite before upgrade. Use a copied database for
+validation and restore a matching database/code backup for rollback; do not run
+an older binary against a migrated database.
 
 Local files are copied into the managed library. Directories are scanned
 recursively without following symbolic links; original files are left unchanged.

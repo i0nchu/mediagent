@@ -479,6 +479,13 @@ async def comic_link_sync(context: ToolContext, input_data: dict[str, Any]) -> T
             items.extend(resolved)
             targets.append({"provider": "jmcomic", "target": jm_link.provider_work_id, "policy": "exact"})
         result = await _sync_items(context, input_data, items)
+        if input_data.get("_delivery_link_id") is not None and not context.dry_run:
+            from mediagent.core import link_delivery_jobs
+
+            link_delivery_jobs.bind_media(
+                _required_db_path(context, input_data), link_id=int(input_data["_delivery_link_id"]),
+                identities=[(item["platform"], item["remote_id"]) for item in items],
+            )
         result.data["targets"] = targets
         result.data["policy"] = "exact"
         if jm_client is not None and not context.dry_run:
