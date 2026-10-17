@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 
-SCHEMA_VERSION = "15"
+SCHEMA_VERSION = "16"
 SQLITE_BUSY_TIMEOUT_MILLISECONDS = 30_000
 
 
@@ -30,11 +30,12 @@ def initialize_database(db_path: Path) -> dict[str, Any]:
         _ensure_media_files_schema(connection)
         _ensure_link_queue_schema(connection)
         _ensure_library_content_schema(connection)
-        from mediagent.core import asset_tagging_jobs, assets, link_delivery_jobs
+        from mediagent.core import asset_tagging_jobs, assets, comic_sync_state, link_delivery_jobs
 
         assets.ensure_schema(connection)
         asset_tagging_jobs.ensure_schema(connection)
         link_delivery_jobs.ensure_schema(connection)
+        comic_sync_state.ensure_schema(connection)
         asset_reconciliation_required = (
             not assets_existed
             or _legacy_asset_refresh_required(previous_version)

@@ -4,10 +4,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
+import time
+import uuid
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from mediagent.core import assets, db
+from mediagent.core import assets, comic_sync_state, db
 from mediagent.core.filesystem import PathSafetyError, ensure_inside, normalize_path, resolve_placeholders
 from mediagent.core.operational_logging import ProgressLogger
 from mediagent.core.storage import default_library_root
@@ -20,7 +24,8 @@ from mediagent.core.tooling import (
     ToolSpec,
 )
 from mediagent.platforms.jmcomic import auth as jm_auth
-from mediagent.platforms.jmcomic.client import JMComicApiTransport, JMComicClient, JMComicClientError
+from mediagent.platforms.jmcomic.client import JMComicApiTransport, JMComicClient, JMComicClientError, JMComicResolution
+from mediagent.platforms.jmcomic import incremental as jm_incremental
 from mediagent.platforms.jmcomic.favorite_folders import (
     ALL_FOLDER_ALIASES,
     ALL_FOLDER_NAME,
@@ -242,6 +247,10 @@ def definitions() -> list[ToolDefinition]:
                         **common_sync_properties,
                         "session_file": {"type": "string"},
                         "folders": folder_selector_schema,
+                        "max_chapters": {"type": "integer", "minimum": 1, "default": 20},
+                        "time_budget_seconds": {"type": "number", "exclusiveMinimum": 0, "default": 300},
+                        "audit_chapters": {"type": "integer", "minimum": 0, "default": 2},
+                        "revalidate_all": {"type": "boolean", "default": False},
                     },
                 },
                 output_schema={"type": "object"},
@@ -894,16 +903,7 @@ async def jmcomic_favorites_sync(context: ToolContext, input_data: dict[str, Any
             },
         )
         selected = _limit(targets, input_data.get("download_limit"))
-        result = await _sync_favorite_targets(
-            context,
-            input_data,
-            selected,
-            lambda target: recovery.run(
-                lambda: client.resolve_exact(
-                    f"https://18comic.vip/album/{target['target_id']}/"
-                )
-            ).normalized_items(),
-        )
+        result = await _sync_jm_incremental_targets(context, input_data, selected, client, recovery)
         recovery.checkpoint()
         result.data.update(
             {
@@ -923,6 +923,267 @@ async def jmcomic_favorites_sync(context: ToolContext, input_data: dict[str, Any
         if recovery is not None:
             result.data.update(recovery.safe_metadata())
         return result
+
+
+async def _sync_jm_incremental_targets(
+    context: ToolContext,
+    input_data: dict[str, Any],
+    targets: list[dict[str, Any]],
+    client: JMComicClient,
+    recovery: "_JMAuthRecovery",
+) -> ToolResult:
+    """Observe complete albums, then resolve and commit bounded chapter work."""
+    database = _required_db_path(context, input_data)
+    library = _library_root(context, input_data)
+    max_chapters = int(input_data.get("max_chapters", 20))
+    budget = float(input_data.get("time_budget_seconds", 300))
+    audit_limit = int(input_data.get("audit_chapters", 2))
+    revalidate = bool(input_data.get("revalidate_all", False))
+    repair = bool(input_data.get("repair_missing_files", True))
+    retry = bool(input_data.get("retry_failed", True))
+    if max_chapters < 1 or not math.isfinite(budget) or budget <= 0 or audit_limit < 0:
+        return ToolResult.failure("invalid_sync_budget", "Chapter/time limits must be positive and audit_chapters nonnegative.", category=ErrorCategory.VALIDATION)
+    if revalidate and (not repair or not retry):
+        return ToolResult.failure("invalid_revalidation_policy", "Full revalidation requires repair and failed-chapter retries.", category=ErrorCategory.VALIDATION)
+    deadline = time.monotonic() + budget
+    options = {**input_data, "_deadline_monotonic": deadline, "_incremental_sync": True}
+    now = datetime.now(UTC)
+    account_key = _jm_account_collection_key(context, client)
+    # One batched media/file load for the collection. No per-album table scans.
+    if database.exists():
+        with db.connect(database) as connection:
+            identities = {("jmcomic", str(row["remote_id"])) for row in connection.execute("SELECT remote_id FROM media_items WHERE platform = 'jmcomic'")}
+        cached = {item["remote_id"]: item for item in _load_comic_items(database, identities)}
+    else:
+        cached = {}
+    summary: dict[str, int] = {
+        "targets_selected": len(targets), "targets_attempted": 0, "targets_processed": 0,
+        "targets_failed": 0, "albums_requested": 0, "chapters_requested": 0,
+        "scramble_requested": 0, "chapters_processed": 0, "chapters_healthy": 0,
+        "chapters_suppressed": 0, "chapters_pending": 0, "chapters_failed_deferred": 0,
+        "chapters_skipped_no_repair": 0, "chapters_audited": 0, "chapters_local_repair": 0,
+        "chapters_metadata_refresh": 0, "latest_hint_unchanged": 0, "filesystem_checks": 0,
+    }
+    results: list[dict[str, Any]] = []
+    packages: list[dict[str, Any]] = []
+    artifacts: list[dict[str, Any]] = []
+    failures: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    exhausted = False
+    owner = f"sync:{uuid.uuid4().hex}"
+    if revalidate and not context.dry_run:
+        comic_sync_state.request_revalidation(database, provider="jmcomic", account_key=account_key, album_ids=[str(target["target_id"]) for target in targets])
+    previous_states = {
+        str(target["target_id"]): comic_sync_state.read_album(database, provider="jmcomic", account_key=account_key, album_id=str(target["target_id"]))
+        for target in targets
+    }
+    resuming_full_pass = any(row and row.get("revalidation_active") for row in previous_states.values())
+    targets = sorted(targets, key=lambda target: (previous_states[str(target["target_id"])] or {}).get("last_work_at") or "")
+    for target in targets:
+        if time.monotonic() >= deadline:
+            exhausted = True
+            break
+        scope = {"provider": "jmcomic", "account_key": account_key, "album_id": str(target["target_id"])}
+        summary["targets_attempted"] += 1
+        try:
+            summary["albums_requested"] += 1
+            album = recovery.run(lambda: client.get_album(target["target_id"]))
+            manifest = jm_incremental.chapter_manifest(album)
+            fingerprints = {row["id"]: row["fingerprint"] for row in manifest}
+            previous = previous_states[str(target["target_id"])]
+            previous_chapters = {row["chapter_id"]: row for row in (previous or {}).get("chapters", [])}
+            prior_ids = set(previous_chapters)
+            latest_hint = (target.get("metadata") or {}).get("latest_photo_id")
+            summary["latest_hint_unchanged"] += int(previous is not None and previous.get("latest_photo_id") == latest_hint)
+            start_album_pass = revalidate and (not resuming_full_pass or previous is None or bool(previous.get("revalidation_active")))
+            if context.dry_run:
+                state = previous or {"generation": 0, "chapters": [], "last_audit_at": now.isoformat(), "audit_cursor": 0}
+                chapters = {row["chapter_id"]: dict(row) for row in state["chapters"]}
+                if start_album_pass and not state.get("revalidation_active"):
+                    for row in chapters.values():
+                        if row["status"] != "suppressed":
+                            row["status"] = "pending"
+                    state = {**state, "revalidation_active": True}
+            else:
+                state = comic_sync_state.save_manifest(database, **scope, latest_photo_id=latest_hint, episodes=manifest, revalidate_all=False)
+                chapters = {row["chapter_id"]: row for row in state["chapters"]}
+            identities = {item["remote_id"]: item for item in jmcomic_reconcile.identities_from_album(album)}
+            healths: dict[str, dict[str, Any]] = {}
+            adoption: dict[str, str] = {}
+            for episode in album.episodes:
+                chapter_id = episode.photo_id
+                old = cached.get(f"photo:{chapter_id}")
+                health = jm_incremental.local_health(old, library)
+                summary["filesystem_checks"] += health.get("filesystem_checks", 0)
+                healths[chapter_id] = health
+                chapter = chapters.get(chapter_id)
+                if chapter is None or not int(chapter.get("attempt_count", 0)) and chapter.get("status") == "pending":
+                    if health["suppressed"]:
+                        adoption[chapter_id] = "suppressed"
+                    elif health["complete"] and not state.get("revalidation_active"):
+                        # Only legacy/unattempted state is adopted. An established
+                        # changed-manifest pending chapter still needs resolution.
+                        if chapter_id not in prior_ids:
+                            adoption[chapter_id] = "succeeded"
+            if adoption and not context.dry_run:
+                comic_sync_state.adopt_chapters(database, **scope, states=adoption, generation=state["generation"])
+                state = comic_sync_state.read_album(database, **scope)
+                chapters = {row["chapter_id"]: row for row in state["chapters"]}
+            if context.dry_run:
+                for chapter_id, status in adoption.items():
+                    chapters[chapter_id] = {**chapters.get(chapter_id, {}), "status": status, "attempt_count": 0}
+            audit_at = datetime.fromisoformat(state["last_audit_at"]) if state.get("last_audit_at") else now
+            audit_due = now - audit_at >= timedelta(hours=24)
+            audit_ids: set[str] = set()
+            audit_cursor = int(state.get("audit_cursor") or 0)
+            if audit_due and audit_limit and not revalidate and album.episodes:
+                audit_ids = {album.episodes[(audit_cursor + offset) % len(album.episodes)].photo_id for offset in range(min(audit_limit, len(album.episodes)))}
+            album_failed = False
+            scramble_id: str | None = None
+            audited_positions: list[int] = []
+            ordered_episodes = sorted(enumerate(album.episodes), key=lambda pair: (
+                0 if f"photo:{pair[1].photo_id}" not in cached else
+                1 if (chapters.get(pair[1].photo_id) or {}).get("status") in {"pending", "paused", "failed", "running"} else
+                2 if not healths[pair[1].photo_id]["complete"] else
+                3 if pair[1].photo_id in audit_ids else 4,
+                pair[0],
+            ))
+            for ordinal, episode in ordered_episodes:
+                chapter_id = episode.photo_id
+                remote_id = f"photo:{chapter_id}"
+                old = cached.get(remote_id)
+                health = healths[chapter_id]
+                chapter = chapters.get(chapter_id) or {"status": "pending", "attempt_count": 0}
+                desired = jm_incremental.merge_album_metadata(old, identities[remote_id]) if old else None
+                metadata_changed = old is not None and desired["metadata"] != old["metadata"]
+                status = chapter.get("status")
+                if health["suppressed"] or status == "suppressed":
+                    if not context.dry_run and status != "suppressed":
+                        if status == "failed":
+                            comic_sync_state.mark_chapter_pending(database, **scope, chapter_id=chapter_id, reason="lifecycle_suppressed")
+                        suppression = comic_sync_state.claim_chapter(database, **scope, chapter_id=chapter_id, owner=owner, generation=state["generation"])
+                        if suppression is not None:
+                            comic_sync_state.finish_chapter(database, **scope, chapter_id=chapter_id, token=suppression["token"], generation=suppression["generation"], status="suppressed", verified_remote=False)
+                    summary["chapters_suppressed"] += 1
+                    continue
+                resumable = status in {"paused", "running"} and int(chapter.get("attempt_count", 0)) > 0 and chapter.get("last_error_code") in {None, "sync_budget_exhausted"}
+                known_failed = status == "failed" or (not resumable and old is not None and old.get("status") in {"failed", "partial", "downloading"})
+                needs_repair = old is not None and not health["complete"]
+                if (known_failed and not retry) or (needs_repair and not repair and not resumable) or (old is not None and state.get("revalidation_active") and status not in {"succeeded", "suppressed"} and (not repair or not retry) and not resumable):
+                    summary["chapters_skipped_no_repair"] += 1
+                    summary["chapters_pending"] += 1
+                    continue
+                next_attempt = chapter.get("next_attempt_at")
+                if status == "failed" and next_attempt and datetime.fromisoformat(next_attempt) > now and not revalidate:
+                    summary["chapters_failed_deferred"] += 1
+                    summary["chapters_pending"] += 1
+                    continue
+                audit = chapter_id in audit_ids
+                full_check = bool(state.get("revalidation_active")) and status not in {"succeeded", "suppressed"}
+                needs_remote = old is None or status not in {"succeeded", "suppressed"} or audit or full_check or bool(input_data.get("overwrite"))
+                previous_chapter = previous_chapters.get(chapter_id)
+                current_fingerprint = fingerprints[chapter_id]
+                remote_manifest_changed = previous_chapter is not None and previous_chapter["fingerprint"] != current_fingerprint
+                local_pending = status == "pending" and bool(chapter.get("adoption_pending"))
+                local_only = old is not None and health["pages_usable"] and not audit and not full_check and not remote_manifest_changed and not input_data.get("overwrite") and (needs_repair or metadata_changed) and (status == "succeeded" or local_pending)
+                if remote_manifest_changed:
+                    needs_remote = True
+                elif local_only:
+                    needs_remote = False
+                if not needs_remote and not needs_repair and not metadata_changed:
+                    summary["chapters_healthy"] += 1
+                    continue
+                if summary["chapters_processed"] >= max_chapters or time.monotonic() >= deadline:
+                    exhausted = True
+                    summary["chapters_pending"] += 1
+                    continue
+                lease = None
+                if not context.dry_run:
+                    if status in {"succeeded", "failed"}:
+                        comic_sync_state.mark_chapter_pending(database, **scope, chapter_id=chapter_id, reason="revalidation" if audit or full_check else "local_repair")
+                    lease = comic_sync_state.claim_chapter(database, **scope, chapter_id=chapter_id, owner=owner, generation=state["generation"], lease_seconds=max(900, int(budget) + 60))
+                    if lease is None:
+                        summary["chapters_pending"] += 1
+                        continue
+                summary["chapters_processed"] += 1
+                try:
+                    if audit or full_check:
+                        health = jm_incremental.local_health(old, library, deep=True)
+                        summary["filesystem_checks"] += health.get("filesystem_checks", 0)
+                        needs_repair = old is not None and not health["complete"]
+                        if not context.dry_run:
+                            for bad in health["bad_files"]:
+                                db.update_media_file_health(database, file_id=int(bad["id"]), file_health=str(bad["file_health"]))
+                    if needs_remote:
+                        if scramble_id is None:
+                            summary["scramble_requested"] += 1
+                            scramble_id = recovery.run(lambda: client.get_scramble_id(chapter_id))
+                        if time.monotonic() >= deadline:
+                            exhausted = True
+                            summary["chapters_pending"] += 1
+                            if lease is not None:
+                                comic_sync_state.finish_chapter(database, **scope, chapter_id=chapter_id, token=lease["token"], generation=lease["generation"], status="paused", error_code="sync_budget_exhausted", verified_remote=False)
+                            continue
+                        summary["chapters_requested"] += 1
+                        photo = recovery.run(lambda: client.get_photo(chapter_id, scramble_id=scramble_id))
+                        item = JMComicResolution(link=parse_jmcomic_link(f"https://18comic.vip/album/{album.album_id}/"), album=album, photos=(photo,)).normalized_items()[0]
+                    else:
+                        item = desired
+                        summary["chapters_local_repair"] += int(needs_repair)
+                        summary["chapters_metadata_refresh"] += int(metadata_changed)
+                    chapter_options = {**options, "_refresh_comic_metadata": metadata_changed or (old is not None and status != "succeeded"), "_rebuild_comic_package": needs_repair and health.get("pages_usable", False)}
+                    result = await _sync_items(context, chapter_options, [item])
+                    results.extend(result.data.get("items") or [])
+                    packages.extend(result.data.get("packages") or [])
+                    artifacts.extend(result.artifacts)
+                    warnings.extend(result.warnings)
+                    for key, value in (result.data.get("summary") or {}).items():
+                        if isinstance(value, int) and not isinstance(value, bool):
+                            summary[key] = summary.get(key, 0) + value
+                    paused = bool(result.data.get("budget_exhausted"))
+                    if lease is not None:
+                        committed = comic_sync_state.finish_chapter(database, **scope, chapter_id=chapter_id, token=lease["token"], generation=lease["generation"], status="paused" if paused else "succeeded" if result.is_success else "failed", error_code=None if result.is_success else result.error.code, verified_remote=needs_remote)
+                        if not committed:
+                            raise ValueError("JMComic chapter lease changed before completion.")
+                    if paused:
+                        exhausted = True
+                        summary["chapters_pending"] += 1
+                    elif not result.is_success:
+                        failures.append({"target_type": "photo", "target_id": chapter_id, "code": result.error.code, "category": result.error.category.value})
+                        album_failed = True
+                    elif audit:
+                        summary["chapters_audited"] += 1
+                        audited_positions.append(ordinal)
+                except Exception as exc:
+                    failed = _provider_failure(exc)
+                    if lease is not None:
+                        comic_sync_state.finish_chapter(database, **scope, chapter_id=chapter_id, token=lease["token"], generation=lease["generation"], status="failed", error_code=failed.error.code)
+                    failures.append(_target_failure({"target_type": "photo", "target_id": chapter_id}, failed))
+                    album_failed = True
+                    if failed.error.category in {ErrorCategory.AUTH, ErrorCategory.RATE_LIMIT}:
+                        raise
+            if audited_positions and not context.dry_run:
+                comic_sync_state.set_audit_cursor(database, **scope, cursor=(max(audited_positions) + 1) % len(album.episodes))
+            summary["targets_processed"] += 1
+            summary["targets_failed"] += int(album_failed)
+        except Exception as exc:
+            failed = _provider_failure(exc)
+            failures.append(_target_failure(target, failed))
+            summary["targets_failed"] += 1
+            if failed.error.category in {ErrorCategory.AUTH, ErrorCategory.RATE_LIMIT}:
+                break
+    summary["targets_unprocessed"] = len(targets) - summary["targets_attempted"]
+    final_states = [comic_sync_state.read_album(database, provider="jmcomic", account_key=account_key, album_id=str(target["target_id"])) for target in targets] if not context.dry_run else []
+    summary["revalidation_albums_active"] = sum(bool(row and row["revalidation_active"]) for row in final_states)
+    summary["albums_pending"] = summary["targets_unprocessed"]
+    if not context.dry_run:
+        summary["chapters_pending"] = sum(chapter["status"] not in {"succeeded", "suppressed"} for row in final_states if row for chapter in row["chapters"] if chapter["active"])
+        summary["albums_pending"] = sum(bool(row and (row["revalidation_active"] or any(chapter["active"] and chapter["status"] not in {"succeeded", "suppressed"} for chapter in row["chapters"]))) for row in final_states) + sum(row is None for row in final_states)
+    summary["provider_api_requests"] = summary["albums_requested"] + summary["chapters_requested"] + summary["scramble_requested"]
+    data = {"dry_run": context.dry_run, "db_path": str(database), "library_root": str(library), "summary": summary, "items": results, "packages": packages, "target_failures": failures, "budget_exhausted": exhausted, "revalidation_active": bool(summary["revalidation_albums_active"])}
+    if failures:
+        return ToolResult.failure("comic_favorites_sync_partial", "Comic favorites sync retained chapter progress with failed work remaining.", data=data, category=ErrorCategory.NETWORK, warnings=warnings)
+    return ToolResult.success(data, artifacts=artifacts, warnings=warnings)
 
 
 async def _sync_favorite_targets(
@@ -1101,16 +1362,21 @@ async def _sync_items(context: ToolContext, input_data: dict[str, Any], items: l
             pending=len(candidates) - len(item_results),
             failed=failed_items,
         )
+    budget_exhausted = any(result.get("budget_exhausted") for result in item_results)
+    paused_identities = {(str(result["platform"]), str(result["remote_id"])) for result in item_results if result.get("budget_exhausted")}
     packages = []
-    refreshed_identities = {(item["platform"], item["remote_id"]) for item in candidates}
+    refreshed_identities = {(item["platform"], item["remote_id"]) for item in (items if input_data.get("_refresh_comic_metadata") else candidates)}
     for item in _load_comic_items(db_path, {(item["platform"], item["remote_id"]) for item in items}):
+        if (item["platform"], item["remote_id"]) in paused_identities:
+            continue
         plan = _comic_package_plan(
             item=item,
             library_root=library_root,
             include_platform_layer=bool(input_data.get("include_platform_layer", True)),
-            overwrite=bool(input_data.get("overwrite")),
+            overwrite=bool(input_data.get("overwrite") or input_data.get("_rebuild_comic_package")),
             migrate_legacy=False,
             refresh_tracked=(item["platform"], item["remote_id"]) in refreshed_identities,
+            preserve_tracked_path=bool(input_data.get("_incremental_sync") and item["platform"] == "jmcomic"),
         )
         if plan["status"] == "ready":
             try:
@@ -1133,7 +1399,7 @@ async def _sync_items(context: ToolContext, input_data: dict[str, Any], items: l
     downloaded = sum(result["status"] == "downloaded" for result in item_results)
     skipped_items = sum(result["status"] == "skipped" for result in item_results)
     failed = sum(result["status"] == "failed" for result in item_results)
-    partial = sum(result["status"] == "partial" for result in item_results)
+    partial = sum(result["status"] == "partial" and not result.get("budget_exhausted") for result in item_results)
     files_skipped = sum(int(result.get("files_skipped", 0)) for result in item_results)
     package_failed = sum(package["status"] in {"failed", "blocked", "incomplete"} for package in packages)
     summary = {
@@ -1159,6 +1425,7 @@ async def _sync_items(context: ToolContext, input_data: dict[str, Any], items: l
         "summary": summary,
         "items": item_results,
         "packages": packages,
+        "budget_exhausted": budget_exhausted,
     }
     if run_status == "success":
         return ToolResult.success(data, artifacts=artifacts)

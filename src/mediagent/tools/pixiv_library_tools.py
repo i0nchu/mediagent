@@ -28,6 +28,7 @@ from mediagent.core.tooling import (
     ToolSpec,
 )
 from mediagent.platforms.pixiv import parser as pixiv_parser
+from mediagent.tools import link_tools
 
 
 def definitions() -> list[ToolDefinition]:
@@ -566,6 +567,7 @@ def _comic_package_plan(
     overwrite: bool,
     migrate_legacy: bool,
     refresh_tracked: bool = False,
+    preserve_tracked_path: bool = False,
 ) -> dict[str, Any]:
     cbz_records = [record for record in item["files"] if _is_cbz_file(record)]
     inactive_cbz = [
@@ -587,12 +589,15 @@ def _comic_package_plan(
         ),
         None,
     )
-    if renamed_cbz is not None:
-        target_path = Path(str(renamed_cbz["local_path"])).expanduser().resolve()
+    active_cbz = [record for record in cbz_records if record not in inactive_cbz]
+    preserved_cbz = active_cbz[0] if preserve_tracked_path and len(active_cbz) == 1 and active_cbz[0].get("local_path") else None
+    tracked_cbz = renamed_cbz or preserved_cbz
+    if tracked_cbz is not None:
+        target_path = Path(str(tracked_cbz["local_path"])).expanduser().resolve()
         try:
             relative_path = target_path.relative_to(library_root)
         except ValueError:
-            relative_path = Path(str(renamed_cbz.get("library_relative_path") or target_path.name))
+            relative_path = Path(str(tracked_cbz.get("library_relative_path") or target_path.name))
     else:
         relative_path = comic_archive_relative_path(item=item, include_platform_layer=include_platform_layer)
         target_path = (library_root / relative_path).resolve()
@@ -743,6 +748,7 @@ def _ordered_comic_page_records(item: dict[str, Any]) -> tuple[list[dict[str, An
     page_records = [record for record in item["files"] if not _is_cbz_file(record) and not _is_placeholder_file(record)]
     source_records = [record for record in page_records if not _is_ignored_comic_spacer(record)]
     records_by_remote = {str(record.get("remote_url") or ""): record for record in page_records if record.get("remote_url")}
+    records_by_key = {str(record["file_key"]): record for record in page_records if record.get("file_key")}
     metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
     metadata_files = metadata.get("files") if isinstance(metadata.get("files"), list) else []
     ordered: list[dict[str, Any]] = []
@@ -754,7 +760,11 @@ def _ordered_comic_page_records(item: dict[str, Any]) -> tuple[list[dict[str, An
             remote_url = str(file_info.get("url") or file_info.get("remote_url") or "")
             if not remote_url:
                 continue
-            record = records_by_remote.get(remote_url)
+            # Provider/CDN URLs may rotate while the canonical page identity
+            # stays the same. Match the same identity used by managed downloads.
+            stable_key = link_tools._stable_file_key(file_info)
+            record = records_by_key.get(stable_key) if stable_key else None
+            record = record or records_by_remote.get(remote_url)
             if record is None:
                 return [], "comic source page has no media_files record"
             if _is_ignored_comic_spacer(record):
