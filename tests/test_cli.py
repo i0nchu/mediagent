@@ -18,6 +18,30 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 class CliTests(unittest.TestCase):
+    @patch("mediagent.cli.run_tool_command", return_value=0)
+    def test_jmcomic_budgets_revalidation_and_no_repair_route_explicitly(self, run_tool):
+        self.assertEqual(cli.run(["sync", "jmcomic", "--max-chapters", "2", "--time-budget", "60", "--audit-chapters", "0", "--no-repair"]), 0)
+        data = run_tool.call_args.kwargs["input_data"]
+        self.assertEqual(data["max_chapters"], 2)
+        self.assertEqual(data["time_budget_seconds"], 60)
+        self.assertEqual(data["audit_chapters"], 0)
+        self.assertFalse(data["retry_failed"])
+        self.assertFalse(data["repair_missing_files"])
+        for flag in ("--revalidate-all", "--full"):
+            self.assertEqual(cli.run(["sync", "jmcomic", flag]), 0)
+            self.assertTrue(run_tool.call_args.kwargs["input_data"]["revalidate_all"])
+
+    @patch("mediagent.cli.run_tool_command", return_value=0)
+    def test_jmcomic_option_conflicts_fail_without_running_source(self, run_tool):
+        for args in (["sync", "telegram", "--max-chapters", "2"],
+                     ["sync", "pixiv", "--revalidate-all"],
+                     ["sync", "jmcomic", "--no-repair", "--full"],
+                     ["sync", "jmcomic", "--no-repair", "--revalidate-all"],
+                     ["sync", "jmcomic", "--no-repair", "--overwrite"]):
+            with self.subTest(args=args), redirect_stdout(StringIO()), redirect_stderr(StringIO()):
+                self.assertEqual(cli.run(args), 2)
+        run_tool.assert_not_called()
+
     ENV_COMMANDS = (
         ("status", "--json"),
         ("library", "deduplicate", "--dry-run", "--json"),
@@ -495,6 +519,23 @@ class CliTests(unittest.TestCase):
         self.assertEqual(payload["tool"], "core.env.check")
         self.assertEqual(payload["data"], {})
         self.assertEqual(payload["artifact_count"], 0)
+
+    def test_summary_json_exposes_safe_intake_and_resumable_progress(self) -> None:
+        output = StringIO()
+        with redirect_stdout(output):
+            cli.present_tool_result(
+                {"status": "success", "tool": "jmcomic.favorites.sync", "data": {
+                    "intake_complete": True, "budget_exhausted": True,
+                    "revalidation_active": True, "summary": {"chapters_pending": 2},
+                    "items": [{"source_url": "https://private.example/item"}],
+                }}, json_output=False, summary_json=True, compact_human=False,
+            )
+        data = json.loads(output.getvalue())["data"]
+        self.assertTrue(data["intake_complete"])
+        self.assertTrue(data["budget_exhausted"])
+        self.assertTrue(data["revalidation_active"])
+        self.assertEqual(data["summary"]["chapters_pending"], 2)
+        self.assertNotIn("items", data)
 
     def test_public_link_sync_entrypoint_uses_link_media_sync(self) -> None:
         with TemporaryDirectory() as temp_dir:

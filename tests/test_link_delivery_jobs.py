@@ -416,7 +416,7 @@ class LinkDeliveryJobsTests(unittest.TestCase):
         with db.connect(self.path) as con:
             con.execute("UPDATE link_queue SET id=88 WHERE id=?", (bad["id"],))
             con.execute("UPDATE schema_meta SET value='14' WHERE key='schema_version'")
-        self.assertEqual("15", db.initialize_database(self.path)["schema_version"])
+        self.assertEqual("16", db.initialize_database(self.path)["schema_version"])
         with db.connect(self.path) as con:
             before = [
                 dict(row)

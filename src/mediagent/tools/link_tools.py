@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -1059,7 +1060,14 @@ async def _sync_one_link_item(
     db.update_media_item_status(db_path, platform=platform, remote_id=remote_id, status="downloading")
     overwrite = input_data.get("overwrite", False)
     write_sidecar_metadata = input_data.get("write_sidecar_metadata", False)
-    for file_info in files:
+    for file_index, file_info in enumerate(files):
+        deadline = input_data.get("_deadline_monotonic")
+        if deadline is not None and time.monotonic() >= float(deadline):
+            result.update(status="partial", budget_exhausted=True, files_pending=len(files) - file_index)
+            result["errors"].append({"code": "sync_budget_exhausted", "message": "Sync paused at a file boundary; saved pages will be reused."})
+            db.update_media_item_status(db_path, platform=platform, remote_id=remote_id, status="partial")
+            return result
+        repairs = (item.get("_repair") or {}).get("files", [])
         try:
             target_dir, include_platform_layer = _target_dir_for_item(context, input_data, item)
             ensure_inside(target_dir, context.allowed_write_roots())
@@ -1077,7 +1085,17 @@ async def _sync_one_link_item(
             result["files_failed"] += 1
             result["errors"].append(_file_error(file_info, "unsafe_path", str(exc)))
             continue
-        if overwrite:
+        repair_file = any(
+            record.get("local_path")
+            and Path(str(record["local_path"])).expanduser().resolve() == target_path
+            and (
+                record.get("remote_url") == _file_remote_url(file_info)
+                or (record.get("part") is not None and record.get("part") == file_info.get("part"))
+            )
+            for record in repairs
+        )
+        overwrite_file = bool(overwrite or repair_file)
+        if overwrite_file:
             try:
                 library_content.ensure_target_write_safe(db_path, target_path)
             except ValueError as exc:
@@ -1086,7 +1104,7 @@ async def _sync_one_link_item(
                     _file_error(file_info, "shared_content_write_conflict", str(exc))
                 )
                 continue
-        if target_path.exists() and not overwrite:
+        if target_path.exists() and not overwrite_file:
             if not _path_known_to_item(db_path, item, file_info, target_path):
                 _record_failed_link_file(
                     db_path,
@@ -1118,7 +1136,7 @@ async def _sync_one_link_item(
             input_data,
             file_info=file_info,
             target_path=target_path,
-            overwrite=overwrite,
+            overwrite=overwrite_file,
         )
         if download_result.is_success:
             if download_result.data.get("skipped"):
