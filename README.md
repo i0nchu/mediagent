@@ -131,6 +131,43 @@ processes one ready batch of pending jobs. LLM failures never change a
 successful download into a failure.
 Run `uv run mediagent --help` for the complete command reference.
 
+### X/Twitter post links
+
+`mediagent add 'https://x.com/USER/status/POST_ID'` downloads all native photo,
+MP4 video, and animated GIF attachments through FxEmbed v2. Twitter URL aliases
+and `/photo/N` or `/video/N` links resolve to the same whole post. Quotes, link
+cards, thumbnails, profiles, and timelines are not collected. Downloads use the
+normal managed Asset, deduplication, repair, and lifecycle flows.
+
+The default `MEDIAGENT_X_ENDPOINT_MODE=public` uses
+`https://api.fxtwitter.com/2` without an X session or paid X Developer API.
+NSFW attachments are accepted when that endpoint can access the post; public
+availability is not guaranteed. Authentication errors, rate limits, malformed
+responses, and incomplete attachments produce explicit failures.
+
+For a session-enabled private FxEmbed endpoint, configure:
+
+```dotenv
+MEDIAGENT_X_ENDPOINT_MODE=self_hosted
+MEDIAGENT_X_ENDPOINT_URL=http://localhost:8787/api/2
+```
+
+Local FxEmbed exposes `/api/2`; a hostname configured for the Twitter API realm
+uses `/2`. Atmosphere API hosts use `/2/twitter`, or `/atmosphere/2/twitter`
+locally. Configure FxEmbed's hostname routing when using a private service name.
+Only these four base paths are accepted. HTTP is allowed only on
+loopback/private service addresses, and remote public services require HTTPS.
+Endpoint redirects are rejected. Self-hosted mode accepts protected posts only
+when the configured endpoint returns them through its account's normal access;
+their protected and sensitive flags remain in source metadata. A failed
+self-hosted request never switches to a public service.
+
+Keep the dedicated X session on that service. Mediagent sends no X cookies or
+OAuth credentials for this operation, including when legacy `X_*` credentials
+are configured. Session provisioning, rotation, and endpoint deployment remain
+separate from the client. See the [FxEmbed documentation](https://docs.fxembed.com/)
+for upstream service configuration.
+
 ## Contributing
 
 Follow `AGENT.md`. Develop on a focused branch and open a pull request against

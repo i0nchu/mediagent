@@ -1585,10 +1585,13 @@ class DirectMediaResolver(Resolver):
 
 
 def default_link_resolver_registry() -> LinkResolverRegistry:
+    from mediagent.platforms.x.links import XPostResolver
+
     return LinkResolverRegistry(
         [
             PixivArtworkLinkResolver(),
             InstagramMediaLinkResolver(),
+            XPostResolver(),
             ImgurSingleResolver(),
             RedgifsResolver(),
             RedditMediaLinkResolver(),
@@ -1753,8 +1756,9 @@ def fetch_limited_follow_redirects(
     request: ResolveRequest,
     max_bytes: int,
     headers: dict[str, str] | None = None,
+    url_validator: Callable[[str], Any] | None = None,
 ) -> tuple[HttpResponse, str]:
-    return fetch_follow_redirects(url, request=request, method="GET", max_bytes=max_bytes, headers=headers)
+    return fetch_follow_redirects(url, request=request, method="GET", max_bytes=max_bytes, headers=headers, url_validator=url_validator)
 
 
 def fetch_follow_redirects(
@@ -1764,10 +1768,13 @@ def fetch_follow_redirects(
     method: str,
     max_bytes: int,
     headers: dict[str, str] | None = None,
+    url_validator: Callable[[str], Any] | None = None,
 ) -> tuple[HttpResponse, str]:
     current_url = url
     client = request.http_client or UrllibHttpClient()
     for redirect_count in range(request.policy.max_redirects + 1):
+        if url_validator is not None:
+            url_validator(current_url)
         safe = validate_url_safety(current_url, host_resolver=request.host_resolver)
         response = request_url(
             client,
@@ -1785,7 +1792,10 @@ def fetch_follow_redirects(
                 raise URLSafetyError("missing_redirect_location", "Redirect response did not include Location.")
             current_url = urljoin(safe.normalized_url, location)
             continue
-        return response, response.url or safe.normalized_url
+        final_url = response.url or safe.normalized_url
+        if url_validator is not None:
+            url_validator(final_url)
+        return response, final_url
     raise URLSafetyError("too_many_redirects", "URL exceeded the redirect limit.")
 
 
