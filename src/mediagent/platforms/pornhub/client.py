@@ -8,6 +8,7 @@ import shutil
 import stat
 import threading
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -20,7 +21,8 @@ from mediagent.platforms.pornhub.links import PornhubVideoLink, parse_exact_vide
 
 
 DEFAULT_TIMEOUT_SECONDS = 60.0
-DEFAULT_MAX_MEDIA_BYTES = 1024 * 1024 * 1024
+DEFAULT_MAX_MEDIA_BYTES = 8 * 1024 * 1024 * 1024
+MAX_MEDIA_BYTES_ENV = "MEDIAGENT_PORNHUB_MAX_MEDIA_BYTES"
 DEFAULT_MAX_REDIRECTS = 3
 YtDlpFactory = Callable[[dict[str, Any]], Any]
 URLValidator = Callable[[str], Any]
@@ -40,6 +42,36 @@ class PornhubClientError(RuntimeError):
         self.code = code
         self.category = category
         self.details = details or {}
+
+
+def configured_media_limit(env: Mapping[str, str], explicit: Any = None) -> int:
+    """Explicit tool limits override the provider's environment/default limit."""
+    value = explicit if explicit is not None else env.get(MAX_MEDIA_BYTES_ENV)
+    if value is None or isinstance(value, str) and not value.strip():
+        value = DEFAULT_MAX_MEDIA_BYTES
+    try:
+        if isinstance(value, bool) or not str(value).strip().isascii() or not str(value).strip().isdigit():
+            raise ValueError
+        limit = int(value)
+        if not 1024 * 1024 <= limit <= 64 * 1024 * 1024 * 1024:
+            raise ValueError
+    except (TypeError, ValueError):
+        raise PornhubClientError(
+            "pornhub_size_limit_invalid",
+            f"{MAX_MEDIA_BYTES_ENV} or max_media_bytes must be an integer between 1 MiB and 64 GiB.",
+            category="validation", details={"retryable": False},
+        ) from None
+    return limit
+
+
+def _size_limit_error(limit: int, size: int) -> PornhubClientError:
+    return PornhubClientError(
+        "pornhub_media_too_large",
+        f"Pornhub media exceeds the download limit ({size} > {limit} bytes). "
+        f"Adjust {MAX_MEDIA_BYTES_ENV} or max_media_bytes before retrying.",
+        category="validation",
+        details={"max_media_bytes": limit, "size_bytes": size, "retryable": False},
+    )
 
 
 @dataclass(frozen=True)
@@ -193,11 +225,7 @@ def materialize_exact_video(
                 "Pornhub extraction produced an empty file.",
             )
         if size_bytes > max_media_bytes:
-            raise PornhubClientError(
-                "pornhub_media_too_large",
-                "Pornhub media exceeds the configured download limit.",
-                details={"size_bytes": size_bytes, "max_media_bytes": max_media_bytes},
-            )
+            raise _size_limit_error(max_media_bytes, size_bytes)
         local_import.copy_verified(
             source=downloaded,
             target=target_path,
@@ -243,21 +271,68 @@ def _download_to_staging(
     ytdlp_factory: YtDlpFactory | None,
     url_validator: URLValidator,
 ) -> tuple[Path, dict[str, Any]]:
+    limit_error: PornhubClientError | None = None
+    check_progress = _media_size_progress_hook(staging, max_media_bytes)
+
+    def enforce_progress(progress: dict[str, Any]) -> None:
+        nonlocal limit_error
+        try:
+            check_progress(progress)
+        except PornhubClientError as exc:
+            limit_error = exc
+            raise
+
     factory = ytdlp_factory or _default_ytdlp_factory(url_validator, max_redirects=max_redirects)
     options = _ytdlp_options(
         staging=staging,
         timeout_seconds=timeout_seconds,
         max_media_bytes=max_media_bytes,
-        progress_hooks=[_media_size_progress_hook(staging, max_media_bytes)],
+        progress_hooks=[enforce_progress],
     )
     try:
         with factory(options) as ydl:
             info = ydl.extract_info(link.canonical_url, download=False)
             normalized = _validate_info(info, link=link, url_validator=url_validator)
-            ydl.process_ie_result(info, download=True)
+            selected = info.get("requested_formats") or info.get("requested_downloads") or [info]
+            known_size = sum(
+                entry["filesize"] for entry in selected
+                if isinstance(entry, dict) and isinstance(entry.get("filesize"), int)
+                and not isinstance(entry["filesize"], bool) and entry["filesize"] > 0
+            )
+            if known_size > max_media_bytes:
+                raise _size_limit_error(max_media_bytes, known_size)
+            original_open = getattr(ydl, "urlopen", None)
+
+            def checked_open(request):
+                nonlocal limit_error
+                response = original_open(request)
+                length = (getattr(response, "headers", None) or {}).get("Content-Length")
+                if length is not None and str(length).strip().isascii() and str(length).strip().isdigit():
+                    size = int(length)
+                    if size > max_media_bytes:
+                        limit_error = _size_limit_error(max_media_bytes, size)
+                        try:
+                            response.close()
+                        finally:
+                            raise limit_error
+                return response
+
+            # Keep the safe transport and inspect only download responses. Page
+            # extraction above is metadata, not a video-size policy decision.
+            if callable(original_open):
+                ydl.urlopen = checked_open
+            try:
+                ydl.process_ie_result(info, download=True)
+            finally:
+                if callable(original_open):
+                    ydl.urlopen = original_open
+            if limit_error is not None:
+                raise limit_error
     except PornhubClientError:
         raise
     except Exception as exc:
+        if limit_error is not None:
+            raise limit_error from exc
         raise _mapped_ytdlp_error(exc) from exc
 
     files = []
@@ -467,11 +542,7 @@ def _media_size_progress_hook(staging: Path, max_media_bytes: int) -> Callable[[
             reported_bytes = 0
         disk_bytes = _regular_file_bytes(staging)
         if max(reported_bytes, disk_bytes) > max_media_bytes:
-            raise PornhubClientError(
-                "pornhub_media_too_large",
-                "Pornhub media exceeds the configured download limit.",
-                details={"max_media_bytes": max_media_bytes},
-            )
+            raise _size_limit_error(max_media_bytes, max(reported_bytes, disk_bytes))
 
     return enforce_limit
 

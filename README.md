@@ -17,6 +17,22 @@ Inputs that require segmented-video extraction can be run with
 `uv run --locked --extra video mediagent add URL`; some stream combinations
 also require the system `ffmpeg` executable.
 
+Pornhub exact-video downloads default to an 8 GiB limit. Set
+`MEDIAGENT_PORNHUB_MAX_MEDIA_BYTES=17179869184` in `.env` for 16 GiB
+(accepted range: 1 MiB–64 GiB, expressed as integer bytes). This applies to
+`add`, `link sync` and Telegram external-link delivery. An explicit
+`link sync URL --max-media-bytes BYTES` takes precedence; process environment
+variables override `.env`. Size checks also bound staging usage. The setting
+does not select a lower quality automatically.
+
+Known size-limit failures report `pornhub_media_too_large` with the actual/limit
+bytes and stop automatic link retries. After changing the limit, inspect
+`mediagent link backlog --json`, run `mediagent link retry ID`, then run the
+next Telegram sync. Standalone links can use `mediagent add URL` again.
+Previously exhausted jobs also require explicit retry; changing `.env` alone
+does not reopen them. Ensure the service reads the intended `.env` before
+its next invocation; existing environment settings retain precedence.
+
 Set the local paths in `.env`:
 
 ```dotenv

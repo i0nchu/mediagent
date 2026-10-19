@@ -1115,6 +1115,11 @@ def _link_delivery_outcome(result: ToolResult) -> tuple[str, str | None]:
         error = result.error
         if error and error.category == ErrorCategory.AUTH:
             return "blocked", error.code
+        if error and error.details.get("retryable") is False:
+            return "failed", error.code
+        file_errors = [error for item in result.data.get("items", []) for error in item.get("errors", [])]
+        if file_errors and all(error.get("retryable") is False for error in file_errors):
+            return "failed", file_errors[0].get("code") or "link_delivery_policy_failed"
         return "retry", error.code if error else "link_delivery_failed"
     if not resolutions:
         return "retry", "link_resolution_missing"
@@ -2156,13 +2161,13 @@ async def _sync_one_link_item(
             download_result.error.message if download_result.error else "Download failed.",
         )
         result["files_failed"] += 1
-        result["errors"].append(
-            _file_error(
-                file_info,
-                download_result.error.code if download_result.error else "download_failed",
-                download_result.error.message if download_result.error else "Download failed.",
-            )
+        error = _file_error(
+            file_info,
+            download_result.error.code if download_result.error else "download_failed",
+            download_result.error.message if download_result.error else "Download failed.",
         )
+        error.update(link_tools._download_failure_policy(download_result))
+        result["errors"].append(error)
     result["status"] = item_status_from_file_counts(
         total=result["files_total"],
         downloaded=result["files_downloaded"],
