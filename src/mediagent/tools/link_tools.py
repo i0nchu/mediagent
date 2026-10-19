@@ -505,6 +505,14 @@ async def media_sync(context: ToolContext, input_data: dict[str, Any]) -> ToolRe
     }
     if run_status == "success":
         return ToolResult.success(data, artifacts=artifacts, warnings=warnings)
+    policy_errors = [error for item in item_results for error in item.get("errors", [])]
+    if policy_errors and all(error.get("retryable") is False for error in policy_errors) and not fatal_resolution_errors and not comic_route["failed"]:
+        first_error = policy_errors[0]
+        return ToolResult.failure(
+            first_error["code"], first_error["message"], data=data,
+            category=ErrorCategory.VALIDATION,
+            details={**first_error.get("details", {}), "retryable": False}, warnings=warnings,
+        )
     if fatal_resolution_errors and not summary["resolved"] and not comic_route["summary"]["resolved"]:
         error = fatal_resolution_errors[0]
         return ToolResult.failure(
@@ -1198,13 +1206,13 @@ async def _sync_one_link_item(
             download_result.error.message if download_result.error else "Download failed.",
         )
         result["files_failed"] += 1
-        result["errors"].append(
-            _file_error(
-                file_info,
-                download_result.error.code if download_result.error else "download_failed",
-                download_result.error.message if download_result.error else "Download failed.",
-            )
+        error = _file_error(
+            file_info,
+            download_result.error.code if download_result.error else "download_failed",
+            download_result.error.message if download_result.error else "Download failed.",
         )
+        error.update(_download_failure_policy(download_result))
+        result["errors"].append(error)
     result["status"] = item_status_from_file_counts(
         total=result["files_total"],
         downloaded=result["files_downloaded"],
@@ -1390,7 +1398,7 @@ def _download_pornhub_file_safely(
             allowed_write_roots=context.allowed_write_roots(),
             overwrite=overwrite,
             timeout_seconds=float(input_data.get("timeout_seconds", pornhub_client.DEFAULT_TIMEOUT_SECONDS)),
-            max_media_bytes=int(input_data.get("max_media_bytes", pornhub_client.DEFAULT_MAX_MEDIA_BYTES)),
+            max_media_bytes=pornhub_client.configured_media_limit(context.env, input_data.get("max_media_bytes")),
             max_redirects=max(0, int(input_data.get("max_redirects", pornhub_client.DEFAULT_MAX_REDIRECTS))),
         )
     except pornhub_client.PornhubClientError as exc:
@@ -1729,6 +1737,20 @@ def _expected_mime_prefix(file_info: dict[str, Any]) -> str | None:
     if media_type == "audio":
         return "audio/"
     return None
+
+
+def _download_failure_policy(result: ToolResult) -> dict[str, Any]:
+    """Carry explicit retry policy and bounded diagnostics, never transport context."""
+    if result.error is None or not isinstance(result.error.details.get("retryable"), bool):
+        return {}
+    return {
+        "retryable": result.error.details["retryable"],
+        "details": {
+            key: value for key, value in result.error.details.items()
+            if key in {"size_bytes", "max_media_bytes", "bytes_read"}
+            and isinstance(value, int) and not isinstance(value, bool)
+        },
+    }
 
 
 def _file_error(file_info: dict[str, Any], code: str, message: str) -> dict[str, Any]:

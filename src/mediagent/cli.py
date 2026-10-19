@@ -203,7 +203,7 @@ def build_parser() -> argparse.ArgumentParser:
     link_sync.add_argument("--retry-failed", action="store_true", help="Retry media items currently marked failed.")
     link_sync.add_argument("--repair-missing-files", action="store_true", help="Redownload tracked files that are missing or unhealthy.")
     link_sync.add_argument("--max-html-bytes", type=int, default=None, help=argparse.SUPPRESS)
-    link_sync.add_argument("--max-media-bytes", type=int, default=None, help=argparse.SUPPRESS)
+    link_sync.add_argument("--max-media-bytes", type=int, default=None, help="Explicit download size limit in bytes; overrides the Pornhub environment setting.")
     link_sync.add_argument("--timeout-seconds", type=float, default=None, help=argparse.SUPPRESS)
     link_sync.add_argument("--json", action="store_true", help="Emit machine-readable JSON.")
     link_sync.add_argument("--dry-run", action="store_true", help="Run without tool side effects.")
