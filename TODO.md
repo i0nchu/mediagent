@@ -17,4 +17,5 @@
 
 ## Bugs
 
+- [x] Consistent `.env` loading across CLI subcommands, including `library`, `tools`, `link`, and `experimental`, preserving `MEDIAGENT_ENV_FILE` and environment precedence.
 - [ ] Close SQLite connections explicitly after transactions; running the offline suite on Python 3.13 emits `ResourceWarning: unclosed database` from connections returned by `core.db.connect`.

@@ -42,6 +42,10 @@ uv run mediagent add 'https://example.com/media-or-post'
 uv run mediagent add /path/to/media-file
 uv run mediagent add /path/to/media-directory
 uv run mediagent sync SOURCE
+uv run mediagent sync telegram --link-batch-size 5 --link-time-budget 60 --summary-json
+uv run mediagent link backlog --json
+uv run mediagent link retry 88
+uv run mediagent link retry 88 --retry-auth
 uv run mediagent status
 uv run mediagent status SOURCE
 uv run mediagent remove ASSET_ID
@@ -55,9 +59,12 @@ uv run mediagent trash purge --dry-run
 uv run mediagent trash purge
 ```
 
-Commands read `.env` from the current directory; existing environment variables
-take precedence. Use `--dry-run` to preview supported operations and `--json`
-for complete machine-readable output.
+All CLI subcommands, including `library`, `tools`, and `experimental`, read
+`.env` from the current directory; existing environment variables take
+precedence. Set `MEDIAGENT_ENV_FILE` to use another file (relative paths are
+resolved from the current directory), or set it to an empty string to disable
+file loading. Use `--dry-run` to preview supported operations and `--json` for
+complete machine-readable output.
 
 Local files are copied into the managed library. Directories are scanned
 recursively without following symbolic links; original files are left unchanged.

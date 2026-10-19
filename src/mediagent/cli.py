@@ -35,19 +35,6 @@ VALIDATION_ERROR_CATEGORIES = {
     ErrorCategory.DATABASE.value,
 }
 
-SIMPLE_COMMANDS = {
-    "init",
-    "add",
-    "sync",
-    "status",
-    "agent",
-    "remove",
-    "restore",
-    "search",
-    "tag",
-    "trash",
-    "untag",
-}
 SOURCE_SYNC_TOOLS = {
     "pixiv": "pixiv.bookmarks.sync",
     "telegram": "telegram.inbox.sync",
@@ -75,22 +62,25 @@ def run(argv: list[str] | None = None) -> int:
         argv = sys.argv[1:]
     if argv and argv[0] == "experimental":
         return handle_experimental(argv[1:])
-    if argv and argv[0] in SIMPLE_COMMANDS:
-        try:
-            _load_simple_command_env()
-        except EnvFileError as exc:
-            return emit_tool_failure(
-                tool=argv[0],
-                code="invalid_env_file",
-                message=str(exc),
-                json_output="--json" in argv or "--summary-json" in argv,
-                compact_human=True,
-            )
     parser = build_parser()
     args = parser.parse_args(argv)
     if not hasattr(args, "handler"):
         parser.print_help()
         return EXIT_VALIDATION_ERROR
+    return _run_configured_command(args, argv)
+
+
+def _run_configured_command(args: argparse.Namespace, argv: list[str]) -> int:
+    try:
+        _load_command_env()
+    except EnvFileError as exc:
+        return emit_tool_failure(
+            tool=argv[0],
+            code="invalid_env_file",
+            message=str(exc),
+            json_output="--json" in argv or "--summary-json" in argv,
+            compact_human=True,
+        )
     return args.handler(args)
 
 
@@ -173,6 +163,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sync.add_argument("--full", action="store_true", help="Request a complete source scan when supported.")
     sync.add_argument("--overwrite", action="store_true", help="Replace existing target files.")
+    sync.add_argument("--link-batch-size", type=int, default=None, help="Telegram: maximum external links to deliver per run (0..100; default: 20).")
+    sync.add_argument("--link-time-budget", type=float, default=None, help="Telegram: stop starting external links after this many seconds (1..3600; default: 60).")
     sync.add_argument(
         "--repair",
         action=argparse.BooleanOptionalAction,
@@ -216,6 +208,16 @@ def build_parser() -> argparse.ArgumentParser:
     link_sync.add_argument("--json", action="store_true", help="Emit machine-readable JSON.")
     link_sync.add_argument("--dry-run", action="store_true", help="Run without tool side effects.")
     link_sync.set_defaults(handler=handle_link_sync)
+
+    link_backlog = link_commands.add_parser("backlog", help="Inspect Telegram external-link backlog without network access.")
+    link_backlog.add_argument("--json", action="store_true")
+    link_backlog.set_defaults(handler=handle_link_backlog)
+    link_retry = link_commands.add_parser("retry", help="Explicitly grant selected failed links another bounded retry budget.")
+    link_retry.add_argument("link_ids", type=int, nargs="+")
+    link_retry.add_argument("--retry-auth", action="store_true", help="Retry only authentication-blocked links after repairing the session.")
+    link_retry.add_argument("--dry-run", action="store_true")
+    link_retry.add_argument("--json", action="store_true")
+    link_retry.set_defaults(handler=handle_link_retry)
 
     library = subcommands.add_parser("library", help="Manage Mediagent-tracked library content.")
     library_commands = library.add_subparsers(dest="library_command")
@@ -464,6 +466,13 @@ def handle_trash_purge(args: argparse.Namespace) -> int:
 
 
 def handle_source_sync(args: argparse.Namespace) -> int:
+    if args.source != "telegram" and (args.link_batch_size is not None or args.link_time_budget is not None):
+        return emit_tool_failure(
+            tool=SOURCE_SYNC_TOOLS[args.source], code="unsupported_source_option",
+            message="Link batch/time options are only supported for telegram.",
+            json_output=args.json or args.summary_json, summary_json=args.summary_json,
+            dry_run=args.dry_run, compact_human=True,
+        )
     if args.folder and args.source != "jmcomic":
         return emit_tool_failure(
             tool=SOURCE_SYNC_TOOLS[args.source],
@@ -486,6 +495,10 @@ def handle_source_sync(args: argparse.Namespace) -> int:
         input_data.update({"package_comics": True, "include_ugoira_metadata": True})
     if args.folder:
         input_data["folders"] = args.folder
+    if args.link_batch_size is not None:
+        input_data["link_batch_size"] = args.link_batch_size
+    if args.link_time_budget is not None:
+        input_data["link_time_budget_seconds"] = args.link_time_budget
     return run_tool_command(
         tool=SOURCE_SYNC_TOOLS[args.source],
         input_data=input_data,
@@ -517,6 +530,20 @@ def handle_status(args: argparse.Namespace) -> int:
         summary_json=False,
         dry_run=False,
         compact_human=True,
+    )
+
+
+def handle_link_backlog(args: argparse.Namespace) -> int:
+    return run_tool_command(
+        tool="link.backlog", input_data={}, json_output=args.json, summary_json=False,
+        dry_run=False, compact_human=False,
+    )
+
+
+def handle_link_retry(args: argparse.Namespace) -> int:
+    return run_tool_command(
+        tool="link.retry", input_data={"link_ids": args.link_ids, "retry_auth": args.retry_auth},
+        json_output=args.json, summary_json=False, dry_run=args.dry_run, compact_human=False,
     )
 
 
@@ -996,7 +1023,7 @@ def emit_tool_failure(
     return tool_result_exit_code(result)
 
 
-def _load_simple_command_env() -> None:
+def _load_command_env() -> None:
     configured = os.environ.get("MEDIAGENT_ENV_FILE")
     if configured == "":
         return
@@ -1022,8 +1049,9 @@ def handle_experimental(argv: list[str]) -> int:
         )
         parser.add_argument("--json", action="store_true", help="Emit machine-readable JSON.")
         parser.add_argument("--dry-run", action="store_true", help="Run without tool side effects.")
+        parser.set_defaults(handler=handle_experimental_telegram_sync_links, summary_json=False)
         args = parser.parse_args(argv[2:])
-        return handle_experimental_telegram_sync_links(args)
+        return _run_configured_command(args, ["experimental", *argv])
     return print_error(
         {
             "code": "unknown_experimental_command",
@@ -1221,6 +1249,9 @@ def _compact_metric_line(data: dict[str, Any]) -> str | None:
         "targets_failed",
         "files_moved",
         "bytes_reclaimed",
+        "links_pending",
+        "links_blocked",
+        "links_failed",
     )
     metrics = [
         f"{key.replace('_', ' ').capitalize()}: {summary[key]}"

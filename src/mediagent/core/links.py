@@ -9,6 +9,8 @@ import mimetypes
 import re
 import socket
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Callable, Mapping
@@ -961,6 +963,46 @@ def _reddit_page_headers() -> dict[str, str]:
     return {"Cookie": "over18=1"}
 
 
+def _http_failure_details(response: HttpResponse) -> dict[str, Any]:
+    """Expose status-specific retry policy without response bodies or headers."""
+
+    status = response.status_code
+    retryable = status in (408, 429) or status >= 500
+    details: dict[str, Any] = {
+        "status_code": status,
+        "error_code": f"http_{status}",
+        "retryable": retryable,
+        "user_action_required": status in (401, 403),
+    }
+    value = header_value(response.headers, "retry-after")
+    if retryable and value:
+        try:
+            if re.fullmatch(r"[0-9]{1,10}", value.strip()):
+                seconds = int(value)
+            else:
+                target = parsedate_to_datetime(value)
+                seconds = int((target - datetime.now(timezone.utc)).total_seconds())
+            details["retry_after_seconds"] = max(0, min(seconds, 86400))
+        except (ValueError, TypeError, OverflowError):
+            pass
+    return details
+
+
+def _resolve_redirected_pornhub_page(
+    original_url: str, final_url: str, request: ResolveRequest,
+) -> dict[str, Any] | None:
+    """Route a validated redirect destination through the provider adapter."""
+
+    host = (urlparse(final_url).hostname or "").lower()
+    if not pornhub_links.is_pornhub_host(host):
+        return None
+    safe_url = SafeURL(original_url=original_url, normalized_url=final_url, host=host)
+    resolver = PornhubExactVideoResolver()
+    if resolver.matches(safe_url):
+        return resolver.resolve(safe_url, request)
+    return ReservedPlatformPageResolver().resolve(safe_url, request)
+
+
 class GenericHTMLMediaResolver(Resolver):
     spec = ResolverSpec(
         name="generic_html_media",
@@ -996,6 +1038,9 @@ class GenericHTMLMediaResolver(Resolver):
                 origin_source=origin_source_from_host(safe_url.host),
                 details={"exception_type": type(exc).__name__},
             )
+        redirected = _resolve_redirected_pornhub_page(safe_url.original_url, final_url, request)
+        if redirected is not None:
+            return redirected
         origin_source = origin_source_from_host(urlparse(final_url).hostname or safe_url.host)
         if response.status_code in (401, 403):
             return skipped_resolution(
@@ -1004,7 +1049,7 @@ class GenericHTMLMediaResolver(Resolver):
                 resolver=self.spec.name,
                 skip_reason="requires_auth",
                 origin_source=origin_source,
-                details={"status_code": response.status_code},
+                details=_http_failure_details(response),
             )
         if not 200 <= response.status_code < 300:
             return skipped_resolution(
@@ -1013,7 +1058,7 @@ class GenericHTMLMediaResolver(Resolver):
                 resolver=self.spec.name,
                 skip_reason="resolver_error",
                 origin_source=origin_source,
-                details={"status_code": response.status_code},
+                details=_http_failure_details(response),
             )
         content_type = clean_mime(header_value(response.headers, "content-type"))
         if content_type not in HTML_MIME_TYPES:
@@ -1227,12 +1272,15 @@ class RedgifsResolver(Resolver):
 class ReservedPlatformPageResolver(Resolver):
     spec = ResolverSpec(
         name="reserved_platform_page",
-        allowed_domains=tuple(sorted(RESERVED_PLATFORM_PAGE_HOSTS)),
-        matching_rules="Known platform page domains that must not fall through to generic direct or HTML resolution.",
+        allowed_domains=tuple(sorted(RESERVED_PLATFORM_PAGE_HOSTS)) + ("<region>.pornhub.com",),
+        matching_rules=(
+            "Known platform page domains that must not fall through to generic direct or HTML resolution; "
+            "Pornhub includes bounded two-letter region or language-region labels."
+        ),
     )
 
     def matches(self, safe_url: SafeURL) -> bool:
-        return safe_url.host in RESERVED_PLATFORM_PAGE_HOSTS
+        return safe_url.host in RESERVED_PLATFORM_PAGE_HOSTS or pornhub_links.is_pornhub_host(safe_url.host)
 
     def resolve(self, safe_url: SafeURL, request: ResolveRequest) -> dict[str, Any]:
         platform = _reserved_platform_name(safe_url.host)
@@ -1254,13 +1302,16 @@ class ReservedPlatformPageResolver(Resolver):
 class PornhubExactVideoResolver(Resolver):
     spec = ResolverSpec(
         name="pornhub_exact_video",
-        allowed_domains=tuple(sorted(PORNHUB_HOSTS)),
-        matching_rules="Pornhub exact-video view, show, and embed URLs with a stable viewkey.",
+        allowed_domains=tuple(sorted(PORNHUB_HOSTS)) + ("<region>.pornhub.com",),
+        matching_rules=(
+            "Pornhub exact-video view, show, and embed URLs with a stable viewkey; "
+            "region is two ASCII letters optionally followed by '-' and two ASCII letters."
+        ),
     )
 
     def matches(self, safe_url: SafeURL) -> bool:
         return (
-            safe_url.host in PORNHUB_HOSTS
+            pornhub_links.is_pornhub_host(safe_url.host)
             and pornhub_links.parse_exact_video_link(safe_url.normalized_url) is not None
         )
 
@@ -1419,6 +1470,9 @@ class DirectMediaResolver(Resolver):
                 origin_source=origin_source,
                 details={"exception_type": type(exc).__name__},
             )
+        redirected = _resolve_redirected_pornhub_page(raw_url, final_url, request)
+        if redirected is not None:
+            return redirected
         if response.status_code in (401, 403):
             if should_continue_to_html_resolver(safe_url, response):
                 return skipped_resolution(
@@ -1435,7 +1489,7 @@ class DirectMediaResolver(Resolver):
                 resolver=resolver_name,
                 skip_reason="requires_auth",
                 origin_source=origin_source,
-                details={"status_code": response.status_code},
+                details=_http_failure_details(response),
             )
         if response.status_code in (405, 501) and should_continue_to_html_resolver(safe_url, response):
             return skipped_resolution(
@@ -1453,7 +1507,7 @@ class DirectMediaResolver(Resolver):
                 resolver=resolver_name,
                 skip_reason="resolver_error",
                 origin_source=origin_source,
-                details={"status_code": response.status_code},
+                details=_http_failure_details(response),
             )
         content_type = clean_mime(header_value(response.headers, "content-type"))
         size_bytes = int_header(response.headers, "content-length")
@@ -2295,7 +2349,7 @@ def _reserved_platform_name(host: str) -> str:
         return "pixiv"
     if host in IMGUR_HOSTS:
         return "imgur"
-    if host in PORNHUB_HOSTS:
+    if pornhub_links.is_pornhub_host(host):
         return "pornhub"
     return origin_source_from_host(host)
 

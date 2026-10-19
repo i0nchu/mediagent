@@ -1419,7 +1419,7 @@ class TelegramToolTests(unittest.TestCase):
         self.assertEqual(followed, [["https://t.me/source_a/100"]])
         self.assertIsNone(cursor)
 
-    def test_unified_inbox_sync_retryable_link_resolution_does_not_advance_cursor(self) -> None:
+    def test_unified_inbox_sync_retryable_delivery_advances_intake_and_resumes_due_backlog(self) -> None:
         registry = create_default_registry()
         external_url = "https://1.1.1.1/transient.jpg"
 
@@ -1464,6 +1464,8 @@ class TelegramToolTests(unittest.TestCase):
                 cursor_name="inbox:saved_messages",
             )
             fake.fail_resolution = False
+            with db.connect(db_path) as connection:
+                connection.execute("UPDATE link_delivery_jobs SET next_attempt_at='2000-01-01T00:00:00+00:00'")
             retry_context, _data_dir, _db_path = _telegram_context(temp_dir, fake)
             second = asyncio.run(
                 registry.run(
@@ -1478,10 +1480,9 @@ class TelegramToolTests(unittest.TestCase):
                 cursor_name="inbox:saved_messages",
             )
 
-        self.assertFalse(first.is_success)
-        self.assertEqual(first.error.code, "telegram_inbox_sync_partial")
+        self.assertTrue(first.is_success, first.to_dict())
         self.assertEqual(first.data["summary"]["retryable_links_unresolved"], 1)
-        self.assertIsNone(first_cursor)
+        self.assertEqual(first_cursor["cursor_value"], "10")
         self.assertTrue(second.is_success, second.to_dict())
         self.assertEqual(second.data["summary"]["retryable_links_unresolved"], 0)
         self.assertEqual(second.data["summary"]["link_downloaded"], 1)

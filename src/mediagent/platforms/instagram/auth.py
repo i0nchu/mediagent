@@ -38,6 +38,7 @@ RETRYABLE_CODES = {
     "instagram_rate_limited",
     "instagram_temporarily_blocked",
     "instagram_resolve_failed",
+    "instagram_media_unavailable",
 }
 
 

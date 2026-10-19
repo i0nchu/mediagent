@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 
-SCHEMA_VERSION = "14"
+SCHEMA_VERSION = "15"
 SQLITE_BUSY_TIMEOUT_MILLISECONDS = 30_000
 
 
@@ -30,10 +30,11 @@ def initialize_database(db_path: Path) -> dict[str, Any]:
         _ensure_media_files_schema(connection)
         _ensure_link_queue_schema(connection)
         _ensure_library_content_schema(connection)
-        from mediagent.core import asset_tagging_jobs, assets
+        from mediagent.core import asset_tagging_jobs, assets, link_delivery_jobs
 
         assets.ensure_schema(connection)
         asset_tagging_jobs.ensure_schema(connection)
+        link_delivery_jobs.ensure_schema(connection)
         asset_reconciliation_required = (
             not assets_existed
             or _legacy_asset_refresh_required(previous_version)
@@ -996,6 +997,11 @@ def list_ready_links(
         limit_sql = " LIMIT ?"
         params.append(max(0, int(limit)))
     with connect(db_path) as connection:
+        if _table_exists(connection, "link_delivery_jobs"):
+            where += """ AND NOT EXISTS (
+                SELECT 1 FROM link_delivery_jobs delivery
+                WHERE delivery.link_id = link_queue.id
+            )"""
         rows = connection.execute(
             f"""
             SELECT id, ingest_platform, original_url, normalized_url, source_chat_id,
@@ -1035,6 +1041,11 @@ def claim_links(
         params.append(max(0, int(limit)))
     with connect(db_path) as connection:
         connection.execute("BEGIN IMMEDIATE")
+        if _table_exists(connection, "link_delivery_jobs"):
+            where += """ AND NOT EXISTS (
+                SELECT 1 FROM link_delivery_jobs delivery
+                WHERE delivery.link_id = link_queue.id
+            )"""
         rows = connection.execute(
             f"""
             SELECT id
@@ -1092,6 +1103,11 @@ def list_auth_skipped_links(
         limit_sql = " LIMIT ?"
         params.append(max(0, int(limit)))
     with connect(db_path) as connection:
+        if _table_exists(connection, "link_delivery_jobs"):
+            where += """ AND NOT EXISTS (
+                SELECT 1 FROM link_delivery_jobs delivery
+                WHERE delivery.link_id = link_queue.id
+            )"""
         rows = connection.execute(
             f"""
             SELECT id, ingest_platform, original_url, normalized_url, source_chat_id,
@@ -1131,6 +1147,11 @@ def claim_auth_skipped_links(
         params.append(max(0, int(limit)))
     with connect(db_path) as connection:
         connection.execute("BEGIN IMMEDIATE")
+        if _table_exists(connection, "link_delivery_jobs"):
+            where += """ AND NOT EXISTS (
+                SELECT 1 FROM link_delivery_jobs delivery
+                WHERE delivery.link_id = link_queue.id
+            )"""
         rows = connection.execute(
             f"""
             SELECT id
@@ -1650,6 +1671,31 @@ def link_resolution_retryable(
     if isinstance(details, dict) and isinstance(details.get("retryable"), bool):
         return bool(details["retryable"])
     reason = skip_reason or resolution.get("skip_reason")
+    if isinstance(reason, str) and (
+        reason.startswith("unsafe_")
+        or reason.endswith("_url_unsupported")
+        or reason == "instagram_stories_unsupported"
+    ):
+        return False
+    if isinstance(details, dict):
+        code = details.get("error_code")
+        if code in {
+            "instagram_media_not_found", "instagram_media_unsupported", "instagram_media_private",
+            "instagram_session_missing", "instagram_session_invalid", "instagram_login_required",
+            "instagram_checkpoint_required", "instagram_two_factor_required", "instagram_profile_config_invalid",
+        }:
+            return False
+        if code in {"instagram_rate_limited", "instagram_temporarily_blocked"}:
+            return True
+        http_status = details.get("status_code")
+        if (
+            resolution.get("resolver") == "generic_html_media"
+            and isinstance(http_status, int)
+            and http_status in {404, 410}
+        ):
+            return False
+        if isinstance(http_status, int) and (http_status in {408, 429} or 500 <= http_status <= 599):
+            return True
     if reason in {
         "unsafe_url",
         "unsupported_domain",

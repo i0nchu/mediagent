@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -288,6 +289,7 @@ async def media_sync(context: ToolContext, input_data: dict[str, Any]) -> ToolRe
     except ValueError as exc:
         return ToolResult.failure("missing_link_input", str(exc), category=ErrorCategory.VALIDATION)
     links = _limited_items(links, input_data.get("limit"))
+    links, managed_links = _delivery_owned_links(context, db_path, links)
     resolutions: list[dict[str, Any]] = []
     resolved_items: list[dict[str, Any]] = []
     summary = {
@@ -321,6 +323,31 @@ async def media_sync(context: ToolContext, input_data: dict[str, Any]) -> ToolRe
         "cbz_failed_or_incomplete": 0,
     }
     warnings: list[str] = []
+    if managed_links:
+        summary["delivery_managed"] = len(managed_links)
+        summary["skipped_links"] += len(managed_links)
+        warnings.append("Some links belong to the durable Telegram queue; inspect mediagent link backlog or explicitly use mediagent link retry ID.")
+    managed_media = _completed_delivery_media(context, db_path, managed_links)
+    managed_delivery = ToolResult.success({})
+    if managed_media and not context.dry_run:
+        repair_ids = set()
+        for item in managed_media:
+            records = db.list_media_files(db_path, platform=item["platform"], remote_id=item["remote_id"])
+            active = any(record.get("library_state") not in {"removed", "purged"}
+                         and record.get("file_health") not in {"removed", "purged"} for record in records)
+            repairable = input_data.get("repair_missing_files") and _repair_assessment(db_path, item)["repairable"]
+            if active and (repairable or input_data.get("overwrite")):
+                repair_ids.add(item["_delivery_link_id"])
+        if repair_ids:
+            from mediagent.core import link_delivery_jobs
+            from mediagent.tools.telegram_tools import _deliver_inbox_links
+
+            for link_id in repair_ids:
+                link_delivery_jobs.enqueue(db_path, link_id, force=True)
+            managed_delivery = await _deliver_inbox_links(
+                context, {**input_data, "link_batch_size": len(repair_ids)}, db_path=db_path,
+                link_ids=sorted(repair_ids),
+            )
     fatal_resolution_errors: list[dict[str, Any]] = []
     comic_route = await sync_dedicated_comic_links(
         context,
@@ -419,8 +446,12 @@ async def media_sync(context: ToolContext, input_data: dict[str, Any]) -> ToolRe
     for item in resolved_items:
         db.upsert_media_item(db_path, item)
 
-    item_results: list[dict[str, Any]] = list(comic_route["items"])
-    artifacts: list[dict[str, str]] = list(comic_route["artifacts"])
+    item_results: list[dict[str, Any]] = [*comic_route["items"], *managed_delivery.data.get("items", [])]
+    artifacts: list[dict[str, str]] = [*comic_route["artifacts"], *managed_delivery.artifacts]
+    for key, value in managed_delivery.data.get("summary", {}).items():
+        if isinstance(value, int) and not isinstance(value, bool):
+            summary[key] = summary.get(key, 0) + value
+    warnings.extend(managed_delivery.warnings)
     progress = ProgressLogger(context.operation_log)
     failed_items = 0
     for completed_items, item in enumerate(items_to_sync, start=1):
@@ -466,6 +497,7 @@ async def media_sync(context: ToolContext, input_data: dict[str, Any]) -> ToolRe
             [
                 *comic_route["asset_ids"],
                 *assets.asset_ids_for_media_items(db_path, resolved_items),
+                *assets.asset_ids_for_media_items(db_path, managed_media),
             ]
         ),
         "links": resolutions,
@@ -561,6 +593,8 @@ async def sync_dedicated_comic_links(
             comic_input.pop(key, None)
         comic_input["url"] = link["original_url"]
         comic_input["_ingest_provenance"] = _link_ingest_provenance(link)
+        if link.get("_delivery_job"):
+            comic_input["_delivery_link_id"] = int(link["id"])
         result = await comic_tools.comic_link_sync(context, comic_input)
         targets = result.data.get("targets") if isinstance(result.data, dict) else None
         resolved = bool(targets)
@@ -739,6 +773,58 @@ def _link_record_from_url(url: str, *, input_data: dict[str, Any], context: Tool
         "source_message_date": source.get("message_date"),
         "collector_run_id": source.get("collector_run_id") or context.run_id,
     }
+
+
+def _completed_delivery_media(
+    context: ToolContext, db_path: Path, links: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Return stable completed identities without probing their providers again."""
+    from mediagent.core import link_delivery_jobs
+
+    identities: dict[tuple[str, str], dict[str, Any]] = {}
+    for link in links:
+        if not context.dry_run:
+            link_delivery_jobs.refresh_provenance(db_path, int(link["id"]))
+        with db.connect(db_path) as connection:
+            rows = connection.execute(
+                """SELECT media.platform,media.remote_id,media.metadata_json FROM media_items media
+                JOIN link_delivery_media binding ON binding.media_item_id=media.id
+                JOIN link_delivery_jobs job ON job.link_id=binding.link_id
+                WHERE job.link_id=? AND job.status='succeeded'""", (link["id"],),
+            ).fetchall()
+        for row in rows:
+            key = (str(row["platform"]), str(row["remote_id"]))
+            identities[key] = {
+                "platform": key[0], "remote_id": key[1],
+                "metadata": json.loads(row["metadata_json"]), "_delivery_link_id": int(link["id"]),
+            }
+    return list(identities.values())
+
+
+def _delivery_owned_links(
+    context: ToolContext, db_path: Path, links: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Keep all legacy entry points from bypassing durable scheduling/leases."""
+    from mediagent.core import link_delivery_jobs
+
+    if not db_path.is_file():
+        return links, []
+    with db.connect(db_path) as connection:
+        if not db._table_exists(connection, "link_delivery_jobs"):
+            return links, []
+        owned = {int(row[0]) for row in connection.execute("SELECT link_id FROM link_delivery_jobs")}
+    ready, managed = [], []
+    for link in links:
+        lease = link.get("_delivery_job")
+        if isinstance(lease, dict) and link_delivery_jobs.owns(
+            db_path, lease["id"], context.run_id, lease["lease_token"],
+        ) and int(lease["link_id"]) == int(link["id"]):
+            ready.append(link)
+        elif link.get("id") is not None and int(link["id"]) in owned:
+            managed.append(link)
+        else:
+            ready.append(link)
+    return ready, managed
 
 
 def _sync_input_links(db_path: Path, input_data: dict[str, Any], *, context: ToolContext) -> list[dict[str, Any]]:
