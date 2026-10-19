@@ -20,6 +20,7 @@ from mediagent.tools.defaults import create_default_registry
 from mediagent.platforms.nhentai.client import NhentaiApiError
 from mediagent.platforms.jmcomic.auth import JMComicSession
 from mediagent.platforms.jmcomic.client import JMComicClientError
+from mediagent.platforms.jmcomic.parser import JMComicAlbum, JMComicEpisode, JMComicPhoto, JMComicPage
 
 
 class ImageHttpClient:
@@ -557,7 +558,7 @@ class ComicToolTests(unittest.TestCase):
             )
             with patch.object(comic_tools, "_jm_client", return_value=client), patch.object(
                 comic_tools,
-                "_sync_favorite_targets",
+                "_sync_jm_incremental_targets",
                 new=AsyncMock(
                     side_effect=lambda *_: ToolResult.success({"summary": {}, "items": [], "packages": []})
                 ),
@@ -787,19 +788,21 @@ class ComicToolTests(unittest.TestCase):
                 latest_photo_id="10",
             )
             collection = SimpleNamespace(items=(favorite,), pages_fetched=1)
-            resolution = SimpleNamespace(normalized_items=lambda: [_comic_item()])
             client = SimpleNamespace(
                 session=JMComicSession({"AVS": "before-resolve"}, username="configured-user"),
                 login=MagicMock(),
                 collect_favorites=MagicMock(return_value=collection),
             )
 
-            def resolve_exact(url: str):
-                self.assertEqual(url, "https://18comic.vip/album/1/")
-                client.session = JMComicSession({"AVS": "after-resolve"}, username="configured-user")
-                return resolution
+            client.get_album = MagicMock(return_value=JMComicAlbum("1", "test album", (JMComicEpisode("10", 1, "Chapter 1"),)))
+            client.get_scramble_id = MagicMock(return_value="99999999")
 
-            client.resolve_exact = MagicMock(side_effect=resolve_exact)
+            def get_photo(chapter_id: str, **kwargs):
+                self.assertEqual(chapter_id, "10")
+                client.session = JMComicSession({"AVS": "after-resolve"}, username="configured-user")
+                return JMComicPhoto("10", "1", "Chapter 1", 1, (JMComicPage(0, "1.png", "https://cdn.example/1.png"),))
+
+            client.get_photo = MagicMock(side_effect=get_photo)
             sync_result = ToolResult.success({"summary": {}, "items": [], "packages": []})
             with patch.object(comic_tools, "_jm_client", return_value=client), patch.object(
                 comic_tools,
@@ -817,7 +820,7 @@ class ComicToolTests(unittest.TestCase):
         self.assertTrue(result.is_success, result.to_dict())
         self.assertEqual(saved.cookies, {"AVS": "after-resolve"})
         self.assertEqual(result.data["session_checkpoints"], 2)
-        client.resolve_exact.assert_called_once()
+        client.get_photo.assert_called_once()
 
     def test_changed_tracked_manifest_rebuilds_existing_cbz(self) -> None:
         with TemporaryDirectory() as temp_dir:

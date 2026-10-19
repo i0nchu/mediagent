@@ -165,6 +165,10 @@ def build_parser() -> argparse.ArgumentParser:
     sync.add_argument("--overwrite", action="store_true", help="Replace existing target files.")
     sync.add_argument("--link-batch-size", type=int, default=None, help="Telegram: maximum external links to deliver per run (0..100; default: 20).")
     sync.add_argument("--link-time-budget", type=float, default=None, help="Telegram: stop starting external links after this many seconds (1..3600; default: 60).")
+    sync.add_argument("--max-chapters", type=int, default=None, help="JMComic: maximum chapters processed per invocation (default: 20).")
+    sync.add_argument("--time-budget", type=float, default=None, help="JMComic: cooperative sync budget in seconds (default: 300).")
+    sync.add_argument("--audit-chapters", type=int, default=None, help="JMComic: maximum historical chapters to audit per run; 0 disables periodic auditing.")
+    sync.add_argument("--revalidate-all", action="store_true", help="JMComic: resume a full historical metadata and local-file validation pass.")
     sync.add_argument(
         "--repair",
         action=argparse.BooleanOptionalAction,
@@ -466,6 +470,16 @@ def handle_trash_purge(args: argparse.Namespace) -> int:
 
 
 def handle_source_sync(args: argparse.Namespace) -> int:
+    jm_options = args.revalidate_all or any(value is not None for value in (args.max_chapters, args.time_budget, args.audit_chapters))
+    if (args.source != "jmcomic" and jm_options) or (
+        args.source == "jmcomic" and not args.repair and (args.revalidate_all or args.full or args.overwrite)
+    ):
+        return emit_tool_failure(
+            tool=SOURCE_SYNC_TOOLS[args.source], code="unsupported_source_option",
+            message="Chapter budgets and revalidation require jmcomic; full revalidation/overwrite cannot be combined with --no-repair.",
+            json_output=args.json or args.summary_json, summary_json=args.summary_json,
+            dry_run=args.dry_run, compact_human=True,
+        )
     if args.source != "telegram" and (args.link_batch_size is not None or args.link_time_budget is not None):
         return emit_tool_failure(
             tool=SOURCE_SYNC_TOOLS[args.source], code="unsupported_source_option",
@@ -499,6 +513,14 @@ def handle_source_sync(args: argparse.Namespace) -> int:
         input_data["link_batch_size"] = args.link_batch_size
     if args.link_time_budget is not None:
         input_data["link_time_budget_seconds"] = args.link_time_budget
+    if args.source == "jmcomic":
+        if args.revalidate_all or args.full:
+            input_data["revalidate_all"] = True
+        for name in ("max_chapters", "audit_chapters"):
+            if getattr(args, name) is not None:
+                input_data[name] = getattr(args, name)
+        if args.time_budget is not None:
+            input_data["time_budget_seconds"] = args.time_budget
     return run_tool_command(
         tool=SOURCE_SYNC_TOOLS[args.source],
         input_data=input_data,
@@ -930,6 +952,9 @@ def _summary_tool_payload(payload: dict[str, Any]) -> dict[str, Any]:
             "policy",
             "target_policy",
             "complete",
+            "intake_complete",
+            "budget_exhausted",
+            "revalidation_active",
             "pages_fetched",
             "expected_total",
             "favorites_seen",
@@ -1252,6 +1277,11 @@ def _compact_metric_line(data: dict[str, Any]) -> str | None:
         "links_pending",
         "links_blocked",
         "links_failed",
+        "chapters_processed",
+        "chapters_pending",
+        "chapters_requested",
+        "albums_requested",
+        "budget_exhausted",
     )
     metrics = [
         f"{key.replace('_', ' ').capitalize()}: {summary[key]}"
